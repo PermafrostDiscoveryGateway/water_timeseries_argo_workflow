@@ -16,9 +16,3 @@ COPY upload_to_gcs.py download_from_gcs.py ./
 
 # Make scripts executable
 RUN chmod +x upload_to_gcs.py download_from_gcs.py
-
-# Set default command to show help
-CMD ["python", "upload_to_gcs.py", "--help"]
-
-# Alternative: You can use entrypoint to run either script
-# ENTRYPOINT ["python"]
