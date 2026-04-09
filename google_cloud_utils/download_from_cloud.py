@@ -23,7 +23,7 @@ import sys
 import argparse
 from pathlib import Path
 from google.cloud import storage
-from google.api_core.exceptions import GoogleAPIError, NotFound
+from google.api_core.exceptions import *
 
 
 def initialize_gcs_client(project_id):
