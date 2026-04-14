@@ -1,163 +1,53 @@
-name: Update Version
+name: Build and Push Docker Image
 
 on:
-  workflow_dispatch:
-    inputs:
-      bump:
-        description: 'The version bump to apply [possible values: major, minor, patch]'
-        required: true
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
-      publish:
-        description: 'Publish the package to GitHub releases'
-        required: false
-        type: boolean
-        default: true
   push:
     branches:
-      - ncsa
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Custom image tag (optional)'
+        required: false
+        type: string
 
 jobs:
-  # Only runs on manual workflow_dispatch
-  update-version:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-
-    permissions:
-      contents: write
-      id-token: write
-
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    outputs:
-      VERSION: ${{ steps.update_version.outputs.tag-number }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update version by bumping git tag
-        id: update_version
-        uses: leonsteinhaeuser/git-tag-bump@v1.1.0
-        with:
-          args: >-
-            --bump ${{ github.event.inputs.bump }} --v-prefix --create --actor-name "GitHub Actions" --actor-mail "github-actions[bot]@users.noreply.github.com"
-
-      - name: Update pyproject.toml version
-        run: |
-          VERSION="${{ steps.update_version.outputs.tag-number }}"
-          VERSION_NO_V="${VERSION#v}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          sed -i "s/^version = \".*\"/version = \"$VERSION_NO_V\"/" pyproject.toml
-          git add pyproject.toml
-          git commit -m "Update version to $VERSION_NO_V"
-          git push
-
-  # Get current version for ncsa branch builds
-  get-current-version:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref_name == 'ncsa'
-    outputs:
-      VERSION: ${{ steps.get_version.outputs.version }}
-      VERSION_TAG: ${{ steps.get_version.outputs.version_tag }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get current version from pyproject.toml
-        id: get_version
-        run: |
-          VERSION=$(grep -m1 'version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "version_tag=v$VERSION" >> $GITHUB_OUTPUT
-          echo "Current version: $VERSION"
-
-  # Only runs on manual dispatch with publish=true
-  build-and-publish:
-    runs-on: ubuntu-latest
-    needs:
-      - update-version
-    permissions:
-      contents: write
-      id-token: write
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true'
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          version: '0.6.7'
-
-      - name: Set up Python
-        run: uv python install
-
-      - name: Build package
-        run: uv build
-
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ needs.update-version.outputs.VERSION }}
-          release_name: ${{ needs.update-version.outputs.VERSION }}
-          draft: false
-          prerelease: false
-
-  # Runs on: manual dispatch with publish=true OR push to ncsa branch
   build-and-push-docker:
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
       packages: write
-    if: |
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true') ||
-      (github.event_name == 'push' && github.ref_name == 'ncsa')
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Set Docker tags
         id: docker_tags
         run: |
-          TAGS="ghcr.io/ncsa/water-timeseries-v2:${GITHUB_SHA::8}"
+          # Base tags
+          TAGS="ghcr.io/ncsa/water_timeseries_argo_workflow:${GITHUB_SHA::8}"
           
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # Manual dispatch - use version tag from update-version
-            VERSION="${{ needs.update-version.outputs.VERSION }}"
-            TAGS="${TAGS},ghcr.io/ncsa/water-timeseries-v2:latest"
-            TAGS="${TAGS},ghcr.io/ncsa/water-timeseries-v2:${VERSION}"
-            echo "Building versioned image: ${VERSION}"
-          else
-            # Push to ncsa branch - use branch name
-            TAGS="${TAGS},ghcr.io/ncsa/water-timeseries-v2:ncsa"
-            TAGS="${TAGS},ghcr.io/ncsa/water-timeseries-v2:ncsa-${GITHUB_SHA::8}"
-            echo "Building ncsa branch image"
+          # Always add 'latest' tag for main branch
+          TAGS="${TAGS},ghcr.io/ncsa/water_timeseries_argo_workflow:latest"
+          
+          # Add branch name tag
+          BRANCH_NAME=$(echo "${GITHUB_REF#refs/heads/}" | sed 's/\//-/g')
+          TAGS="${TAGS},ghcr.io/ncsa/water_timeseries_argo_workflow:${BRANCH_NAME}"
+          
+          # If manual dispatch with custom tag
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            TAGS="${TAGS},ghcr.io/ncsa/water_timeseries_argo_workflow:${{ inputs.tag }}"
+            echo "Adding custom tag: ${{ inputs.tag }}"
           fi
           
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          
+          # Also output just the tags for debugging
+          echo "tags_output=${TAGS}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -179,48 +69,10 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=$(date -Iseconds)
+            org.opencontainers.image.description="Argo Workflows for water timeseries analysis"
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Only runs on manual dispatch
-  build-and-publish-docs:
-    runs-on: ubuntu-latest
-    needs:
-      - update-version
-    permissions:
-      contents: write
-    if: github.event_name == 'workflow_dispatch'
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Configure Git Credentials
+      - name: Image digest output
         run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          version: '0.6.7'
-
-      - name: Set up Python
-        run: uv python install
-
-      - name: Get cache id
-        run: echo "cache_id=$(date --utc '+%V')" >> $GITHUB_ENV
-
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          key: mkdocs-material-${{ env.cache_id }}
-          path: .cache
-          restore-keys: |
-            mkdocs-material
-
-      - name: Publish documentation
-        run: uv run mike deploy --push --update-aliases ${{ needs.update-version.outputs.VERSION }} latest
+          echo "Image built and pushed with tags: ${{ steps.docker_tags.outputs.tags_output }}"
