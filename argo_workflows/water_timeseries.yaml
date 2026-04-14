@@ -39,7 +39,7 @@ spec:
       labels:
         long-running-job: "true"
     container:
-      image: ghcr.io/ncsa/water-timeseries-v2:ncsa
+      image: ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:add-dockerfile
       imagePullPolicy: Always
       resources:
         requests:
