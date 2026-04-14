@@ -4,12 +4,18 @@ on:
   push:
     branches:
       - main
+      - add-dockerfile  # Added for testing
   workflow_dispatch:
     inputs:
       tag:
         description: 'Custom image tag (optional)'
         required: false
         type: string
+
+# Add default permissions at workflow level
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build-and-push-docker:
@@ -25,29 +31,39 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set Docker tags
+      - name: Set Docker tags (lowercase)
         id: docker_tags
         run: |
-          # Base tags
-          TAGS="ghcr.io/ncsa/water_timeseries_argo_workflow:${GITHUB_SHA::8}"
+          # Convert repository name to lowercase for GHCR
+          REPO_LOWER="${{ github.repository }}"
+          REPO_LOWER="${REPO_LOWER,,}"
           
-          # Always add 'latest' tag for main branch
-          TAGS="${TAGS},ghcr.io/ncsa/water_timeseries_argo_workflow:latest"
+          REGISTRY="ghcr.io/${REPO_LOWER}"
+          BRANCH_NAME="${{ github.ref_name }}"
           
-          # Add branch name tag
-          BRANCH_NAME=$(echo "${GITHUB_REF#refs/heads/}" | sed 's/\//-/g')
-          TAGS="${TAGS},ghcr.io/ncsa/water_timeseries_argo_workflow:${BRANCH_NAME}"
+          # Start with branch name tag
+          TAGS="${REGISTRY}:${BRANCH_NAME}"
+          
+          # Add 'latest' tag for main branch only
+          if [ "$BRANCH_NAME" == "main" ]; then
+            TAGS="${TAGS},${REGISTRY}:latest"
+          fi
+          
+          # Add commit SHA tag (optional - remove if you don't want it)
+          TAGS="${TAGS},${REGISTRY}:${GITHUB_SHA::8}"
           
           # If manual dispatch with custom tag
           if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
-            TAGS="${TAGS},ghcr.io/ncsa/water_timeseries_argo_workflow:${{ inputs.tag }}"
+            TAGS="${TAGS},${REGISTRY}:${{ inputs.tag }}"
             echo "Adding custom tag: ${{ inputs.tag }}"
           fi
           
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
           
-          # Also output just the tags for debugging
-          echo "tags_output=${TAGS}" >> $GITHUB_OUTPUT
+          # Debug output
+          echo "Repository original: ${{ github.repository }}"
+          echo "Repository lowercase: ${REPO_LOWER}"
+          echo "Will push to: ${TAGS}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -56,7 +72,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
@@ -75,4 +91,5 @@ jobs:
 
       - name: Image digest output
         run: |
-          echo "Image built and pushed with tags: ${{ steps.docker_tags.outputs.tags_output }}"
+          echo "✅ Successfully pushed:"
+          echo "${{ steps.docker_tags.outputs.tags }}" | tr ',' '\n'
