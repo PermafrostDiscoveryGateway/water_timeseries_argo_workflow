@@ -1,17 +1,14 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: water-timeseries-download
+  name: water-timeseries-download-dynamic-world
   namespace: argo
   annotations:
-    # Optional: Keep pod after completion for debugging
     workflows.argoproj.io/pod-keep: "OnCompletion"
 spec:
-  # Retry policy - adjust as needed
   backoffLimit: 2
-  ttlSecondsAfterFinished: 86400  # Clean up job after 24 hours
+  ttlSecondsAfterFinished: 86400
 
-  # Pod template
   template:
     metadata:
       labels:
@@ -37,28 +34,42 @@ spec:
           - key: key.json
             path: application_default_credentials.json
 
+      # Config volume
+      - name: config
+        configMap:
+          name: download-dw-config
+
       containers:
       - name: download-script
-        # Use your existing container image
         image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:main
         imagePullPolicy: Always
 
-        # Run the download script directly
-        command: ["uv", "run"]
+        command: ["python"]
         args:
-        - "python"
-        - "-m"
-        - "google_cloud_utils.download_from_cloud"
-        - "pdg-storage-default"                    # source_bucket
-        - "pdg-project-406720"                     # gcp_project
-        - "water_timeseries_v2/data/"              # gcs_subfolder_path
-        - "/data/water_time_series_v2/input"       # local_path
+        - "/app/google_cloud_utils/download_dw_monthly.py"
+        - "--config"
+        - "/app/config/config.yaml"
+        # Override specific parameters via command line
+        - "--years"
+        - "2024"
+        - "--months"
+        - "7,8"
+        - "--vector-dataset"
+        - "/data/water_time_series_v2/input/lake_polygons.parquet"
+        - "--save-to"
+        - "/data/water_time_series_v2/dynamic_world/dw_monthly_2024_7_8.zarr"
 
         env:
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: /root/.config/gcloud/application_default_credentials.json
         - name: PYTHONPATH
-          value: /app  # Ensure Python can find the google_cloud_utils module
+          value: /app
+        - name: EE_PROJECT
+          valueFrom:
+            configMapKeyRef:
+              name: water-timeseries-config
+              key: ee.project
+              # Or use: value: "pdg-project-406720"
 
         volumeMounts:
         - name: gcp-creds
@@ -66,13 +77,15 @@ spec:
           readOnly: true
         - name: water-timeseries-volume
           mountPath: /data
+        - name: config
+          mountPath: /app/config
 
         resources:
           requests:
-            memory: "2Gi"
-            cpu: "1"
-            ephemeral-storage: "5Gi"
-          limits:
             memory: "4Gi"
             cpu: "2"
             ephemeral-storage: "10Gi"
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+            ephemeral-storage: "20Gi"

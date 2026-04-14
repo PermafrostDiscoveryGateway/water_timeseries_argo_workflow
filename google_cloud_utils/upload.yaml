@@ -40,7 +40,7 @@ spec:
       containers:
       - name: download-script
         # Use your existing container image
-        image: ghcr.io/ncsa/water-timeseries-v2:ncsa
+        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:main
         imagePullPolicy: Always
 
         # Run the download script directly
