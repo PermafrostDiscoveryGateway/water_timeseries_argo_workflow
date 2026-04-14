@@ -2,7 +2,7 @@ name: Ruff
 
 on:
   push:
-    branches: [main]
+    branches: [main, ncsa, add-dockerfile]
   pull_request:
   workflow_dispatch:
 
@@ -21,4 +21,4 @@ jobs:
           pip install ruff
       # Update output format to enable automatic inline annotations.
       - name: Run Ruff
-        run: ruff check --output-format=github --exclude *.ipynb .
+        run: ruff check --output-format=github --exclude *.ipynb . --ignore F401

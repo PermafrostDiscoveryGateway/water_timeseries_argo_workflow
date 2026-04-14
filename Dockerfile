@@ -1,18 +1,23 @@
-# Use official Python runtime as base image
-FROM python:3.11-slim
+FROM ghcr.io/ncsa/water-timeseries-v2:ncsa
 
-# Set working directory in container
+# Install additional Python dependencies
+COPY requirements.txt /tmp/requirements.txt
+RUN uv pip install --system -r /tmp/requirements.txt
+
+# Copy google_cloud_utils folder and everything in it to /app/google_cloud_utils
+COPY google_cloud_utils/ /app/google_cloud_utils/
+
+# Copy utils folder and everything in it to /app/utils
+COPY utils/ /app/utils/
+
+# Add /app to Python path so modules can be imported
+ENV PYTHONPATH="/app:${PYTHONPATH}"
+
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies (optional, for gcloud CLI if needed)
-# RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# Entrypoint - allows running any Python script with parameters
+ENTRYPOINT ["python"]
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy both scripts to container
-COPY upload_to_gcs.py download_from_gcs.py ./
-
-# Make scripts executable
-RUN chmod +x upload_to_gcs.py download_from_gcs.py
+# Default command (shows help if no script specified)
+CMD ["-c", "print('Usage: docker run <image> <script.py> [args...]')"]
