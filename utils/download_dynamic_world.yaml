@@ -3,20 +3,12 @@ kind: Workflow
 metadata:
   name: water-timeseries-download-dynamic-world
   namespace: argo
-  annotations:
-    workflows.argoproj.io/pod-keep: "OnCompletion"
 spec:
   entrypoint: main
   ttlStrategy:
     secondsAfterCompletion: 86400
-
   podGC:
     strategy: OnPodCompletion
-
-  # Critical: Set pod priority and node selection for Autopilot
-  podMetadata:
-    annotations:
-      autopilot.gke.io/no-consistency: "true"  # Helps with Autopilot scheduling
 
   arguments:
     parameters:
@@ -24,10 +16,6 @@ spec:
       value: "2024"
     - name: months
       value: "7,8"
-    - name: vector-dataset
-      value: "/data/water_time_series_v2/input/lake_polygons.parquet"
-    - name: save-to
-      value: "/data/water_time_series_v2/dynamic_world/dw_monthly_{{workflow.parameters.years}}_{{workflow.parameters.months}}.zarr"
 
   templates:
   - name: main
@@ -35,44 +23,60 @@ spec:
       limit: "2"
       retryPolicy: "OnFailure"
 
-    container:
+    script:
       image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:main
       imagePullPolicy: Always
-      command: ["python"]
-      args:
-      - "/app/google_cloud_utils/download_dw_monthly.py"
-      - "--config"
-      - "/app/config/config.toml"
-      - "--years"
-      - "{{workflow.parameters.years}}"
-      - "--months"
-      - "{{workflow.parameters.months}}"
-      - "--vector-dataset"
-      - "{{workflow.parameters.vector-dataset}}"
-      - "--save-to"
-      - "{{workflow.parameters.save-to}}"
-      - "--ee-project"
-      - "{{workflow.parameters.ee-project}}"
+      command: [python]
+      source: |
+        import os
+        import sys
+        import toml
+        from loguru import logger
+        from water_timeseries.downloader import EarthEngineDownloader
+        import nest_asyncio
+        
+        nest_asyncio.apply()
+        
+        # Load config
+        config_path = "/app/config/config.toml"
+        with open(config_path, 'r') as f:
+            config = toml.load(f)
+        
+        # Get parameters
+        ee_project = config['ee']['project']
+        vector_dataset = config.get('vector_dataset', '/data/water_time_series_v2/input/lake_polygons.parquet')
+        
+        years = [int(y) for y in "{{workflow.parameters.years}}".split(",")]
+        months = [int(m) for m in "{{workflow.parameters.months}}".split(",")]
+        
+        # Build output path
+        save_to_file = f"/data/water_time_series_v2/dynamic_world/dw_monthly_{years[0]}_{','.join(map(str, months))}.zarr"
+        
+        # Set environment
+        os.environ["EE_PROJECT"] = ee_project
+        
+        logger.info(f"Using EE Project: {ee_project}")
+        logger.info(f"Years: {years}, Months: {months}")
+        logger.info(f"Vector dataset: {vector_dataset}")
+        logger.info(f"Save to: {save_to_file}")
+        
+        # Download
+        dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+        ds = dl.download_dw_monthly(
+            vector_dataset=vector_dataset,
+            name_attribute="id_geohash",
+            years=years,
+            months=months,
+            save_to_file=save_to_file,
+        )
+        
+        logger.info(f"Successfully downloaded data to {save_to_file}")
 
       env:
       - name: GOOGLE_APPLICATION_CREDENTIALS
         value: /root/.config/gcloud/application_default_credentials.json
       - name: PYTHONPATH
         value: /app
-      # Optional: Use env vars as fallback
-      - name: EE_PROJECT
-        valueFrom:
-          configMapKeyRef:
-            name: download-dw-config
-            key: ee.project
-      - name: YEARS
-        value: "{{workflow.parameters.years}}"
-      - name: MONTHS
-        value: "{{workflow.parameters.months}}"
-      - name: VECTOR_DATASET
-        value: "{{workflow.parameters.vector-dataset}}"
-      - name: SAVE_TO
-        value: "{{workflow.parameters.save-to}}"
 
       volumeMounts:
       - name: temp-storage
@@ -84,6 +88,7 @@ spec:
         readOnly: true
       - name: config
         mountPath: /app/config
+        readOnly: true
 
       resources:
         requests:
