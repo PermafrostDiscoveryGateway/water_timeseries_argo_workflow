@@ -1,0 +1,14 @@
+# config.toml
+[ee]
+project = "pdg-project-406720"
+auth = true
+
+vector_dataset = "/data/water_time_series_v2/input/lake_polygons.parquet"
+
+[output]
+base_path = "/data/water_time_series_v2/output"
+format = "zarr"
+
+[defaults]
+years = [2024]
+months = [7, 8, 9, 10]

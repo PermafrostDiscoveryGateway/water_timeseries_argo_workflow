@@ -1,91 +1,116 @@
-apiVersion: batch/v1
-kind: Job
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
 metadata:
   name: water-timeseries-download-dynamic-world
   namespace: argo
   annotations:
     workflows.argoproj.io/pod-keep: "OnCompletion"
 spec:
-  backoffLimit: 2
-  ttlSecondsAfterFinished: 86400
+  entrypoint: main
+  ttlStrategy:
+    secondsAfterCompletion: 86400
 
-  template:
-    metadata:
-      labels:
-        job-type: data-download
-        app: water-timeseries
-    spec:
-      restartPolicy: OnFailure
+  podGC:
+    strategy: OnPodCompletion
+
+  # Critical: Set pod priority and node selection for Autopilot
+  podMetadata:
+    annotations:
+      autopilot.gke.io/no-consistency: "true"  # Helps with Autopilot scheduling
+
+  arguments:
+    parameters:
+    - name: years
+      value: "2024"
+    - name: months
+      value: "7,8"
+    - name: vector-dataset
+      value: "/data/water_time_series_v2/input/lake_polygons.parquet"
+    - name: save-to
+      value: "/data/water_time_series_v2/dynamic_world/dw_monthly_{{workflow.parameters.years}}_{{workflow.parameters.months}}.zarr"
+
+  templates:
+  - name: main
+    retryStrategy:
+      limit: "2"
+      retryPolicy: "OnFailure"
+
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:main
+      imagePullPolicy: Always
+      command: ["python"]
+      args:
+      - "/app/google_cloud_utils/download_dw_monthly.py"
+      - "--config"
+      - "/app/config/config.toml"
+      - "--years"
+      - "{{workflow.parameters.years}}"
+      - "--months"
+      - "{{workflow.parameters.months}}"
+      - "--vector-dataset"
+      - "{{workflow.parameters.vector-dataset}}"
+      - "--save-to"
+      - "{{workflow.parameters.save-to}}"
+      - "--ee-project"
+      - "{{workflow.parameters.ee-project}}"
+
+      env:
+      - name: GOOGLE_APPLICATION_CREDENTIALS
+        value: /root/.config/gcloud/application_default_credentials.json
+      - name: PYTHONPATH
+        value: /app
+      # Optional: Use env vars as fallback
+      - name: EE_PROJECT
+        valueFrom:
+          configMapKeyRef:
+            name: download-dw-config
+            key: ee.project
+      - name: YEARS
+        value: "{{workflow.parameters.years}}"
+      - name: MONTHS
+        value: "{{workflow.parameters.months}}"
+      - name: VECTOR_DATASET
+        value: "{{workflow.parameters.vector-dataset}}"
+      - name: SAVE_TO
+        value: "{{workflow.parameters.save-to}}"
+
+      volumeMounts:
+      - name: temp-storage
+        mountPath: /tmp
+      - name: water-timeseries-volume
+        mountPath: /data
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: config
+        mountPath: /app/config
+
+      resources:
+        requests:
+          memory: "2Gi"
+          cpu: "1"
+          ephemeral-storage: "7Gi"
+        limits:
+          memory: "6Gi"
+          cpu: "2"
+          ephemeral-storage: "8Gi"
 
       imagePullSecrets:
       - name: ghcr-secret
 
-      volumes:
-      # Shared volume for data
-      - name: water-timeseries-volume
-        persistentVolumeClaim:
-          claimName: argo-workflows-share
-
-      # GCP credentials
-      - name: gcp-creds
-        secret:
-          secretName: personal-gcp-creds
-          items:
-          - key: key.json
-            path: application_default_credentials.json
-
-      # Config volume
-      - name: config
-        configMap:
-          name: download-dw-config
-
-      containers:
-      - name: download-script
-        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:main
-        imagePullPolicy: Always
-
-        command: ["python"]
-        args:
-        - "/app/google_cloud_utils/download_dw_monthly.py"
-        - "--config"
-        - "/app/config/config.yaml"
-        # Override specific parameters via command line
-        - "--years"
-        - "2024"
-        - "--months"
-        - "7,8"
-        - "--vector-dataset"
-        - "/data/water_time_series_v2/input/lake_polygons.parquet"
-        - "--save-to"
-        - "/data/water_time_series_v2/dynamic_world/dw_monthly_2024_7_8.zarr"
-
-        env:
-        - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: /root/.config/gcloud/application_default_credentials.json
-        - name: PYTHONPATH
-          value: /app
-        - name: EE_PROJECT
-          valueFrom:
-            configMapKeyRef:
-              name: water-timeseries-config
-              key: ee.project
-              # Or use: value: "pdg-project-406720"
-
-        volumeMounts:
-        - name: gcp-creds
-          mountPath: /root/.config/gcloud
-          readOnly: true
-        - name: water-timeseries-volume
-          mountPath: /data
-        - name: config
-          mountPath: /app/config
-
-        resources:
-          requests:
-            memory: "4Gi"
-            cpu: "2"
-            ephemeral-storage: "10Gi"
-          limits:
-            memory: "8Gi"
-            cpu: "4"
-            ephemeral-storage: "20Gi"
+  volumes:
+  - name: water-timeseries-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+  - name: temp-storage
+    emptyDir:
+      sizeLimit: 20Gi
+  - name: gcp-creds
+    secret:
+      secretName: personal-gcp-creds
+      items:
+      - key: key.json
+        path: application_default_credentials.json
+  - name: config
+    configMap:
+      name: download-dw-config
