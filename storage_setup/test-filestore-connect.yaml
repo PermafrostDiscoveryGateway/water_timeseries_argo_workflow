@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nfs-test
+  namespace: argo
+spec:
+  containers:
+  - name: tester
+    image: busybox:latest
+    command: ["/bin/sh", "-c"]
+    args: ["timeout 5 sh -c 'until nc -zv 10.30.59.242 2049; do echo Waiting for NFS; sleep 1; done' || echo 'Connection failed'"]
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+  restartPolicy: Never

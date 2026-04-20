@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: final-nfs-test
+  namespace: argo
+spec:
+  containers:
+  - name: test
+    image: busybox:latest
+    command: ["sh", "-c"]
+    args: ["echo 'Testing NFS mount at $(date)' > /mnt/test.txt && ls -la /mnt/ && cat /mnt/test.txt && echo 'SUCCESS!' && sleep 300"]
+    volumeMounts:
+    - name: data
+      mountPath: /mnt
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
