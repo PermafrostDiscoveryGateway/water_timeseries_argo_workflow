@@ -3,8 +3,20 @@ import toml
 from loguru import logger
 from water_timeseries.downloader import EarthEngineDownloader
 import nest_asyncio
+import sys
+import asyncio
+# Set the event loop policy for better compatibility
+if sys.platform == 'darwin':  # macOS
+    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+else:  # Linux (Kubernetes)
+    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
-nest_asyncio.apply()
+# Only use nest_asyncio if you're in a nested environment
+try:
+    loop = asyncio.get_running_loop()
+    nest_asyncio.apply()  # Only if already running in a loop
+except RuntimeError:
+    pass
 
 
 def load_config(config_path="/app/config/config.toml"):
@@ -58,12 +70,51 @@ def main():
     if args.config and args.config != "/app/config/config.toml":
         with open(args.config, 'r') as f:
             config = toml.load(f)
+            ee_project = config.get("ee", {}).get("project", "pdg-project-406720")
+            final_ee_project = ee_project
+            vector_dataset = config.get("ee",{}).get("vector_dataset", "")
+            final_vector_dataset = vector_dataset
+            save_to_dir = config.get("output", {}).get("base_path", "")
+            file_format = config.get("output", {}).get("format", "")
+            # Get years/months from environment or config with defaults
+            years_config = config.get("range", {}).get("years", [2024])
+            months_config = config.get("range", {}).get("months", [7, 8])
 
-    final_years = [int(y) for y in args.years.split(",")] if args.years else years
-    final_months = [int(m) for m in args.months.split(",")] if args.months else months
-    final_vector_dataset = args.vector_dataset or vector_dataset
-    final_save_to = args.save_to or save_to_file
-    final_ee_project = args.ee_project or ee_project
+            if years_config:
+                if isinstance(years_config, list):
+                    years = years_config
+                elif isinstance(years_config, str):
+                    years = [int(y.strip()) for y in years_config.split(",")]
+                else:
+                    years = [years_config]
+
+            if months_config:
+                if isinstance(months_config, list):
+                    months = months_config
+                elif isinstance(months_config, str):
+                    months = [int(y.strip()) for y in months_config.split(",")]
+                else:
+                    months = [months_config]
+        final_years = years
+        final_months = months
+        if len(final_years) == 1:
+            years_string = str(final_years[0])
+        else:
+            years_string = str(final_years[0]) + '_' + str(final_years[-1])
+        print('need final save to')
+        if len(final_years) == 1:
+            months_string = str(final_months[0])
+        else:
+            months_string = str(final_months[0]) + '_' + str(final_months[-1])
+        file_name = years_string + '_' + months_string + '_dw_download.' + file_format
+        final_save_to = os.path.join(save_to_dir, file_name)
+        print(f"Will save to: {final_save_to}")
+    else:
+        final_years = [int(y) for y in args.years.split(",")] if args.years else years
+        final_months = [int(m) for m in args.months.split(",")] if args.months else months
+        final_vector_dataset = args.vector_dataset or vector_dataset
+        final_save_to = args.save_to or save_to_file
+        final_ee_project = args.ee_project or ee_project
 
     # Set environment variable for EE
     os.environ["EE_PROJECT"] = final_ee_project
