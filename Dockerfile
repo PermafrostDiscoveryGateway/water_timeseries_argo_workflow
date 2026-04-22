@@ -1,4 +1,4 @@
-FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:add-dockerfile
+FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:main
 
 # Install additional Python dependencies
 COPY requirements.txt /tmp/requirements.txt
