@@ -98,7 +98,7 @@ def main():
         final_years = years
         final_months = months
         file_name = ((str(final_years[0]) + '_' + str(final_months[0]) + '_'
-                         + str(final_months[-1]) + str(final_years[-1]))
+                         + str(final_months[-1]) + '_' + str(final_years[-1]))
                      + '_dw_download.' + file_format)
         final_save_to = os.path.join(save_to_dir, file_name)
         print(f"Will save to: {final_save_to}")
