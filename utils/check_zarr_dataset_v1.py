@@ -326,17 +326,17 @@ def inspect_zarr_dates(zarr_path):
             print(f"Still failed: {e2}")
 
 
-# if __name__ == "__main__":
-#     # Usage examples:
-#
-#     # Option 1: Direct path to .zarr folder
-#     # zarr_dataset_path = "path/to/your/data.zarr"  # CHANGE THIS
-#     zarr_dataset_path = "/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/utils/2016_6_102025_dw_download.zarr"
-#
-#     # Option 2: Search for .zarr folders in current directory
-#     # import glob
-#     # zarr_folders = glob.glob("*.zarr")
-#     # for zarr_path in zarr_folders:
-#     #     inspect_zarr_dates(zarr_path)
-#
-#     inspect_zarr_dates(zarr_dataset_path)
+if __name__ == "__main__":
+    # Usage examples:
+
+    # Option 1: Direct path to .zarr folder
+    # zarr_dataset_path = "path/to/your/data.zarr"  # CHANGE THIS
+    zarr_dataset_path = "/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/utils/2016_6_102025_dw_download.zarr"
+
+    # Option 2: Search for .zarr folders in current directory
+    # import glob
+    # zarr_folders = glob.glob("*.zarr")
+    # for zarr_path in zarr_folders:
+    #     inspect_zarr_dates(zarr_path)
+
+    inspect_zarr_dates(zarr_dataset_path)
