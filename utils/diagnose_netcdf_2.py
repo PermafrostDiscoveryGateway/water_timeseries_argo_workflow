@@ -70,13 +70,52 @@ def diagnose_netcdf(nc_path: Union[str, Path]) -> Dict[str, Any]:
             print(f"  Range: {time_info['min']} to {time_info['max']}")
             print(f"  Number of timesteps: {time_info['n_timesteps']}")
 
-            if time_info['is_regular']:
+            if time_info.get('is_regular', False):
                 print(f"  Regular interval: {time_info['frequency']}")
             else:
                 print(f"  ⚠️ Irregular intervals detected")
-
         else:
             print(f"\n❌ No time dimension found in xarray")
+
+            # Manual check for 'date' coordinate since it's common
+            if 'date' in ds.coords:
+                print(f"\n✅ Found 'date' coordinate (trying manual extraction)...")
+                try:
+                    date_values = ds['date'].values
+                    # Try to convert to datetime
+                    try:
+                        pd_times = pd.to_datetime(date_values)
+                        print(f"  Successfully converted to datetime!")
+                        print(f"  Shape: {date_values.shape}")
+                        print(f"  Range: {pd_times.min()} to {pd_times.max()}")
+                        print(f"  Number of timesteps: {len(pd_times)}")
+
+                        # Check if regular
+                        if len(pd_times) > 1:
+                            diffs = pd_times[1:] - pd_times[:-1]
+                            is_regular = len(diffs.unique()) == 1
+                            if is_regular:
+                                print(f"  Regular interval: {diffs[0]}")
+
+                        diagnostic['has_time'] = True
+                        diagnostic['time_info'] = {
+                            'name': 'date',
+                            'shape': date_values.shape,
+                            'dtype': str(ds['date'].dtype),
+                            'values': pd_times,
+                            'min': pd_times.min(),
+                            'max': pd_times.max(),
+                            'n_timesteps': len(pd_times),
+                            'is_regular': len(pd_times) > 1 and len(pd_times[1:] - pd_times[:-1]).unique() == 1,
+                            'frequency': None,
+                            'units': ds['date'].attrs.get('units', None),
+                            'calendar': ds['date'].attrs.get('calendar', None)
+                        }
+                    except Exception as e:
+                        print(f"  Could not convert to datetime: {e}")
+                        print(f"  Raw values (first 3): {date_values[:3]}")
+                except Exception as e:
+                    print(f"  Error reading date coordinate: {e}")
 
             # Try to find time-like variables
             print("\nChecking for time-like variables in data_vars:")
@@ -86,8 +125,15 @@ def diagnose_netcdf(nc_path: Union[str, Path]) -> Dict[str, Any]:
                     try:
                         values = ds[var].values
                         print(f"    First 5 values: {values[:5]}")
-                    except:
-                        print(f"    Could not read values")
+                        # Try to convert if they look like date strings
+                        if values.dtype.kind in ['U', 'S'] and len(values) > 0:
+                            try:
+                                test_convert = pd.to_datetime(values[:3])
+                                print(f"    ✓ These appear to be date strings (convertible to datetime)")
+                            except:
+                                print(f"    ⚠️ String values but not convertible to datetime")
+                    except Exception as e:
+                        print(f"    Could not read values: {e}")
 
         ds.close()
 
@@ -120,8 +166,13 @@ def diagnose_netcdf(nc_path: Union[str, Path]) -> Dict[str, Any]:
                         # Try to read a few values
                         values = var[:5] if len(var) > 0 else []
                         print(f"    First 5 values: {values}")
-                    except:
-                        print(f"    Could not read values")
+
+                        # If this is our date variable, mark has_time as True
+                        if var_name == 'date' or 'date' in var_name.lower():
+                            diagnostic['has_time'] = True
+                            print(f"    ✓ Marked as time dimension")
+                    except Exception as e:
+                        print(f"    Could not read values: {e}")
 
             ds_nc.close()
 
@@ -130,7 +181,6 @@ def diagnose_netcdf(nc_path: Union[str, Path]) -> Dict[str, Any]:
 
     print(f"\n{'=' * 70}")
     return diagnostic
-
 
 def extract_time_from_xarray(ds: xr.Dataset) -> Optional[Dict]:
     """
