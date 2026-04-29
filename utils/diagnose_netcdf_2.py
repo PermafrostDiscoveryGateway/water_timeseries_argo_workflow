@@ -3,6 +3,7 @@ import netCDF4 as nc
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import datetime
 from typing import Union, Optional, List, Tuple, Dict, Any
 
 
@@ -430,6 +431,234 @@ def get_netcdf_dates(
     return dates
 
 
+def get_netcdf_datetimes(
+        nc_path: Union[str, Path],
+        time_coord_name: Optional[str] = None
+) -> List[datetime.datetime]:
+    """
+    Extract dates from a NetCDF file and return as Python datetime objects.
+
+    Parameters:
+    -----------
+    nc_path : str or Path
+        Path to NetCDF file
+    time_coord_name : str, optional
+        Name of time coordinate (auto-detected if None)
+
+    Returns:
+    --------
+    List[datetime.datetime] : List of Python datetime objects
+
+    Examples:
+    ---------
+    >>> datetimes = get_netcdf_datetimes('data.nc')
+    >>> for dt in datetimes[:3]:
+    ...     print(dt, type(dt))
+    2022-06-01 00:00:00 <class 'datetime.datetime'>
+    2022-07-01 00:00:00 <class 'datetime.datetime'>
+    2022-08-01 00:00:00 <class 'datetime.datetime'>
+    """
+    from datetime import datetime
+
+    nc_path = Path(nc_path)
+
+    if not nc_path.exists():
+        raise FileNotFoundError(f"NetCDF file not found: {nc_path}")
+
+    # Open with xarray
+    try:
+        ds = xr.open_dataset(nc_path)
+    except Exception as e:
+        raise ValueError(f"Failed to open NetCDF file: {e}")
+
+    # Find time coordinate
+    if time_coord_name is None:
+        time_candidates = ['time', 'Time', 't', 'datetime', 'date',
+                           'valid_time', 'forecast_time', 'reference_time']
+
+        # Check coordinates first
+        for candidate in time_candidates:
+            if candidate in ds.coords:
+                time_coord_name = candidate
+                break
+
+        # If not found, check data variables
+        if time_coord_name is None:
+            for candidate in time_candidates:
+                if candidate in ds.data_vars:
+                    time_coord_name = candidate
+                    break
+
+        # Look for any variable with time units
+        if time_coord_name is None:
+            for var_name, var in ds.variables.items():
+                if 'units' in var.attrs and 'since' in var.attrs['units'].lower():
+                    time_coord_name = var_name
+                    break
+
+    if time_coord_name is None:
+        ds.close()
+        raise ValueError(
+            f"No time dimension found in {nc_path}. "
+            f"Available coordinates: {list(ds.coords.keys())}"
+        )
+
+    # Extract time values
+    time_var = ds[time_coord_name]
+    time_values = time_var.values
+
+    # Convert to Python datetime objects
+    try:
+        # Handle string dates (like '2022-06-01T00:00:00')
+        if time_values.dtype.kind in ['U', 'S']:  # Unicode or string
+            # Convert to pandas first, then to Python datetime
+            pd_times = pd.to_datetime(time_values)
+            datetimes = [dt.to_pydatetime() for dt in pd_times]
+
+        # Handle numeric time values (like days since 1900-01-01)
+        elif np.issubdtype(time_values.dtype, np.number):
+            # Try to get units and calendar from attributes
+            units = getattr(time_var, 'units', None)
+            calendar = getattr(time_var, 'calendar', 'standard')
+
+            if units and 'since' in units:
+                # Use netCDF4's num2date for robust conversion
+                import netCDF4
+                numeric_times = time_values if isinstance(time_values, np.ndarray) else np.array(time_values)
+                cftime_objs = netCDF4.num2date(numeric_times, units, calendar)
+                # Convert cftime objects to datetime if possible
+                datetimes = []
+                for dt in cftime_objs:
+                    if hasattr(dt, 'to_datetime'):
+                        datetimes.append(dt.to_datetime())
+                    else:
+                        # For calendars that don't convert directly, use pandas as intermediate
+                        pd_timestamp = pd.Timestamp(dt)
+                        datetimes.append(pd_timestamp.to_pydatetime())
+            else:
+                # Try direct pandas conversion
+                pd_times = pd.to_datetime(time_values)
+                datetimes = [dt.to_pydatetime() for dt in pd_times]
+
+        # Handle datetime64 arrays
+        elif np.issubdtype(time_values.dtype, np.datetime64):
+            pd_times = pd.to_datetime(time_values)
+            datetimes = [dt.to_pydatetime() for dt in pd_times]
+
+        else:
+            # Last resort: try pandas conversion
+            pd_times = pd.to_datetime(time_values)
+            datetimes = [dt.to_pydatetime() for dt in pd_times]
+
+    except Exception as e:
+        ds.close()
+        raise ValueError(f"Failed to convert time values to datetime objects: {e}")
+
+    ds.close()
+    return datetimes
+
+
+def get_netcdf_dates(
+        nc_path: Union[str, Path],
+        time_coord_name: Optional[str] = None,
+        as_pandas: bool = True
+) -> Union[pd.DatetimeIndex, np.ndarray]:
+    """
+    Extract dates from a NetCDF file.
+
+    Parameters:
+    -----------
+    nc_path : str or Path
+        Path to NetCDF file
+    time_coord_name : str, optional
+        Name of time coordinate (auto-detected if None)
+    as_pandas : bool, default=True
+        Return pandas DatetimeIndex if True, otherwise return numpy array
+
+    Returns:
+    --------
+    pd.DatetimeIndex or np.ndarray : Array of dates/times
+    """
+    nc_path = Path(nc_path)
+
+    if not nc_path.exists():
+        raise FileNotFoundError(f"NetCDF file not found: {nc_path}")
+
+    # Open with xarray
+    try:
+        ds = xr.open_dataset(nc_path)
+    except Exception as e:
+        raise ValueError(f"Failed to open NetCDF file: {e}")
+
+    # Find time coordinate
+    if time_coord_name is None:
+        time_candidates = ['time', 'Time', 't', 'datetime', 'date',
+                           'valid_time', 'forecast_time', 'reference_time']
+
+        # Check coordinates first
+        for candidate in time_candidates:
+            if candidate in ds.coords:
+                time_coord_name = candidate
+                break
+
+        # If not found, check data variables
+        if time_coord_name is None:
+            for candidate in time_candidates:
+                if candidate in ds.data_vars:
+                    time_coord_name = candidate
+                    break
+
+        # Look for any variable with time units
+        if time_coord_name is None:
+            for var_name, var in ds.variables.items():
+                if 'units' in var.attrs and 'since' in var.attrs['units'].lower():
+                    time_coord_name = var_name
+                    break
+
+    if time_coord_name is None:
+        ds.close()
+        raise ValueError(
+            f"No time dimension found in {nc_path}. "
+            f"Available coordinates: {list(ds.coords.keys())}"
+        )
+
+    # Extract time values
+    time_var = ds[time_coord_name]
+    time_values = time_var.values
+
+    if as_pandas:
+        try:
+            # Handle string dates first
+            if time_values.dtype.kind in ['U', 'S']:
+                dates = pd.to_datetime(time_values)
+            else:
+                # Try direct conversion
+                dates = pd.to_datetime(time_values)
+        except Exception as e:
+            # Try using netCDF4 for more robust conversion
+            try:
+                import netCDF4
+                with nc.Dataset(nc_path, 'r') as nc_ds:
+                    time_var_nc = nc_ds.variables[time_coord_name]
+
+                    # Get units and calendar
+                    units = getattr(time_var_nc, 'units', None)
+                    calendar = getattr(time_var_nc, 'calendar', 'standard')
+
+                    if units and 'since' in units:
+                        # Use netCDF4's num2date
+                        dates = netCDF4.num2date(time_values, units, calendar)
+                        dates = pd.DatetimeIndex([pd.Timestamp(d) for d in dates])
+                    else:
+                        dates = time_values
+            except:
+                dates = time_values
+    else:
+        dates = time_values
+
+    ds.close()
+    return dates
+
 def compare_zarr_and_netcdf(zarr_path: Path, netcdf_path: Path):
     """
     Compare a Zarr dataset with a NetCDF file of the same data.
@@ -464,6 +693,7 @@ def compare_zarr_and_netcdf(zarr_path: Path, netcdf_path: Path):
 
         try:
             dates = get_netcdf_dates(netcdf_path, as_pandas=True)
+            datetimes = get_netcdf_datetimes(netcdf_path)
             print(f"  ✅ Valid NetCDF file")
             print(f"  Number of timesteps: {len(dates)}")
             print(f"  Date range: {dates.min()} to {dates.max()}")
@@ -484,6 +714,7 @@ if __name__ == "__main__":
     # Example 2: Extract dates
     if diagnostic['has_time']:
         dates = get_netcdf_dates(netcdf_file, as_pandas=True)
+        datetimes = get_netcdf_datetimes(netcdf_file)
         print(f"\nExtracted {len(dates)} dates:")
         print(f"  First 5: {dates[:5]}")
         print(f"  Last 5: {dates[-5:]}")
