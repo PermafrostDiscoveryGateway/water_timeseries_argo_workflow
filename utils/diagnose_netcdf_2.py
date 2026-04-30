@@ -558,6 +558,48 @@ def get_netcdf_datetimes(
     return datetimes
 
 
+from typing import List
+import datetime
+
+
+def get_missing_datetimes(current_datetimes: List[datetime.datetime]) -> List[datetime.datetime]:
+    missing_datetimes = []
+    summer_months = [6, 7, 8, 9]
+
+    if not current_datetimes:
+        return missing_datetimes
+
+    # Get the last datetime in the list
+    last_datetime = max(current_datetimes)
+    current_date = datetime.datetime.now()
+
+    # Start from the month after the last_datetime
+    # Move to the first day of the next month
+    if last_datetime.month == 12:
+        start_year = last_datetime.year + 1
+        start_month = 1
+    else:
+        start_year = last_datetime.year
+        start_month = last_datetime.month + 1
+
+    start_date = datetime.datetime(start_year, start_month, 1)
+
+    # Iterate through months from start_date up to present month
+    current_check = start_date
+
+    while current_check <= current_date:
+        # Check if it's a summer month
+        if current_check.month in summer_months:
+            missing_datetimes.append(current_check)
+
+        # Move to next month
+        if current_check.month == 12:
+            current_check = datetime.datetime(current_check.year + 1, 1, 1)
+        else:
+            current_check = datetime.datetime(current_check.year, current_check.month + 1, 1)
+
+    return missing_datetimes
+
 def get_netcdf_dates(
         nc_path: Union[str, Path],
         time_coord_name: Optional[str] = None,
@@ -718,6 +760,11 @@ if __name__ == "__main__":
         print(f"\nExtracted {len(dates)} dates:")
         print(f"  First 5: {dates[:5]}")
         print(f"  Last 5: {dates[-5:]}")
+        latest_datetime = max(datetimes)
+        print(str(latest_datetime))
+        earliest_datetime = min(datetimes)
+        print(str(earliest_datetime))
+        print('got max and min')
 
     # Example 3: Compare Zarr vs NetCDF (for debugging)
     # zarr_dataset = Path("path/to/data.zarr")
