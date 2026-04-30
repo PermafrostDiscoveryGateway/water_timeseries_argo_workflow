@@ -764,6 +764,7 @@ if __name__ == "__main__":
         print(str(latest_datetime))
         earliest_datetime = min(datetimes)
         print(str(earliest_datetime))
+        missing_datetimes = get_missing_datetimes(datetimes)
         print('got max and min')
 
     # Example 3: Compare Zarr vs NetCDF (for debugging)
