@@ -62,11 +62,31 @@ def main():
     APPEND = config["APPEND"]
     ENTIRE = config["ENTIRE"]
     # if not append, download file for the given range
-    CURRENT_TIMESTAMP = str(datetime.datetime.now()).replace(" ", "_")
+    current_datetime = datetime.datetime.now()
+    current_year = current_datetime.year
+    current_month = current_datetime.month
+    CURRENT_TIMESTAMP = str(current_datetime).replace(" ", "_")
     NEW_FILENAME = 'dynamic_world_data_' +CURRENT_TIMESTAMP + '.' + FORMAT
     DOWNLOAD_FILEPATH = os.path.join(DOWNLOAD_DIR, NEW_FILENAME)
     if ENTIRE:
         print(f"Download all data from start to present day in a new file")
+        start_year = 2015
+        start_month = 1
+        MONTHS = list(range(start_year, current_year + 1))
+        YEARS = list(range(start_month, current_month + 1))
+        dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+        ds = dl.download_dw_monthly(
+            vector_dataset=VECTOR_DATASET,
+            name_attribute="id_geohash",
+            years=YEARS,
+            months=MONTHS,
+            save_to_file=str(DOWNLOAD_FILEPATH),
+        )
+        new_file_exists = os.path.exists(DOWNLOAD_FILEPATH)
+        if new_file_exists:
+            print(f"New file {DOWNLOAD_FILEPATH} exists")
+            readable_filesize = human_file_size(Path(DOWNLOAD_FILEPATH))
+            print(f"New file {DOWNLOAD_FILEPATH} size: {readable_filesize}")
     elif APPEND:
         print(f"Append new data to most recent, complete file")
     else:
