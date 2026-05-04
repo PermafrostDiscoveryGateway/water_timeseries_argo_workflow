@@ -89,6 +89,13 @@ def main():
             print(f"New file {DOWNLOAD_FILEPATH} size: {readable_filesize}")
     elif APPEND:
         print(f"Append new data to most recent, complete file")
+        downloaded_files = os.listdir(DOWNLOAD_DIR)
+        files = [os.path.join(DOWNLOAD_DIR, f) for f in os.listdir(DOWNLOAD_DIR)
+                 if os.path.isfile(os.path.join(DOWNLOAD_DIR, f))]
+
+        # Get the most recent (by modification time)
+        most_recent = max(files, key=os.path.getmtime)
+        print(f"Most recent file { most_recent }")
     else:
         print(f"Download all data from start to the end")
         MONTHS = list(range(START_MONTH, END_MONTH + 1))
