@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 import asyncio
 import datetime
+import diagnose_netcdf_2
 # Set the event loop policy for better compatibility
 if sys.platform == 'darwin':  # macOS
     asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
@@ -95,6 +96,10 @@ def main():
 
         # Get the most recent (by modification time)
         most_recent = max(files, key=os.path.getmtime)
+        most_recent_file_datetimes = diagnose_netcdf_2.get_netcdf_datetimes(most_recent)
+        most_recent_datetime = max(most_recent_file_datetimes)
+        most_recent_year = most_recent_datetime.year
+        most_recent_month = most_recent_datetime.month
         print(f"Most recent file { most_recent }")
     else:
         print(f"Download all data from start to the end")
