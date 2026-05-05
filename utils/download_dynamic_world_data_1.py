@@ -100,8 +100,8 @@ def main():
         print(f"Download all data from start to present day in a new file")
         start_year = 2015
         start_month = 1
-        YEARS = list(range(start_year, current_year + 1))
-        MONTHS = list(range(1, 13))
+        MONTHS = list(range(start_year, current_year + 1))
+        YEARS = list(range(start_month, current_month + 1))
         dl = EarthEngineDownloader(ee_auth=True, logger=logger)
         ds = dl.download_dw_monthly(
             vector_dataset=VECTOR_DATASET,
