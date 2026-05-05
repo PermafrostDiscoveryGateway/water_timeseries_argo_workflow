@@ -41,6 +41,34 @@ def load_config(config_path="/app/config/config.toml"):
         return {}
 
 
+def generate_monthly_first_days(max_current_datetime):
+    # Get first day of next month after max_current_datetime
+    if max_current_datetime.month == 12:
+        start_date = datetime.datetime(max_current_datetime.year + 1, 1, 1)
+    else:
+        if max_current_datetime.day == 1:
+            start_date = datetime.datetime(max_current_datetime.year, max_current_datetime.month + 1, 1)
+        else:
+            start_date = datetime.datetime(max_current_datetime.year, max_current_datetime.month + 1, 1)
+
+    # Get first day of current month
+    today = datetime.datetime.now()
+    current_month_first = datetime.datetime(today.year, today.month, 1)
+
+    # Generate list
+    result = []
+    current = start_date
+
+    while current <= current_month_first:
+        result.append(current)
+        # Move to next month
+        if current.month == 12:
+            current = datetime.datetime(current.year + 1, 1, 1)
+        else:
+            current = datetime.datetime(current.year, current.month + 1, 1)
+
+    return result
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Download Dynamic World data")
@@ -100,6 +128,119 @@ def main():
         most_recent_datetime = max(most_recent_file_datetimes)
         most_recent_year = most_recent_datetime.year
         most_recent_month = most_recent_datetime.month
+        new_datetimes = generate_monthly_first_days(most_recent_datetime)
+        new_years = []
+        for new_datetime in new_datetimes:
+            current_year = new_datetime.year
+            new_years.append(current_year)
+        # more than 1 year
+        new_years.sort()
+        new_download_dw_files = []
+        if len(new_years) > 2:
+            first_year = new_years[0]
+            first_year_months = []
+            # get months for the first year
+            last_year = new_years[1]
+            last_year_months = []
+            # get months for the last year
+            for new_datetime in new_datetimes:
+                current_year = new_datetime.year
+                if current_year == first_year:
+                    first_year_months.append(new_datetime.month)
+                if current_year == last_year:
+                    last_year_months.append(new_datetime.month)
+            print("We have more than 1 new year")
+            # TODO get months for first and last year
+            # download the first year
+            for i in range(0, len(new_years)):
+                if i == 0:
+                    print("Doing the first year")
+                    num_file = str(i + 1)
+                    current_download_filename = 'dynamic_world_data_' + CURRENT_TIMESTAMP + '_' + num_file + '_.' + FORMAT
+                    dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+                    ds = dl.download_dw_monthly(
+                        vector_dataset=VECTOR_DATASET,
+                        name_attribute="id_geohash",
+                        years=[first_year],
+                        months=first_year_months,
+                        save_to_file=str(current_download_filename),
+                    )
+                    new_file_exists = os.path.exists(current_download_filename)
+                    if new_file_exists:
+                        print(f"New file {current_download_filename} exists")
+                        readable_filesize = human_file_size(Path(current_download_filename))
+                        print(f"New file {current_download_filename} size: {readable_filesize}")
+                        new_download_dw_files.append(current_download_filename)
+                elif i == len(new_years) - 1:
+                    print("Doing the last year")
+                    num_file = str(i + 1)
+                    current_download_filename = 'dynamic_world_data_' + CURRENT_TIMESTAMP + '_' + num_file + '_.' + FORMAT
+                    dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+                    ds = dl.download_dw_monthly(
+                        vector_dataset=VECTOR_DATASET,
+                        name_attribute="id_geohash",
+                        years=[first_year],
+                        months=first_year_months,
+                        save_to_file=str(current_download_filename),
+                    )
+                    new_file_exists = os.path.exists(current_download_filename)
+                    if new_file_exists:
+                        print(f"New file {current_download_filename} exists")
+                        readable_filesize = human_file_size(Path(current_download_filename))
+                        print(f"New file {current_download_filename} size: {readable_filesize}")
+                        new_download_dw_files.append(current_download_filename)
+                else:
+                    print("Doing other years")
+            # is the next year the current year? if so, download until the current month
+            # is the next year in the future? then download all years in between, 12 months, then the present year, start to now
+        elif len(new_years) == 2:
+            first_year = new_years[0]
+            first_year_months = []
+            # get months for the first year
+            last_year = new_years[1]
+            last_year_months = []
+            # get months for the last year
+            for new_datetime in new_datetimes:
+                current_year = new_datetime.year
+                if current_year == first_year:
+                    first_year_months.append(new_datetime.month)
+                if current_year == last_year:
+                    last_year_months.append(new_datetime.month)
+            # download the first year
+            first_download_filename ='dynamic_world_data_' +CURRENT_TIMESTAMP + '_1_.' + FORMAT
+            dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+            ds = dl.download_dw_monthly(
+                vector_dataset=VECTOR_DATASET,
+                name_attribute="id_geohash",
+                years=[first_year],
+                months=first_year_months,
+                save_to_file=str(first_download_filename),
+            )
+            new_file_exists = os.path.exists(first_download_filename)
+            if new_file_exists:
+                print(f"New file {first_download_filename} exists")
+                readable_filesize = human_file_size(Path(first_download_filename))
+                print(f"New file {first_download_filename} size: {readable_filesize}")
+                new_download_dw_files.append(first_download_filename)
+            # download the second year
+            second_download_filename = 'dynamic_world_data_' + CURRENT_TIMESTAMP + '_2_.' + FORMAT
+            dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+            ds = dl.download_dw_monthly(
+                vector_dataset=VECTOR_DATASET,
+                name_attribute="id_geohash",
+                years=[last_year],
+                months=last_year_months,
+                save_to_file=str(second_download_filename),
+            )
+            new_file_exists = os.path.exists(second_download_filename)
+            if new_file_exists:
+                print(f"New file {second_download_filename} exists")
+                readable_filesize = human_file_size(Path(second_download_filename))
+                print(f"New file {second_download_filename} size: {readable_filesize}")
+                new_download_dw_files.append(second_download_filename)
+                 # TODO combine all the files into one file
+            else:
+                print("We just have 1 near year")
         print(f"Most recent file { most_recent }")
     else:
         print(f"Download all data from start to the end")
