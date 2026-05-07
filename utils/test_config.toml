@@ -1,0 +1,24 @@
+# config.toml
+project = "pdg-project-406720"
+auth = true
+
+vector_dataset = "/Users/helium/ncsa/pdg/water-timeseries-v2/tests/data/lake_polygons.parquet"
+
+# path_to_dynamic_world_data = "/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/dw_downloads"
+water_dataset_file = "/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/dw_downloads/dynamic_world_data_2026-05-06_14:41:13.309220.nc"
+
+path_to_output = "/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/output"
+output_file =  "/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/output/testoutput.parquet"
+
+#years = [2022, 2023, 2024]
+# months = [6, 7, 8, 9]
+bbox_west  = -160
+bbox_east = -155
+bbox_north = 68
+bbox_south = 66
+
+chunksize = 100
+n_jobs= 20
+min_chunksize = 10
+
+near_real_time = false

@@ -10,11 +10,12 @@ dl = EarthEngineDownloader(ee_auth=True, logger=logger)
 
 
 ds = dl.download_dw_monthly(
-    vector_dataset="{path_to_vector_dataset_file",
+    vector_dataset="/Users/helium/ncsa/pdg/water-timeseries-v2/tests/data/Nitze_etal_Lakes_filtered_full_set_V2d.parquet",
     name_attribute="id_geohash",
-    years=[2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025],
+    years=[2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025],
     months=[6, 7, 8, 9, 10],
-    save_to_file="data.zarr",  # Saves to downloads/data.zarr (relative path)
+    save_to_file="data_download.zarr",  # Saves to downloads/data.zarr (relative path)
 )
 
 print('done')
+
