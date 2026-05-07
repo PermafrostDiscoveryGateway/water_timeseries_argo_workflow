@@ -22,7 +22,7 @@ timestamp = str(current_datetime.replace).replace(' ', '_')
 current_year = current_datetime.year
 
 all_years = list(range(2015, current_year + 1))
-all_months = list(range(1, 13))
+all_months = list(range(6, 11))
 
 dynamic_world_dataset_name = 'dynamic_world_' + timestamp + '.zarr'
 dynamic_world_dataset_path = os.path.join(dynamic_world_dir, dynamic_world_dataset_name)
