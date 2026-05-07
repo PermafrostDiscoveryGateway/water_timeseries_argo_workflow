@@ -39,30 +39,20 @@ spec:
           cpu: "2"
           ephemeral-storage: "10Gi"
 
-      command: ["/bin/bash"]
+      command: [ "/bin/bash" ]
       args:
-      - "-c"
-      - |
-        echo "=== Debug Python Environment ==="
-        which python
-        which pip
-        python --version
-        echo "=== Current PYTHONPATH ==="
-        echo $PYTHONPATH
-        echo "=== Installed packages (pip) ==="
-        pip list 2>/dev/null || echo "pip not available"
-        echo "=== Installed packages (uv) ==="
-        uv pip list 2>/dev/null || echo "uv not available"
-        echo "=== Trying to install with uv ==="
-        uv pip install --system python-dotenv google-cloud-storage
-        echo "=== Check if dotenv is now available ==="
-        python -c "import dotenv; print('dotenv found!')" 2>&1
-        echo "=== Create directories ==="
-        mkdir -p /data/water_timeseries/input
-        mkdir -p /data/water_timeseries/dynamic_world
-        mkdir -p /data/water_timeseries/output
-        echo "=== Run the download script ==="
-        python /app/download/download_vector_dataset_file.py
+        - "-c"
+        - |
+          # Install dotenv to the virtual environment (where water-timeseries is installed)
+          /app/.venv/bin/pip install python-dotenv
+          
+          # Create directories
+          mkdir -p /data/water_timeseries/input
+          mkdir -p /data/water_timeseries/dynamic_world
+          mkdir -p /data/water_timeseries/output
+          
+          # Run with the venv Python (has access to water-timeseries and now dotenv)
+          /app/.venv/bin/python /app/download/download_vector_dataset_file.py
 
       env:
       - name: project
