@@ -27,7 +27,7 @@ spec:
       labels:
         long-running-job: "true"
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:download  # Replace with your image
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:download  # Replace with your image
       imagePullPolicy: Always
       resources:
         requests:
