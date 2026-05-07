@@ -8,7 +8,7 @@ RUN uv pip install --system -r /tmp/requirements.txt
 COPY google_cloud_utils/ /app/google_cloud_utils/
 
 # Copy utils folder and everything in it to /app/utils
-COPY utils/ /app/utils/
+COPY download/ /app/download/
 
 # Add /app to Python path so modules can be imported
 ENV PYTHONPATH="/app:${PYTHONPATH}"

@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+      - download  # Add specific branches you want
+      # Or use pattern matching:
+      # - 'feature/*'  # Build for all feature branches
   workflow_dispatch:
     inputs:
       tag:
@@ -11,7 +14,6 @@ on:
         required: false
         type: string
 
-# Add default permissions at workflow level
 permissions:
   contents: read
   packages: write
@@ -48,8 +50,14 @@ jobs:
             TAGS="${TAGS},${REGISTRY}:latest"
           fi
           
-          # Add commit SHA tag (optional - remove if you don't want it)
+          # Add commit SHA tag (useful for all branches)
           TAGS="${TAGS},${REGISTRY}:${GITHUB_SHA::8}"
+          
+          # Optional: Add 'dev-latest' for download branch
+          if [ "$BRANCH_NAME" == "download" ]; then
+            TAGS="${TAGS},${REGISTRY}:download-latest"
+            echo "Added download-latest tag"
+          fi
           
           # If manual dispatch with custom tag
           if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
@@ -62,6 +70,7 @@ jobs:
           # Debug output
           echo "Repository original: ${{ github.repository }}"
           echo "Repository lowercase: ${REPO_LOWER}"
+          echo "Branch: ${BRANCH_NAME}"
           echo "Will push to: ${TAGS}"
 
       - name: Set up Docker Buildx
