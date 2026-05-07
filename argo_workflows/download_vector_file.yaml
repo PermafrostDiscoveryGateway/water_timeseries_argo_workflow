@@ -10,7 +10,7 @@ spec:
     secondsAfterCompletion: 86400
   entrypoint: main
   imagePullSecrets:
-  - name: ghcr-water-timeseries-secret
+  - name: ghcr-secret
   volumes:
   - name: water-timeseries-volume
     persistentVolumeClaim:
