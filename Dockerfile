@@ -5,8 +5,7 @@ COPY requirements.txt /tmp/requirements.txt
 RUN uv pip install --system -r /tmp/requirements.txt
 
 # Explicitly ensure dotenv and google-cloud-storage are installed
-RUN uv pip install --system python-dotenv google-cloud-storage
-
+RUN /app/.venv/bin/pip install python-dotenv google-cloud-storage
 # Copy google_cloud_utils folder and everything in it to /app/google_cloud_utils
 COPY google_cloud_utils/ /app/google_cloud_utils/
 

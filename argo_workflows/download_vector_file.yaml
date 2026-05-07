@@ -43,16 +43,25 @@ spec:
       args:
       - "-c"
       - |
-        # Install missing dependencies (temporary fix)
-        echo "Installing required packages..."
-        pip install python-dotenv google-cloud-storage
-        
-        # Create directories if they don't exist
+        echo "=== Debug Python Environment ==="
+        which python
+        which pip
+        python --version
+        echo "=== Current PYTHONPATH ==="
+        echo $PYTHONPATH
+        echo "=== Installed packages (pip) ==="
+        pip list 2>/dev/null || echo "pip not available"
+        echo "=== Installed packages (uv) ==="
+        uv pip list 2>/dev/null || echo "uv not available"
+        echo "=== Trying to install with uv ==="
+        uv pip install --system python-dotenv google-cloud-storage
+        echo "=== Check if dotenv is now available ==="
+        python -c "import dotenv; print('dotenv found!')" 2>&1
+        echo "=== Create directories ==="
         mkdir -p /data/water_timeseries/input
         mkdir -p /data/water_timeseries/dynamic_world
         mkdir -p /data/water_timeseries/output
-        
-        # Run the download script
+        echo "=== Run the download script ==="
         python /app/download/download_vector_dataset_file.py
 
       env:
