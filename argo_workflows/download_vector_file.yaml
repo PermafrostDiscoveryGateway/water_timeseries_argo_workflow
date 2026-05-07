@@ -1,0 +1,87 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: download-vector-dataset
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+  entrypoint: main
+  imagePullSecrets:
+  - name: ghcr-secret
+  volumes:
+  - name: water-timeseries-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+  - name: gcp-creds
+    secret:
+      secretName: personal-gcp-creds
+      items:
+      - key: key.json
+        path: application_default_credentials.json
+  templates:
+  - name: main
+    metadata:
+      labels:
+        long-running-job: "true"
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:download  # Replace with your image
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "4Gi"
+          cpu: "2"
+          ephemeral-storage: "5Gi"
+        limits:
+          memory: "4Gi"
+          cpu: "2"
+          ephemeral-storage: "10Gi"
+
+      command: ["/bin/bash"]
+      args:
+      - "-c"
+      - |
+        # Create directories if they don't exist
+        mkdir -p /data/water_timeseries/input
+        mkdir -p /data/water_timeseries/dynamic_world
+        mkdir -p /data/water_timeseries/output
+        
+        # Run the download script
+        python /app/download/download_vector_dataset_file.py
+
+      env:
+      - name: project
+        value: "pdg-wg-workflow"
+      - name: vector_dataset_file_url
+        value: "pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"  # Update this
+      - name: base_dir
+        value: "/data/water_timeseries"
+      - name: dynamic_world_dir
+        value: "/data/water_timeseries/dynamic_world"
+      - name: bucket_path
+        value: "bucket_path=pdg-storage-default/water_timeseries_v2/data/input"
+      - name: GOOGLE_APPLICATION_CREDENTIALS
+        value: /root/.config/gcloud/application_default_credentials.json
+      - name: TMPDIR
+        value: /data/tmp
+      - name: TEMP
+        value: /data/tmp
+      - name: TMP
+        value: /data/tmp
+      - name: POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+      - name: POD_NAMESPACE
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.namespace
+
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: water-timeseries-volume
+        mountPath: /data
