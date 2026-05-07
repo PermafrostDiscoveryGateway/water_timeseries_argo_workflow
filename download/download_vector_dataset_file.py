@@ -4,7 +4,7 @@ from google.cloud import storage
 
 # Load environment variables from .env file
 load_dotenv()
-
+print("downloading the file")
 project = os.environ['project']
 vector_dataset_file_url= os.environ['vector_dataset_file_url']
 base_dir= os.environ['base_dir']

@@ -10,7 +10,7 @@ spec:
     secondsAfterCompletion: 86400
   entrypoint: main
   imagePullSecrets:
-  - name: ghcr-water-timeseries-secret  # ← FIXED: Use the new secret
+  - name: ghcr-water-timeseries-secret
   volumes:
   - name: water-timeseries-volume
     persistentVolumeClaim:
@@ -39,20 +39,29 @@ spec:
           cpu: "2"
           ephemeral-storage: "10Gi"
 
-      command: [ "/bin/bash" ]
+      command: ["/bin/bash"]
       args:
-        - "-c"
-        - |
-          # Install dotenv to the virtual environment (where water-timeseries is installed)
-          /app/.venv/bin/pip install python-dotenv
-          
-          # Create directories
-          mkdir -p /data/water_timeseries/input
-          mkdir -p /data/water_timeseries/dynamic_world
-          mkdir -p /data/water_timeseries/output
-          
-          # Run with the venv Python (has access to water-timeseries and now dotenv)
-          /app/.venv/bin/python /app/download/download_vector_dataset_file.py
+      - "-c"
+      - |
+        echo "=== Find site-packages in venv ==="
+        VENV_SITE_PACKAGES=$(/app/.venv/bin/python -c "import site; print(site.getsitepackages()[0])")
+        echo "VenV site-packages: $VENV_SITE_PACKAGES"
+        
+        echo "=== Install dotenv to venv site-packages using system pip ==="
+        /usr/local/bin/python -m pip install --target $VENV_SITE_PACKAGES python-dotenv
+        
+        echo "=== Verify ==="
+        /app/.venv/bin/python -c "import dotenv; print('✓ dotenv installed')"
+        
+        # Create directories
+        mkdir -p /data/water_timeseries/input
+        mkdir -p /data/water_timeseries/dynamic_world
+        mkdir -p /data/water_timeseries/output
+        
+        # Run the script
+        /app/.venv/bin/python /app/download/download_vector_dataset_file.py
+
+       
 
       env:
       - name: project
