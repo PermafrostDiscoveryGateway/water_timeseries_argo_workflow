@@ -10,7 +10,7 @@ spec:
     secondsAfterCompletion: 86400
   entrypoint: main
   imagePullSecrets:
-  - name: ghcr-secret
+  - name: ghcr-water-timeseries-secret  # ← FIXED: Use the new secret
   volumes:
   - name: water-timeseries-volume
     persistentVolumeClaim:
@@ -27,7 +27,7 @@ spec:
       labels:
         long-running-job: "true"
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:download  # Replace with your image
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:download
       imagePullPolicy: Always
       resources:
         requests:
@@ -43,6 +43,10 @@ spec:
       args:
       - "-c"
       - |
+        # Install missing dependencies (temporary fix)
+        echo "Installing required packages..."
+        pip install python-dotenv google-cloud-storage
+        
         # Create directories if they don't exist
         mkdir -p /data/water_timeseries/input
         mkdir -p /data/water_timeseries/dynamic_world
@@ -55,13 +59,11 @@ spec:
       - name: project
         value: "pdg-wg-workflow"
       - name: vector_dataset_file_url
-        value: "pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"  # Update this
+        value: "pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
       - name: base_dir
         value: "/data/water_timeseries"
       - name: dynamic_world_dir
         value: "/data/water_timeseries/dynamic_world"
-      - name: bucket_path
-        value: "bucket_path=pdg-storage-default/water_timeseries_v2/data/input"
       - name: GOOGLE_APPLICATION_CREDENTIALS
         value: /root/.config/gcloud/application_default_credentials.json
       - name: TMPDIR
