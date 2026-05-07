@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  name: download-vector-dataset
+  name: download-all-dynamic-world
   namespace: argo
   annotations:
     workflows.argoproj.io/pod-keep: "OnCompletion"
@@ -31,13 +31,11 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "4Gi"
-          cpu: "2"
-          ephemeral-storage: "5Gi"
+          memory: "32Gi"
+          cpu: "4"
         limits:
-          memory: "4Gi"
-          cpu: "2"
-          ephemeral-storage: "10Gi"
+          memory: "32Gi"
+          cpu: "4"
 
       command: ["/bin/bash"]
       args:
@@ -48,7 +46,7 @@ spec:
         echo "VenV site-packages: $VENV_SITE_PACKAGES"
         
         echo "=== Install dotenv to venv site-packages using system pip ==="
-        /usr/local/bin/python -m pip install --target $VENV_SITE_PACKAGES python-dotenv
+        /usr/local/bin/python -m pip install --target $VENV_SITE_PACKAGES python-dotenv --quiet
         
         echo "=== Verify ==="
         /app/.venv/bin/python -c "import dotenv; print('✓ dotenv installed')"
@@ -58,10 +56,13 @@ spec:
         mkdir -p /data/water_timeseries/dynamic_world
         mkdir -p /data/water_timeseries/output
         
-        # Run the script
-        /app/.venv/bin/python /app/download/download_dynamic_world_all.py
-
-       
+        export PYTHONUNBUFFERED=1
+        export OMP_NUM_THREADS=4
+        export MALLOC_ARENA_MAX=4
+        
+        echo "=== Starting download script at $(date) ==="
+        /app/.venv/bin/python /app/download/download_dynamic_world_all.py 2>&1
+        echo "=== Script finished at $(date) ==="
 
       env:
       - name: project
