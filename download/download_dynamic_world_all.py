@@ -37,3 +37,24 @@ ds = dl.download_dw_monthly(
 )
 
 print('finished downloading')
+
+
+# Your bucket path
+bucket_path = "pdg-storage-default/water_timeseries_v2/data/input"
+
+# Split into bucket name and prefix
+bucket_name = bucket_path.split('/')[0]  # "pdg-storage-default"
+blob_prefix = '/'.join(bucket_path.split('/')[1:])  # "water_timeseries_v2/data/input"
+
+# Initialize client
+bucket = client.bucket(bucket_name)
+
+# Upload a file
+local_file_path = dynamic_world_dataset_path
+blob_path = f"{blob_prefix}/{dynamic_world_dataset_name}"  # Full path including filename
+
+blob = bucket.blob(blob_path)
+blob.upload_from_filename(local_file_path)
+
+print(f"Uploaded to: gs://{bucket_name}/{blob_path}")
+
