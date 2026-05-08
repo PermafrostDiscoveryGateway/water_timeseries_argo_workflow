@@ -4,7 +4,7 @@ import datetime
 from loguru import logger
 from water_timeseries.downloader import EarthEngineDownloader
 from google.cloud import storage
-
+import ee
 # Load environment variables from .env file
 load_dotenv()
 
@@ -24,6 +24,15 @@ vector_dataset_path = os.path.join(base_dir, 'input', 'Nitze_etal_Lakes_filtered
 EE_PROJECT_ID = project
 os.environ["EE_PROJECT"] = EE_PROJECT_ID
 client = storage.Client(project=project)
+try:
+    ee.Initialize(project=EE_PROJECT_ID)
+    # Test a simple operation
+    test_image = ee.Image('LANDSAT/LC08/C02/T1_TOA/LC08_044034_20140318')
+    test_info = test_image.getInfo()
+    logger.info("GEE initialized successfully")
+except Exception as e:
+    logger.error(f"GEE initialization failed: {e}")
+    raise
 
 current_datetime = datetime.datetime.now()
 timestamp = str(current_datetime.replace).replace(' ', '_')
