@@ -11,7 +11,14 @@ load_dotenv()
 project = os.environ['project']
 base_dir= os.environ['base_dir']
 dynamic_world_dir  = os.environ['dynamic_world_dir']
-year = int(os.environ['year'])
+year = os.environ['year']
+if ',' in year:
+    year_parts = year.split(',')
+    new_years = []
+    for part in year_parts:
+        new_year = int(part)
+        new_years.append(new_year)
+    year = new_years
 vector_dataset_path = os.path.join(base_dir, 'input', 'Nitze_etal_Lakes_filtered_full_set_V2d.parquet')
 
 EE_PROJECT_ID = project

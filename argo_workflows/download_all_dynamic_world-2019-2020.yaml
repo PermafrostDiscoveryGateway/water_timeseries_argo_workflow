@@ -1,0 +1,100 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: download-all-dynamic-world-2019-2020
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+  entrypoint: main
+  imagePullSecrets:
+  - name: ghcr-water-timeseries-secret
+  volumes:
+  - name: water-timeseries-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+  - name: gcp-creds
+    secret:
+      secretName: personal-gcp-creds
+      items:
+      - key: key.json
+        path: application_default_credentials.json
+  templates:
+  - name: main
+    metadata:
+      labels:
+        long-running-job: "true"
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:download
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "4"
+        limits:
+          memory: "32Gi"
+          cpu: "4"
+
+      command: ["/bin/bash"]
+      args:
+      - "-c"
+      - |
+        echo "=== Find site-packages in venv ==="
+        VENV_SITE_PACKAGES=$(/app/.venv/bin/python -c "import site; print(site.getsitepackages()[0])")
+        echo "VenV site-packages: $VENV_SITE_PACKAGES"
+        
+        echo "=== Install dotenv to venv site-packages using system pip ==="
+        /usr/local/bin/python -m pip install --target $VENV_SITE_PACKAGES python-dotenv --quiet
+        
+        echo "=== Verify ==="
+        /app/.venv/bin/python -c "import dotenv; print('✓ dotenv installed')"
+        
+        # Create directories
+        mkdir -p /data/water_timeseries/input
+        mkdir -p /data/water_timeseries/dynamic_world
+        mkdir -p /data/water_timeseries/output
+        
+        export PYTHONUNBUFFERED=1
+        export OMP_NUM_THREADS=4
+        export MALLOC_ARENA_MAX=4
+        
+        echo "=== Starting download script at $(date) ==="
+        /app/.venv/bin/python /app/download/download_dynamic_world_all.py 2>&1
+        echo "=== Script finished at $(date) ==="
+
+      env:
+      - name: year
+        value: '2019,2020'
+      - name: project
+        value: "pdg-wg-workflow"
+      - name: vector_dataset_file_url
+        value: "pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
+      - name: base_dir
+        value: "/data/water_timeseries"
+      - name: dynamic_world_dir
+        value: "/data/water_timeseries/dynamic_world"
+      - name: GOOGLE_APPLICATION_CREDENTIALS
+        value: /root/.config/gcloud/application_default_credentials.json
+      - name: TMPDIR
+        value: /data/tmp
+      - name: TEMP
+        value: /data/tmp
+      - name: TMP
+        value: /data/tmp
+      - name: POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+      - name: POD_NAMESPACE
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.namespace
+
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: water-timeseries-volume
+        mountPath: /data
