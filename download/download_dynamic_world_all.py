@@ -21,7 +21,7 @@ current_datetime = datetime.datetime.now()
 timestamp = str(current_datetime.replace).replace(' ', '_')
 current_year = current_datetime.year
 
-all_years = list(range(2015, current_year + 1))
+all_years = list(range(2015, current_year ))
 all_months = list(range(6, 11))
 
 dynamic_world_dataset_name = 'dynamic_world_' + timestamp + '.zarr'
