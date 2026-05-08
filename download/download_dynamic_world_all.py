@@ -11,6 +11,7 @@ load_dotenv()
 project = os.environ['project']
 base_dir= os.environ['base_dir']
 dynamic_world_dir  = os.environ['dynamic_world_dir']
+year = int(os.environ['year'])
 vector_dataset_path = os.path.join(base_dir, 'input', 'Nitze_etal_Lakes_filtered_full_set_V2d.parquet')
 
 EE_PROJECT_ID = project
@@ -31,7 +32,7 @@ dl = EarthEngineDownloader(ee_auth=True, logger=logger)
 ds = dl.download_dw_monthly(
     vector_dataset=vector_dataset_path,
     name_attribute="id_geohash",
-    years=all_years,
+    years=[year],
     months=all_months,
     save_to_file=dynamic_world_dataset_path,
 )

@@ -65,6 +65,8 @@ spec:
         echo "=== Script finished at $(date) ==="
 
       env:
+      - name: year
+        value: '2016'
       - name: project
         value: "pdg-wg-workflow"
       - name: vector_dataset_file_url
