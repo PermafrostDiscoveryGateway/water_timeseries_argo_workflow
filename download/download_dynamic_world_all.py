@@ -44,13 +44,18 @@ all_months = list(range(6, 11))
 dynamic_world_dataset_name = 'dynamic_world_' + timestamp + '.zarr'
 dynamic_world_dataset_path = os.path.join(dynamic_world_dir, dynamic_world_dataset_name)
 
+if year == [2017, 2018]:
+    print('same')
+
 dl = EarthEngineDownloader(ee_auth=True, logger=logger)
 ds = dl.download_dw_monthly(
     vector_dataset=vector_dataset_path,
     name_attribute="id_geohash",
-    years=[year],
+    years=year,
     months=all_months,
     save_to_file=dynamic_world_dataset_path,
+    max_total_requests=100,  # Reduce from 500 to 100
+    n_parallel=2,
 )
 
 print('finished downloading')
