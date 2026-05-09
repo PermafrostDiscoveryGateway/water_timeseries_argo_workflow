@@ -8,6 +8,63 @@ import ee
 # Load environment variables from .env file
 load_dotenv()
 
+bbox_alaska = {
+    'west': -179.0,   # or -179.9 for western Aleutians
+    'south': 51.0,    # southern panhandle tip
+    'east': -130.0,   # eastern panhandle
+    'north': 71.5     # northern coast
+}
+
+bbox_ca_1 = {
+    'west': -141.0,   # Yukon/Alaska border
+    'south': 41.7,
+    'east': -96.8,    # ~ central Manitoba/Saskatchewan border
+    'north': 83.1
+}
+
+bbox_ca_2 = {
+    'west': -96.8,
+    'south': 41.7,
+    'east': -52.6,    # Newfoundland
+    'north': 83.1
+}
+
+bbox_eu_1 = {
+    'west': -30.0,    # Including Iceland, Svalbard
+    'south': 51.0,
+    'east': 11.4,
+    'north': 85.0
+}
+
+bbox_eu_2 = {
+    'west': 11.4,
+    'south': 51.0,
+    'east': 52.8,
+    'north': 85.0
+}
+
+bbox_eu_3 = {
+    'west': 52.8,
+    'south': 51.0,
+    'east': 94.2,
+    'north': 85.0
+}
+
+
+bbox_eu_4 = {
+    'west': 94.2,
+    'south': 51.0,
+    'east': 135.6,
+    'north': 85.0
+}
+
+bbox_eu_5 = {
+    'west': 135.6,
+    'south': 51.0,
+    'east': 177.0,    # Your original eastern limit
+    'north': 85.0
+}
+
 project = os.environ['project']
 base_dir= os.environ['base_dir']
 dynamic_world_dir  = os.environ['dynamic_world_dir']
