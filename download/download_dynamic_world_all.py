@@ -55,7 +55,7 @@ ds = dl.download_dw_monthly(
     months=all_months,
     save_to_file=dynamic_world_dataset_path,
     max_total_requests=100,  # Reduce from 500 to 100
-    n_parallel=2,
+    n_parallel=1,
 )
 
 if ds is None or len(ds.coords['id_geohash']) == 0:
