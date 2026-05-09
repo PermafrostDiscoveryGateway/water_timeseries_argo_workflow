@@ -12,6 +12,16 @@ project = os.environ['project']
 base_dir= os.environ['base_dir']
 dynamic_world_dir  = os.environ['dynamic_world_dir']
 year = os.environ['year']
+bbox_west = os.environ.get('bbox_west')
+bbox_east = os.environ.get('bbox_east')
+bbox_north = os.environ.get('bbox_north')
+bbox_south = os.environ.get('bbox_south')
+if bbox_west and bbox_east and bbox_north and bbox_south:
+    bbox_west = float(bbox_west)
+    bbox_east = float(bbox_east)
+    bbox_south = float(bbox_south)
+    bbox_north = float(bbox_north)
+
 if ',' in year:
     year_parts = year.split(',')
     new_years = []
@@ -48,27 +58,66 @@ if year == [2017, 2018]:
     print('same')
 
 dl = EarthEngineDownloader(ee_auth=True, logger=logger)
-ds = dl.download_dw_monthly(
-    vector_dataset=vector_dataset_path,
-    name_attribute="id_geohash",
-    years=year,
-    months=all_months,
-    save_to_file=dynamic_world_dataset_path,
-    max_total_requests=100,  # Reduce from 500 to 100
-    n_parallel=1,
-)
 
-if ds is None or len(ds.coords['id_geohash']) == 0:
-    logger.error(f"No data downloaded for year {year}")
-    # Try with no_download mode to see what would be requested
-    dl.download_dw_monthly(
+if bbox_north and bbox_east and bbox_west and bbox_south:
+    logger.debug(f"We have a bounding box")
+
+    ds = dl.download_dw_monthly(
         vector_dataset=vector_dataset_path,
         name_attribute="id_geohash",
         years=year,
         months=all_months,
-        no_download=True,  # Just logs what would be downloaded
+        save_to_file=dynamic_world_dataset_path,
+        bbox_north=bbox_north,
+        bbox_east=bbox_east,
+        bbox_west=bbox_west,
+        bbox_south=bbox_south,
+        max_total_requests=100,  # Reduce from 500 to 100
+        n_parallel=1,
     )
-    raise ValueError(f"Empty dataset for year {year}")
+
+
+    if ds is None or len(ds.coords['id_geohash']) == 0:
+        logger.error(f"No data downloaded for year {year}")
+        # Try with no_download mode to see what would be requested
+        dl.download_dw_monthly(
+            vector_dataset=vector_dataset_path,
+            name_attribute="id_geohash",
+            years=year,
+            months=all_months,
+            bbox_north=bbox_north,
+            bbox_east=bbox_east,
+            bbox_west=bbox_west,
+            bbox_south=bbox_south,
+            no_download=True,  # Just logs what would be downloaded
+        )
+        raise ValueError(f"Empty dataset for year {year}")
+else:
+    logger.debug(f"We do not have a bounding box")
+
+    ds = dl.download_dw_monthly(
+        vector_dataset=vector_dataset_path,
+        name_attribute="id_geohash",
+        years=year,
+        months=all_months,
+        save_to_file=dynamic_world_dataset_path,
+        max_total_requests=100,  # Reduce from 500 to 100
+        n_parallel=1,
+    )
+
+    if ds is None or len(ds.coords['id_geohash']) == 0:
+        logger.error(f"No data downloaded for year {year}")
+        # Try with no_download mode to see what would be requested
+        dl.download_dw_monthly(
+            vector_dataset=vector_dataset_path,
+            name_attribute="id_geohash",
+            years=year,
+            months=all_months,
+            no_download=True,  # Just logs what would be downloaded
+        )
+        raise ValueError(f"Empty dataset for year {year}")
+
+
 
 print('finished downloading')
 
