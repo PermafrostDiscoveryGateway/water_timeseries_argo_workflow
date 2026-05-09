@@ -58,6 +58,18 @@ ds = dl.download_dw_monthly(
     n_parallel=2,
 )
 
+if ds is None or len(ds.coords['id_geohash']) == 0:
+    logger.error(f"No data downloaded for year {year}")
+    # Try with no_download mode to see what would be requested
+    dl.download_dw_monthly(
+        vector_dataset=vector_dataset_path,
+        name_attribute="id_geohash",
+        years=year,
+        months=all_months,
+        no_download=True,  # Just logs what would be downloaded
+    )
+    raise ValueError(f"Empty dataset for year {year}")
+
 print('finished downloading')
 
 
