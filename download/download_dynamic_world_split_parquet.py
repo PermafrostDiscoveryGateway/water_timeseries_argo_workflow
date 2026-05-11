@@ -65,6 +65,21 @@ dynamic_world_dataset_path = os.path.join(dynamic_world_dir, dynamic_world_datas
 dl = EarthEngineDownloader(ee_auth=True, logger=logger)
 
 for split_vector_file in current_split_vector_files:
-    from pathlib import Path
+    print(f"Downloading all years for {split_vector_file}")
+    path_to_split_vector_file = os.path.join(split_vector_dataset_dir, split_vector_file)
+    chunk_num = str(int(Path(path_to_split_vector_file).stem.split('_')[-1]))
+    output_filename = 'dynamic_world_split_' + chunk_num + '.zarr'
+    output_filepath = os.path.join(dynamic_world_dir, output_filename)
+    dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+    ds = dl.download_dw_monthly(
+        vector_dataset=path_to_split_vector_file,
+        name_attribute="id_geohash",
+        years=all_years,
+        months=all_months,
+        save_to_file=output_filepath,
+        max_total_requests=500,
+        n_parallel=1,
+    )
+    print(f"Finished downloading all years for {split_vector_file}")
 
-    # chunk_num = int(Path(file_path).stem.split('_')[-1])
+print(f"Finished downloading all years for {dynamic_world_dataset_name}")
