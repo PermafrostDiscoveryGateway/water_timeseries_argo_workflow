@@ -34,7 +34,10 @@ else:
     year = [int(year)]
 
 vector_dataset_path = os.path.join(base_dir, 'input', 'Nitze_etal_Lakes_filtered_full_set_V2d.parquet')
-
+if os.path.exists(vector_dataset_path):
+    logger.info(f"Vector dataset {vector_dataset_path} already exists")
+else:
+    logger.info(f"Path does not exist {vector_dataset_path}")
 EE_PROJECT_ID = project
 os.environ["EE_PROJECT"] = EE_PROJECT_ID
 client = storage.Client(project=project)
