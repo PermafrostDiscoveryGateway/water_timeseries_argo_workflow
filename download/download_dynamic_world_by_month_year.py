@@ -30,9 +30,6 @@ if ',' in str(year):  # Convert to string to handle if year is already a list
         new_year = int(part.strip())
         new_years.append(new_year)
     year = new_years
-else:
-    # Convert single year to int if it's a string
-    year = int(year) if isinstance(year, str) else year
 
 vector_dataset_path = os.path.join(base_dir, 'input', 'Nitze_etal_Lakes_filtered_full_set_V2d.parquet')
 
