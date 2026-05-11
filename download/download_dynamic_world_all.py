@@ -116,6 +116,7 @@ dynamic_world_dataset_path = os.path.join(dynamic_world_dir, dynamic_world_datas
 if year == [2017, 2018]:
     print('same')
 
+print(f"The years are {year} of type {type(year)}")
 dl = EarthEngineDownloader(ee_auth=True, logger=logger)
 
 if bbox_north and bbox_east and bbox_west and bbox_south:
