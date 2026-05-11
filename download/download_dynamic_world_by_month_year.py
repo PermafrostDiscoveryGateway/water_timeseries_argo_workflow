@@ -59,6 +59,7 @@ ds = dl.download_dw_monthly(
     years=year,
     months=all_months,
     save_to_file=dynamic_world_dataset_path,
+    n_parallel=2,
 )
 
 print('finished downloading')
