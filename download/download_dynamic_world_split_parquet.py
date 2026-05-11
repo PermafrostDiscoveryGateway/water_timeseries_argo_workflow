@@ -1,0 +1,72 @@
+import sys
+from dotenv import load_dotenv
+import os
+import datetime
+from loguru import logger
+from water_timeseries.downloader import EarthEngineDownloader
+from google.cloud import storage
+from pathlib import Path
+
+# Load environment variables from .env file (optional custom path)
+if len(sys.argv) > 1:
+    # Custom .env file path provided as command line argument
+    env_path = sys.argv[1]
+    load_dotenv(dotenv_path=env_path)
+    logger.info(f"Loading environment from: {env_path}")
+else:
+    # Default to .env file in current directory
+    load_dotenv()
+    logger.info("Loading environment from default .env file")
+
+project = os.environ['project']
+base_dir = os.environ['base_dir']
+dynamic_world_dir = os.environ['dynamic_world_dir']
+year = os.environ['year']
+split_vector_dataset_dir = os.environ['split_vector_dataset_dir']
+start_split_vector_num= int(os.environ['start_split_vector_num'])
+end_split_vector_num= int(os.environ['end_split_vector_num'])
+
+split_vector_nums = list(range(start_split_vector_num, end_split_vector_num+1))
+
+all_split_vector_files = os.listdir(split_vector_dataset_dir)
+
+current_split_vector_files = []
+
+for file in all_split_vector_files:
+    for file in all_split_vector_files:
+        # Add to current split vector files if one of the split vector nums is in the filename
+        for num in split_vector_nums:
+            if f"_{num:04d}.parquet" in file or f"chunk_{num:04d}" in file:
+                current_split_vector_files.append(file)
+                break
+print(f"Printing the files")
+for each in all_split_vector_files:
+    print(each)
+
+
+
+vector_dataset_path = os.path.join(base_dir, 'input', 'Nitze_etal_Lakes_filtered_full_set_V2d.parquet')
+if os.path.exists(vector_dataset_path):
+    logger.info(f"Vector dataset {vector_dataset_path} already exists")
+else:
+    logger.info(f"Path does not exist {vector_dataset_path}")
+EE_PROJECT_ID = project
+os.environ["EE_PROJECT"] = EE_PROJECT_ID
+client = storage.Client(project=project)
+
+current_datetime = datetime.datetime.now()
+timestamp = str(current_datetime).replace(' ', '_').replace(':', '-')  # Fixed the replace issue
+current_year = current_datetime.year
+
+all_years = list(range(2015, current_year))
+all_months = list(range(6, 11))
+
+dynamic_world_dataset_name = 'dynamic_world_' + timestamp + '.zarr'
+dynamic_world_dataset_path = os.path.join(dynamic_world_dir, dynamic_world_dataset_name)
+
+dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+
+for split_vector_file in current_split_vector_files:
+    from pathlib import Path
+
+    # chunk_num = int(Path(file_path).stem.split('_')[-1])
