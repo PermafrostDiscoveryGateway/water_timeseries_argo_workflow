@@ -6,6 +6,7 @@ from loguru import logger
 from water_timeseries.downloader import EarthEngineDownloader
 from google.cloud import storage
 from pathlib import Path
+import time
 
 # Load environment variables from .env file (optional custom path)
 if len(sys.argv) > 1:
@@ -68,6 +69,7 @@ dl = EarthEngineDownloader(ee_auth=True, logger=logger)
 
 for split_vector_file in current_split_vector_files:
     print(f"Downloading all years for {split_vector_file}")
+    time.sleep(5)
     path_to_split_vector_file = os.path.join(split_vector_dataset_dir, split_vector_file)
     chunk_num = str(int(Path(path_to_split_vector_file).stem.split('_')[-1]))
     output_filename = 'dynamic_world_split_' + chunk_num + '.zarr'
