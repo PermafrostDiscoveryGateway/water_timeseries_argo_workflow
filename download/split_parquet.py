@@ -17,7 +17,7 @@ total_features = len(gdf)
 print(f"Total features: {total_features}")
 
 # Split into chunks of 5000 features each
-chunk_size = 5000
+chunk_size = 500
 num_chunks = (total_features + chunk_size - 1) // chunk_size
 
 print(f"Splitting into {num_chunks} chunks of ~{chunk_size} features each")
