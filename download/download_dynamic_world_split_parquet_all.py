@@ -70,7 +70,7 @@ for split_vector_file in all_split_vector_files:
             years=all_years,
             months=all_months,
             save_to_file=output_filepath,
-            max_total_requests=500,
+            max_total_requests=2000,
             n_parallel=1,
         )
         print(f"Finished downloading all years for {split_vector_file}")
