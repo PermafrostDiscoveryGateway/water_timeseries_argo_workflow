@@ -52,7 +52,9 @@ dynamic_world_dataset_path = os.path.join(dynamic_world_dir, dynamic_world_datas
 
 dl = EarthEngineDownloader(ee_auth=True, logger=logger)
 
-for split_vector_file in all_split_vector_files:
+for i in range(0, len(all_split_vector_files)):
+    split_vector_file = all_split_vector_files[i]
+    logger.debug(f"Doing file {i} of {len(all_split_vector_files)}")
     logger.debug(f"Downloading all years for {split_vector_file}")
     path_to_split_vector_file = os.path.join(split_vector_dataset_dir, split_vector_file)
     chunk_num = str(int(Path(path_to_split_vector_file).stem.split('_')[-1]))
@@ -69,8 +71,8 @@ for split_vector_file in all_split_vector_files:
             years=all_years,
             months=all_months,
             save_to_file=output_filepath,
-            max_total_requests=2000,
-            n_parallel=4,
+            max_total_requests=500,
+            n_parallel=1,
         )
         logger.debug(f"Finished downloading all years for {split_vector_file}")
 
