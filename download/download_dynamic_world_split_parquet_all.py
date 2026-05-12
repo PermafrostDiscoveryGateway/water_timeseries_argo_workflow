@@ -54,7 +54,6 @@ dl = EarthEngineDownloader(ee_auth=True, logger=logger)
 
 for split_vector_file in all_split_vector_files:
     logger.debug(f"Downloading all years for {split_vector_file}")
-    time.sleep(5)
     path_to_split_vector_file = os.path.join(split_vector_dataset_dir, split_vector_file)
     chunk_num = str(int(Path(path_to_split_vector_file).stem.split('_')[-1]))
     output_filename = 'dynamic_world_split_' + chunk_num + '.zarr'
@@ -71,7 +70,7 @@ for split_vector_file in all_split_vector_files:
             months=all_months,
             save_to_file=output_filepath,
             max_total_requests=2000,
-            n_parallel=6,
+            n_parallel=2,
         )
         logger.debug(f"Finished downloading all years for {split_vector_file}")
 
