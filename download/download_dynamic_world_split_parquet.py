@@ -26,6 +26,8 @@ split_vector_dataset_dir = os.environ['split_vector_dataset_dir']
 start_split_vector_num= int(os.environ['start_split_vector_num'])
 end_split_vector_num= int(os.environ['end_split_vector_num'])
 
+existing_dynamic_world_files = os.listdir(dynamic_world_dir)
+
 split_vector_nums = list(range(start_split_vector_num, end_split_vector_num+1))
 
 all_split_vector_files = os.listdir(split_vector_dataset_dir)
@@ -70,16 +72,20 @@ for split_vector_file in current_split_vector_files:
     chunk_num = str(int(Path(path_to_split_vector_file).stem.split('_')[-1]))
     output_filename = 'dynamic_world_split_' + chunk_num + '.zarr'
     output_filepath = os.path.join(dynamic_world_dir, output_filename)
-    dl = EarthEngineDownloader(ee_auth=True, logger=logger)
-    ds = dl.download_dw_monthly(
-        vector_dataset=path_to_split_vector_file,
-        name_attribute="id_geohash",
-        years=all_years,
-        months=all_months,
-        save_to_file=output_filepath,
-        max_total_requests=500,
-        n_parallel=1,
-    )
-    print(f"Finished downloading all years for {split_vector_file}")
+    if os.path.exists(output_filepath):
+        logger.debug(f"File {output_filepath} already exists, skipping")
+    else:
+        logger.debug(f"Downloading to {output_filepath}")
+        dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+        ds = dl.download_dw_monthly(
+            vector_dataset=path_to_split_vector_file,
+            name_attribute="id_geohash",
+            years=all_years,
+            months=all_months,
+            save_to_file=output_filepath,
+            max_total_requests=500,
+            n_parallel=1,
+        )
+        print(f"Finished downloading all years for {split_vector_file}")
 
 print(f"Finished downloading all years for {dynamic_world_dataset_name}")
