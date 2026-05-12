@@ -1,6 +1,5 @@
-# split_parquet_fixed.py
+# split_parquet_no_schema.py
 import pyarrow.parquet as pq
-import pyarrow as pa
 import pandas as pd
 import os
 from pathlib import Path
@@ -14,12 +13,6 @@ Path(output_dir).mkdir(parents=True, exist_ok=True)
 parquet_file = pq.ParquetFile(input_file)
 total_rows = parquet_file.metadata.num_rows
 print(f"Total features: {total_rows}")
-
-# Get the schema and convert to PyArrow Schema
-parquet_schema = parquet_file.schema
-# Convert to the format pandas expects
-arrow_schema = parquet_schema.to_arrow_schema()
-print(f"Schema has {len(arrow_schema)} columns")
 
 chunk_size = 500
 chunk_num = 0
@@ -35,12 +28,8 @@ for batch in parquet_file.iter_batches(batch_size=chunk_size):
 
     output_file = os.path.join(output_dir, f"lakes_chunk_{chunk_num:04d}.parquet")
 
-    # Use the converted schema when saving
-    df.to_parquet(
-        output_file,
-        index=False,
-        schema=arrow_schema  # ← Now this is the correct type!
-    )
+    # Don't specify schema - let pandas infer it (usually works)
+    df.to_parquet(output_file, index=False)
     print(f"Saved chunk {chunk_num}: {len(df)} features")
 
 print(f"\n✅ Done! Created {chunk_num} files")
