@@ -5,8 +5,8 @@ from pathlib import Path
 
 # Configuration
 input_file = "/mnt/argo-filestore/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
-output_dir = "/mnt/argo-filestore/water_timeseries/input/split_lakes_1"
-rows_per_file = 50000
+output_dir = "/mnt/argo-filestore/water_timeseries/input/split_lakes_2"
+rows_per_file = 5000
 
 # local config
 # input_file = "/mnt/argo-filestore/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
