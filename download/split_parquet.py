@@ -5,7 +5,7 @@ from pathlib import Path
 
 # Load the full dataset
 input_file = "/mnt/argo-filestore/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
-output_dir = "/mnt/argo-filestore/water_timeseries/input/split_lakes_1"
+output_dir = "/mnt/argo-filestore/water_timeseries/input/split_lakes_2"
 
 # Create output directory
 Path(output_dir).mkdir(parents=True, exist_ok=True)
