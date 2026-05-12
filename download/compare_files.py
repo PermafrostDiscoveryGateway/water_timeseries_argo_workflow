@@ -92,7 +92,7 @@ def compare_parquet_files(original, split):
     # Let's try to infer the row range from the filename
     import re
     part_num = int(re.search(r'part_(\d+)', split).group(1))
-    rows_per_file = 1000  # Change this to match what you used
+    rows_per_file = 50000  # Change this to match what you used
 
     start_row = part_num * rows_per_file
     end_row = min(start_row + rows_per_file, orig_total_rows)
