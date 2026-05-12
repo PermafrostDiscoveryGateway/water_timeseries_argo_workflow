@@ -1,5 +1,6 @@
-# split_parquet_dask.py
-import dask.dataframe as dd
+# split_parquet_simple_fix.py
+import pyarrow.parquet as pq
+import pandas as pd
 import os
 from pathlib import Path
 
@@ -8,24 +9,34 @@ output_dir = "/mnt/argo-filestore/water_timeseries/input/split_lakes_1"
 
 Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-# Read with dask (lazy loading - doesn't load into memory)
-print("Opening parquet file with dask...")
-ddf = dd.read_parquet(input_file)
-
-# Get total rows (requires compute, but only metadata)
-total_rows = len(ddf)
+# Open the parquet file
+parquet_file = pq.ParquetFile(input_file)
+total_rows = parquet_file.metadata.num_rows
 print(f"Total features: {total_rows}")
 
-# Repartition into chunks of roughly 500 rows
+# Get the schema to use for all chunks
+schema = parquet_file.schema
+
 chunk_size = 500
-n_partitions = max(1, total_rows // chunk_size)
-ddf = ddf.repartition(npartitions=n_partitions)
+chunk_num = 0
 
-# Write each partition as a separate file
-print(f"Writing {n_partitions} chunks...")
-for i, partition in enumerate(ddf.partitions):
-    output_file = os.path.join(output_dir, f"lakes_chunk_{i+1:04d}.parquet")
-    partition.to_parquet(output_file, index=False)
-    print(f"Saved partition {i+1} to {output_file}")
+print(f"Splitting into chunks of {chunk_size} features...")
 
-print(f"\n✅ Done! Created {n_partitions} files")
+# Iterate through batches
+for batch in parquet_file.iter_batches(batch_size=chunk_size):
+    chunk_num += 1
+
+    # Convert to pandas
+    df = batch.to_pandas()
+
+    output_file = os.path.join(output_dir, f"lakes_chunk_{chunk_num:04d}.parquet")
+
+    # Use the original schema when saving
+    df.to_parquet(
+        output_file,
+        index=False,
+        schema=schema  # ← This forces consistent schema!
+    )
+    print(f"Saved chunk {chunk_num}: {len(df)} features")
+
+print(f"\n✅ Done! Created {chunk_num} files")
