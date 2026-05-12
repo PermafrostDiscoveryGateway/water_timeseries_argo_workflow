@@ -71,7 +71,7 @@ for split_vector_file in all_split_vector_files:
             months=all_months,
             save_to_file=output_filepath,
             max_total_requests=2000,
-            n_parallel=1,
+            n_parallel=8,
         )
         logger.debug(f"Finished downloading all years for {split_vector_file}")
 
