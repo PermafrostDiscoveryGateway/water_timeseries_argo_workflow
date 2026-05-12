@@ -9,9 +9,9 @@ output_dir = "/mnt/argo-filestore/water_timeseries/input/split_lakes_1"
 rows_per_file = 50000
 
 # local config
-input_file = "/mnt/argo-filestore/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
-output_dir = "/mnt/argo-filestore/water_timeseries/input/split_lakes_1"
-rows_per_file = 50000
+# input_file = "/mnt/argo-filestore/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
+# output_dir = "/mnt/argo-filestore/water_timeseries/input/split_lakes_1"
+# rows_per_file = 50000
 
 # Create output directory if it doesn't exist
 Path(output_dir).mkdir(parents=True, exist_ok=True)
