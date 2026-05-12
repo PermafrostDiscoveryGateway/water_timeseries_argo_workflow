@@ -31,25 +31,10 @@ existing_dynamic_world_files = os.listdir(dynamic_world_dir)
 
 split_vector_nums = list(range(start_split_vector_num, end_split_vector_num+1))
 
+logger.debug(f"Getting all the split vector files")
 all_split_vector_files = os.listdir(split_vector_dataset_dir)
+logger.debug(f"We have {len(all_split_vector_files)} split vector files")
 
-current_split_vector_files = []
-
-for file in all_split_vector_files:
-    for file in all_split_vector_files:
-        # Add to current split vector files if one of the split vector nums is in the filename
-        for num in split_vector_nums:
-            if f"_{num:04d}.parquet" in file or f"chunk_{num:04d}" in file:
-                current_split_vector_files.append(file)
-                break
-print(f"Printing the files")
-for each in all_split_vector_files:
-    print(each)
-
-for each in current_split_vector_files:
-    file_path = os.path.join(split_vector_dataset_dir, each)
-    chunk_num = int(Path(file_path).stem.split('_')[-1])
-    print(f"Chunk {chunk_num}")
 
 EE_PROJECT_ID = project
 os.environ["EE_PROJECT"] = EE_PROJECT_ID
