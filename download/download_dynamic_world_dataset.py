@@ -8,7 +8,7 @@ print("downloading the file")
 project = os.environ['project']
 historical_dynamic_world_file= os.environ['historical_dynamic_world_file']
 base_dir= os.environ['base_dir']
-dynamic_world_dir  = os.environ['dynamic_world_dir']
+dynamic_world_historical_dir  = os.environ['dynamic_world_historical_dir']
 
 EE_PROJECT_ID = project
 
