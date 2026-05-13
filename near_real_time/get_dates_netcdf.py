@@ -2,11 +2,16 @@ import netCDF4 as nc
 import pandas as pd
 from netCDF4 import num2date
 from datetime import datetime
+from loguru import logger
+import os
+from water_timeseries.downloader import EarthEngineDownloader
 from dateutil.relativedelta import relativedelta
 # dynamic_world_data = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/input/lakes_dw_V2d.nc'
 dynamic_world_data = '/mnt/argo-filestore/water_timeseries/dynamic_world_data/lakes_dw_V2d.nc'
 
 vector_lake_file = '/mnt/argo-filestore/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet'
+
+new_dynamic_world_data_dir = '/mnt/argo-filestore/water_timeseries/new_dynamic_world_data'
 
 def find_missing_summer_dates(existing_dates, current_date=None):
     """
@@ -163,7 +168,7 @@ def get_dates_manual(netcdf_path):
 
 # Choose one of the methods above - here's the recommended approach:
 
-dynamic_world_data = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/input/lakes_dw_V2d.nc'
+# dynamic_world_data = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/input/lakes_dw_V2d.nc'
 
 # Method 1: Using xarray (simplest and most reliable)
 print("=== Using xarray to extract dates ===")
@@ -235,5 +240,30 @@ def check_missing_data_in_netcdf(netcdf_path):
 missing = check_missing_data_in_netcdf(dynamic_world_data)
 print(missing)
 print('found missing dates')
+missing_years = []
+missing_months = []
+for date in missing:
+    if date.year not in missing_years:
+        missing_years.append(date.year)
+    if date.month not in missing_months:
+        missing_months.append(date.month)
+print('got missing years and months')
 
 print("download these dates for all lake_ids")
+current_date = str(datetime.now())
+current_date_stamp = current_date.split(' ')[0]
+current_date_stamp = current_date_stamp.replace('-', '_')
+download_filename = 'dynamic_world_download_' + current_date_stamp + '.nc'
+download_filepath = os.path.join(new_dynamic_world_data_dir, download_filename)
+# DOWNLOAD INDIVIDUAL NETCDF FILES FROM THE SPLIT FILES
+dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+ds = dl.download_dw_monthly(
+    vector_dataset=vector_lake_file,
+    name_attribute="id_geohash",
+    years=missing_years,
+    months=missing_months,
+    save_to_file=download_filepath,
+    max_total_requests=500,
+    n_parallel=1,
+)
+logger.debug(f"Finished downloading all years for {vector_lake_file}")
