@@ -3,6 +3,9 @@ import pandas as pd
 from netCDF4 import num2date
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
+# dynamic_world_data = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/input/lakes_dw_V2d.nc'
+dynamic_world_data = '/mnt/argo-filestore/water_timeseries/dynamic_world_data/lakes_dw_V2d.nc'
+
 
 
 def find_missing_summer_dates(existing_dates, current_date=None):
@@ -229,7 +232,6 @@ def check_missing_data_in_netcdf(netcdf_path):
 
 
 # Usage
-dynamic_world_data = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/input/lakes_dw_V2d.nc'
 missing = check_missing_data_in_netcdf(dynamic_world_data)
 print(missing)
 print('found missing dates')
