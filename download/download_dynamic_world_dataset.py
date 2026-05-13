@@ -25,6 +25,7 @@ print('we ')
 blob_name = blob.name
 blob_name_stem = blob_name.split('/')[-1]
 local_path = os.path.join(dynamic_world_historical_dir, blob_name_stem )
+print(f"The local path is {local_path}")
 # Download to local file
 blob.download_to_filename(local_path)
 print("Downloaded the data")
