@@ -4,7 +4,18 @@ from netCDF4 import num2date
 from datetime import datetime
 from loguru import logger
 import os
+import sys
+from dotenv import load_dotenv
 from water_timeseries.downloader import EarthEngineDownloader
+if len(sys.argv) > 1:
+    # Custom .env file path provided as command line argument
+    env_path = sys.argv[1]
+    load_dotenv(dotenv_path=env_path)
+    logger.info(f"Loading environment from: {env_path}")
+else:
+    # Default to .env file in current directory
+    load_dotenv()
+    logger.info("Loading environment from default .env file")
 project = os.environ['project']
 EE_PROJECT_ID = project
 os.environ["EE_PROJECT"] = EE_PROJECT_ID
