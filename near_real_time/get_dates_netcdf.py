@@ -5,6 +5,9 @@ from datetime import datetime
 from loguru import logger
 import os
 from water_timeseries.downloader import EarthEngineDownloader
+project = os.environ['project']
+EE_PROJECT_ID = project
+os.environ["EE_PROJECT"] = EE_PROJECT_ID
 from dateutil.relativedelta import relativedelta
 # dynamic_world_data = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/input/lakes_dw_V2d.nc'
 dynamic_world_data = '/mnt/argo-filestore/water_timeseries/dynamic_world_data/lakes_dw_V2d.nc'
