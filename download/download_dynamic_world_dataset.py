@@ -21,9 +21,10 @@ blob_path = '/'.join(gs_url.replace('gs://', '').split('/')[1:])
 
 bucket = client.bucket(bucket_name)
 blob = bucket.blob(blob_path)
+print('we ')
 blob_name = blob.name
 blob_name_stem = blob_name.split('/')[-1]
-local_path = os.path.join(base_dir, 'input', blob_name_stem )
+local_path = os.path.join(dynamic_world_historical_dir, blob_name_stem )
 # Download to local file
 blob.download_to_filename(local_path)
 print("Downloaded the data")
