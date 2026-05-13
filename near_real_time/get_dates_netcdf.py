@@ -6,7 +6,7 @@ from dateutil.relativedelta import relativedelta
 # dynamic_world_data = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/input/lakes_dw_V2d.nc'
 dynamic_world_data = '/mnt/argo-filestore/water_timeseries/dynamic_world_data/lakes_dw_V2d.nc'
 
-
+vector_lake_file = '/mnt/argo-filestore/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet'
 
 def find_missing_summer_dates(existing_dates, current_date=None):
     """
