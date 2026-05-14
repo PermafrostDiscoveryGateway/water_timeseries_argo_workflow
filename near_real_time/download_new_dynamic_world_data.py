@@ -197,6 +197,7 @@ def check_missing_data_in_netcdf(netcdf_path):
         print("\n✓ All summer months are present!")
         return []
 
+
 def download_new_dynamic_world_data(env_path=None):
     if env_path is None:
         load_dotenv()
@@ -224,8 +225,7 @@ def download_new_dynamic_world_data(env_path=None):
 
     if not missing_dates:
         logger.debug(f"No missing dates found in {dynamic_world_data_file}")
-        logger.debug(f"Returning most recent file {most_recent_dynamic_world_file}")
-        return most_recent_dynamic_world_file
+        return
     logger.debug(f"Missing dates found are {missing_dates}")
     missing_years = []
     missing_months = []
@@ -259,13 +259,10 @@ def download_new_dynamic_world_data(env_path=None):
 
     logger.debug(f"Finished downloading to {download_filepath}")
 
-    logger.debug("Combining existing ")
-    new_dynamic_world_filename = 'lakes_dw_V2d_' + current_date_stamp + '.nc'
-    new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
+    # Merge the existing and new data
+    logger.debug("Merging existing data with new data...")
 
-    # TODO combine these 2 files
-    # new_dynamic_world_data_file
-    # most_recent_dynamic_world_file
+    # Open both datasets using xarray
     existing_ds = xr.open_dataset(most_recent_dynamic_world_file)
     new_ds = xr.open_dataset(download_filepath)
 
@@ -281,35 +278,50 @@ def download_new_dynamic_world_data(env_path=None):
         mask = ~new_ds.date.isin(list(overlapping_dates))
         new_ds = new_ds.sel(date=mask)
 
-    # Create DWDataset instances for both
-    existing_dw = water_timeseries.dataset.DWDataset(existing_ds)
-    new_dw = water_timeseries.dataset.DWDataset(new_ds)
+    # Simple concatenation along date dimension
+    # This doesn't require matching id_geohash values
+    merged_ds = xr.concat([existing_ds, new_ds], dim="date")
 
-    merged_dw = existing_dw.merge(new_dw, how="date")
+    # Sort by date
+    merged_ds = merged_ds.sortby("date")
+
+    # Verify the merge was successful
+    final_dates = pd.to_datetime(merged_ds.date.values)
+    logger.info(f"Original dates: {len(existing_dates)}")
+    logger.info(f"New dates added: {len(new_dates)}")
+    logger.info(f"Total dates after merge: {len(final_dates)}")
+    logger.info(f"Date range after merge: {final_dates.min()} to {final_dates.max()}")
 
     # Create the final filename with timestamp
     new_dynamic_world_filename = 'lakes_dw_V2d_' + current_date_stamp + '.nc'
     new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
 
     # Save the merged dataset
-    merged_dw.ds.to_netcdf(new_dynamic_world_data_file)
+    merged_ds.to_netcdf(new_dynamic_world_data_file)
 
     logger.debug(f"Successfully merged datasets!")
-
     logger.debug(f"Original file: {most_recent_dynamic_world_file}")
     logger.debug(f"New data file: {download_filepath}")
     logger.debug(f"Merged file saved as: {new_dynamic_world_data_file}")
 
-    # Optional: Print summary of the merged data
-    merged_dates = pd.to_datetime(merged_dw.ds.date.values)
-    logger.info(f"Merged dataset contains {len(merged_dates)} dates")
-    logger.info(f"Date range: {merged_dates.min()} to {merged_dates.max()}")
-    logger.info(f"Number of lakes: {len(merged_dw.object_ids_)}")
+    # Optional: Print summary statistics about lake coverage
+    existing_lakes = set(existing_ds.id_geohash.values)
+    new_lakes = set(new_ds.id_geohash.values)
+    common_lakes = existing_lakes & new_lakes
+    only_in_existing = existing_lakes - new_lakes
+    only_in_new = new_lakes - existing_lakes
+
+    logger.info(f"Lake coverage summary:")
+    logger.info(f"  - Lakes in existing dataset: {len(existing_lakes)}")
+    logger.info(f"  - Lakes in new dataset: {len(new_lakes)}")
+    logger.info(f"  - Common lakes: {len(common_lakes)}")
+    logger.info(f"  - Lakes only in existing: {len(only_in_existing)}")
+    logger.info(f"  - Lakes only in new: {len(only_in_new)}")
 
     # Close datasets to free memory
     existing_ds.close()
     new_ds.close()
-    merged_dw.ds.close()
+    merged_ds.close()
 
     return new_dynamic_world_data_file
 
