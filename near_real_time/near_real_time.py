@@ -162,7 +162,7 @@ def main():
         lake_chunk_size=2000,
         n_jobs=1
     )
-
+    logger.debug(f"Results saved to {output_dir}")
 
 if __name__ == "__main__":
     main()
