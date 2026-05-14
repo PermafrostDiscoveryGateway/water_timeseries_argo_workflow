@@ -39,6 +39,50 @@ This IP would be in filestore-pv.yaml under spec, nfs, server
     --allow=tcp:111,udp:111,tcp:2049,udp:2049 \
     --source-ranges=10.0.0.0/8`
 
+# creating the cluster
+
+This pipeline will exceed the specs for the autopilot cluster. So after filestore is set up (or verified)
+
+cluster creation
+
+`gcloud container clusters create water-cluster \
+    --region=us-west1 \
+    --network=pdg-network-1 \
+    --subnetwork=pdg-subnet-us-west1 \
+    --machine-type=n2-highmem-4 \
+    --num-nodes=2 \
+    --enable-autoscaling \
+    --min-nodes=2 \
+    --max-nodes=10 \
+    --enable-ip-alias`
+
+output of `kubectx`
+
+`gke_pdg-project-406720_us-west1_water-cluster
+`
+
+# whitelist cluster
+
+`gcloud container clusters update water-cluster --region us-west1 \
+    --enable-master-authorized-networks \
+    --master-authorized-networks $MY_IP/32`
+
+# create argo namespace
+
+`kubectl create namespace argo`
+kubectl get pods -n argo`
+
+If you see no pods, run the following command to install argo workflow
+
+`kubectl apply -n argo -f "https://github.com/argoproj/argo-workflows/releases/download/v3.6.5/quick-start-minimal.yaml"
+`
+
+In order to access the argo workflow UI, you need to port forward the argo server to your local machine using this command
+
+`kubectl -n argo port-forward deployment/argo-server 2746:2746`
+
+
+
 # PV and PVC
 
 After setting up filestore and adding the IP to filestore-pv.yaml, create a PersistentVolume with this command
