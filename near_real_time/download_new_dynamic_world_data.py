@@ -221,11 +221,11 @@ def download_new_dynamic_world_data(env_path=None):
     logger.debug(f"Vector lake file: {vector_lake_file}")
     logger.debug(f"New dynamic world data dir: {new_dynamic_world_data_dir}")
 
-    missing_dates = check_missing_data_in_netcdf(dynamic_world_data_file)
+    missing_dates = check_missing_data_in_netcdf(most_recent_dynamic_world_file)
 
-    if not missing_dates:
+    if not missing_dates or len(missing_dates) == 0:
         logger.debug(f"No missing dates found in {dynamic_world_data_file}")
-        return
+        return most_recent_dynamic_world_file
     logger.debug(f"Missing dates found are {missing_dates}")
     missing_years = []
     missing_months = []
