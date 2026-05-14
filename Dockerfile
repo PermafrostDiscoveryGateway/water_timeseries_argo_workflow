@@ -10,6 +10,8 @@ COPY google_cloud_utils/ /app/google_cloud_utils/
 # Copy utils folder and everything in it to /app/utils
 COPY utils/ /app/utils/
 
+COPY near_real_time /app/near_real_time
+
 # Add /app to Python path so modules can be imported
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 
