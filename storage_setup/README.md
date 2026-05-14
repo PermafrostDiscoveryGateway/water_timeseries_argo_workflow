@@ -4,7 +4,7 @@ Before other steps, use this command
 
 # create filestore
 
-Create a filestore. This is the first step. You can also use an existing filestore.
+Create a filestore. This is the first step. You can also use an existing filestore if it is already created.
 
 `gcloud filestore instances create argo-filestore \
     --zone=us-west1-c \
@@ -87,4 +87,4 @@ to remove
 
 `kubectl -n argo delete -f multi-pvc-inspectors.yaml`
 
-Once these steps are done, you are ready to run the 
+This sets up the storage.
