@@ -128,6 +128,12 @@ def precompute_nrt_breakpoints(
         return pd.DataFrame()
 
 def main():
+    # env_path = os.environ.get('ENV_FILE_PATH', '/data/.env')
+    # if Path(env_path).exists():
+    #     load_dotenv(env_path)
+    # else:
+    #     # Fall back to default location
+    #     load_dotenv()
     env_path = None
     if len(sys.argv) > 1:
         # Custom .env file path provided as command line argument

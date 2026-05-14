@@ -1,0 +1,171 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: near-real-time  # Changed name
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+  entrypoint: main
+  imagePullSecrets:
+  - name: ghcr-secret
+  volumes:
+  - name: lake-drainage-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+  - name: gcp-creds
+    secret:
+      secretName: personal-gcp-creds
+      items:
+      - key: key.json
+        path: application_default_credentials.json
+  - name: earth-engine-creds
+    secret:
+      secretName: earth-engine-creds
+      items:
+      - key: credentials
+        path: credentials
+  # Removed config-file volume since no config file needed
+  templates:
+  - name: main
+    metadata:
+      labels:
+        long-running-job: "true"
+    container:
+      # Updated image to your new branch
+      image: ghcr.io/tcnichol/water-timeseries:3-near-real-time-run-argo-workflow
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "16Gi"
+          cpu: "4"
+          ephemeral-storage: "5Gi"
+        limits:
+          memory: "18Gi"
+          cpu: "4"
+          ephemeral-storage: "10Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e  # Exit on error
+          set -x  # Print commands as they execute
+          
+          # Load .env file from Filestore
+          ENV_FILE="/data/.env"  # Or wherever it lives in your Filestore
+          if [ -f "$ENV_FILE" ]; then
+            echo "Loading environment variables from $ENV_FILE"
+            set -a  # automatically export all variables
+            source "$ENV_FILE"
+            set +a
+            echo "Loaded env vars: $(grep -v '^#' $ENV_FILE | cut -d= -f1 | tr '\n' ' ')"
+          else
+            echo "WARNING: .env file not found at $ENV_FILE"
+          fi
+          
+          echo "=== STARTING NEAR REAL-TIME BREAKPOINT JOB ==="
+          echo "Timestamp: $(date)"
+          echo "Hostname: $(hostname)"
+          echo "Pod: ${POD_NAME:-unknown}"
+          
+          # Create all required directories
+          mkdir -p /data/input /data/output /data/parquet_input
+          mkdir -p /data/checkpoint /data/temp_netcdf /data/subsets /data/breakpoints
+          
+          # Check available space and system info
+          echo "=== SYSTEM INFORMATION ==="
+          df -h /data
+          echo "Memory info:"
+          free -h
+          echo "CPU info:"
+          lscpu | grep -E "^(CPU\(s\):|Model name:|Architecture:)"
+          echo "Python version:"
+          python --version
+          echo "Pip list:"
+          pip list
+          
+          # Set permissions
+          chmod -R 755 /data/checkpoint /data/temp_netcdf /data/subsets /data/breakpoints
+          
+          # Environment variables dump (excluding secrets)
+          echo "=== ENVIRONMENT VARIABLES ==="
+          env | grep -v "KEY\|TOKEN\|SECRET\|PASSWORD\|CREDENTIAL" | sort
+          
+          # Check if credentials exist
+          echo "=== CREDENTIALS CHECK ==="
+          ls -la /root/.config/gcloud/
+          ls -la /root/.config/earthengine/
+          
+          echo "=== VOLUME CONTENTS CHECK ==="
+          echo "/data directory structure:"
+          find /data -type f -name "*.nc" -o -name "*.csv" -o -name "*.json" | head -20
+          echo "Total files in /data: $(find /data -type f | wc -l)"
+          
+          # Create a debug directory for logs
+          DEBUG_DIR="/data/debug_$(date +%Y%m%d_%H%M%S)"
+          mkdir -p "$DEBUG_DIR"
+          
+          # Run the near-real-time breakpoint script
+          echo "=== STARTING NEAR REAL-TIME BREAKPOINT SCRIPT ==="
+          
+          # Run with output capture
+          python /app/near_real_time/near_real_time.py 2>&1 | tee "$DEBUG_DIR/script_output.log"
+          
+          SCRIPT_EXIT_CODE=${PIPESTATUS[0]}
+          
+          echo "=== SCRIPT COMPLETED ==="
+          echo "Exit code: $SCRIPT_EXIT_CODE"
+          echo "Timestamp: $(date)"
+          
+          # Capture additional diagnostics if script failed
+          if [ $SCRIPT_EXIT_CODE -ne 0 ]; then
+            echo "=== SCRIPT FAILED - CAPTURING DEBUG INFO ==="
+            
+            # Save all possible debug info
+            kubectl -n argo get pod $POD_NAME -o yaml > "$DEBUG_DIR/pod_yaml.log"
+            
+            # Keep container alive regardless of pod GC settings
+            echo "Debug mode activated. Pod will remain for 6 hours."
+            echo "Use: kubectl -n argo exec -it $POD_NAME -- /bin/bash"
+            
+            # Create a marker file to indicate debugging
+            touch "$DEBUG_DIR/DEBUG_MODE_ACTIVE"
+            
+            # Wait for debugger
+            sleep 21600
+          fi
+          
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: ENV_FILE_PATH
+        value: "/data/.env"
+      - name: GOOGLE_APPLICATION_CREDENTIALS
+        value: /root/.config/gcloud/application_default_credentials.json
+      - name: EARTHENGINE_TOKEN
+        value: /root/.config/earthengine/credentials
+      - name: EE_CLOUD_PROJECT
+        value: "pdg-wg-workflow"
+      - name: POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+      - name: POD_NAMESPACE
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.namespace
+      # Add NRT-specific environment variables
+      - name: ANALYSIS_DATE
+        value: "2024-01-01"  # Change to your desired analysis date
+      - name: DATA_AGGREGATION_PERIOD
+        value: "monthly"  # or "all"
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: earth-engine-creds
+        mountPath: /root/.config/earthengine
+        readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data
+      # Removed config-file volumeMount
