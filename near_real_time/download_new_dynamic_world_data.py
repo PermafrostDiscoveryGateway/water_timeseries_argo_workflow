@@ -8,34 +8,6 @@ import sys
 from dotenv import load_dotenv
 from water_timeseries.downloader import EarthEngineDownloader
 
-if len(sys.argv) > 1:
-    # Custom .env file path provided as command line argument
-    env_path = sys.argv[1]
-    load_dotenv(dotenv_path=env_path)
-    logger.info(f"Loading environment from: {env_path}")
-else:
-    # Default to .env file in current directory
-    load_dotenv()
-    logger.info("Loading environment from default .env file")
-project = os.environ['project']
-EE_PROJECT_ID = project
-os.environ["EE_PROJECT"] = EE_PROJECT_ID
-from dateutil.relativedelta import relativedelta
-
-# config for production
-# dynamic_world_data = '/mnt/argo-filestore/water_timeseries/dynamic_world_data/lakes_dw_V2d.nc'
-#
-# vector_lake_file = '/mnt/argo-filestore/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet'
-#
-# new_dynamic_world_data_dir = '/mnt/argo-filestore/water_timeseries/new_dynamic_world_data'
-
-# config for local
-dynamic_world_data = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/dynamic_world/lakes_dw_V2d.nc'
-
-vector_lake_file = '/Users/helium/ncsa/pdg/water-timeseries-v2/tests/data/lake_polygons.parquet'
-
-new_dynamic_world_data_dir = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/new_dynamic_world'
-
 def find_missing_summer_dates(existing_dates, current_date=None):
     """
     Find missing June, July, August, September dates that are not in the existing list.
@@ -97,7 +69,6 @@ def find_missing_summer_dates(existing_dates, current_date=None):
 
     return missing_dates
 
-
 def find_missing_summer_months(existing_dates, current_date=None):
     """
     Alternative function that returns a more readable summary of missing months.
@@ -149,7 +120,6 @@ def get_all_dates_simple(netcdf_path):
 
         return dates_pd
 
-
 # Or even simpler - use xarray directly (recommended for your use case)
 def get_dates_xarray(netcdf_path):
     """Get dates using xarray - simplest approach"""
@@ -159,7 +129,6 @@ def get_dates_xarray(netcdf_path):
     dates = pd.to_datetime(ds.date.values)
     ds.close()
     return dates
-
 
 # Or using pure netCDF4 with manual conversion (most robust)
 def get_dates_manual(netcdf_path):
@@ -187,39 +156,6 @@ def get_dates_manual(netcdf_path):
             return dates_pd
         else:
             raise ValueError(f"Could not parse units: {units}")
-
-
-# Choose one of the methods above - here's the recommended approach:
-
-# dynamic_world_data = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/input/lakes_dw_V2d.nc'
-
-# Method 1: Using xarray (simplest and most reliable)
-print("=== Using xarray to extract dates ===")
-import xarray as xr
-
-ds = xr.open_dataset(dynamic_world_data)
-dates = pd.to_datetime(ds.date.values)
-ds.close()
-
-print(f"Number of dates: {len(dates)}")
-print(f"First 5 dates: {dates[:5]}")
-print(f"Last 5 dates: {dates[-5:]}")
-print(f"\nAll dates:")
-for date in dates:
-    print(f"  {date.strftime('%Y-%m-%d')}")
-
-# Get as list of tuples (year, month)
-year_month_list = [(d.year, d.month) for d in dates]
-print(f"\nYear-month pairs: {year_month_list}")
-
-# Get as dictionary for quick lookup
-date_dict = {f"{d.year}-{d.month:02d}": d for d in dates}
-print(f"\nAvailable periods: {list(date_dict.keys())}")
-
-# Check if all are on 1st of month
-all_first = all(d.day == 1 for d in dates)
-print(f"\nAll dates on 1st of month? {all_first}")
-
 
 def check_missing_data_in_netcdf(netcdf_path):
     """
@@ -258,35 +194,65 @@ def check_missing_data_in_netcdf(netcdf_path):
         print("\n✓ All summer months are present!")
         return []
 
+def download_new_dynamic_world_data(env_path=None):
+    if env_path is None:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
+    else:
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
 
-# Usage
-missing = check_missing_data_in_netcdf(dynamic_world_data)
-print(missing)
-print('found missing dates')
-missing_years = []
-missing_months = []
-for date in missing:
-    if date.year not in missing_years:
-        missing_years.append(date.year)
-    if date.month not in missing_months:
-        missing_months.append(date.month)
-print('got missing years and months')
+    project = os.environ['project']
+    EE_PROJECT_ID = project
+    os.environ["EE_PROJECT"] = EE_PROJECT_ID
+    dynamic_world_data_file = os.environ['dynamic_world_data_file']
+    vector_lake_file = os.environ['vector_lake_file']
+    new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
 
-print("download these dates for all lake_ids")
-current_date = str(datetime.now())
-current_date_stamp = current_date.split(' ')[0]
-current_date_stamp = current_date_stamp.replace('-', '_')
-download_filename = 'dynamic_world_download_' + current_date_stamp + '.nc'
-download_filepath = os.path.join(new_dynamic_world_data_dir, download_filename)
-# DOWNLOAD INDIVIDUAL NETCDF FILES FROM THE SPLIT FILES
-dl = EarthEngineDownloader(ee_auth=True, logger=logger)
-ds = dl.download_dw_monthly(
-    vector_dataset=vector_lake_file,
-    name_attribute="id_geohash",
-    years=missing_years,
-    months=missing_months,
-    save_to_file=download_filepath,
-    max_total_requests=500,
-    n_parallel=1,
-)
-logger.debug(f"Finished downloading all years for {vector_lake_file}")
+    logger.debug(f"Dynamic world data file: {dynamic_world_data_file}")
+    logger.debug(f"Vector lake file: {vector_lake_file}")
+    logger.debug(f"New dynamic world data dir: {new_dynamic_world_data_dir}")
+
+    missing_dates = check_missing_data_in_netcdf(dynamic_world_data_file)
+
+    if not missing_dates:
+        logger.debug(f"No missing dates found in {dynamic_world_data_file}")
+        return
+    logger.debug(f"Missing dates found are {missing_dates}")
+    missing_years = []
+    missing_months = []
+    for date in missing_dates:
+        if date.year not in missing_years:
+            missing_years.append(date.year)
+        if date.month not in missing_months:
+            missing_months.append(date.month)
+
+    logger.debug(f"Missing years: {missing_years}")
+    logger.debug(f"Missing months: {missing_months}")
+
+    logger.debug(f"Downloading new dynamic world data")
+
+    current_date = str(datetime.now())
+    current_date_stamp = current_date.split(' ')[0]
+    current_date_stamp = current_date_stamp.replace('-', '_')
+    download_filename = 'dynamic_world_download_' + current_date_stamp + '.nc'
+    download_filepath = os.path.join(new_dynamic_world_data_dir, download_filename)
+    # DOWNLOAD INDIVIDUAL NETCDF FILES FROM THE SPLIT FILES
+    dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+    ds = dl.download_dw_monthly(
+        vector_dataset=vector_lake_file,
+        name_attribute="id_geohash",
+        years=missing_years,
+        months=missing_months,
+        save_to_file=download_filepath,
+        max_total_requests=500,
+        n_parallel=1,
+    )
+
+    logger.debug(f"Finished downloading to {download_filepath}")
+
+    # TODO combine this new filepath
+
+
+
+
