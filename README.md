@@ -163,3 +163,109 @@ to remove
 `kubectl -n argo delete -f multi-pvc-inspectors.yaml`
 
 This sets up the storage.
+
+
+### Important note - setting up secrets
+
+The .yaml file (lake_drainage_cron.yaml) uses a number of secrets that you will need to set up 
+in order for the workflow to run. If you have run the workflow locally, then you will likely already have 
+the necessary credentials or tokens on your local machine.
+
+These secrets are 
+
+earth-engine-creds (earth engine credentials)
+
+gcp-personal-gcp-creds (gcloud credentials)
+
+ghcr-secret (github container registry credentials)
+
+Each of these will be explained in a section below. 
+
+For the argo workflow, the creation of the volume is handled within the yaml file. 
+
+### Gcloud Credentials Setup
+
+You will need to setup google cloud credentials for use in the code the following way.
+
+On your machine, run this command to create a application secrets file.
+
+`glcoud init` (follow the prompts) PDG Documention https://github.com/PermafrostDiscoveryGateway/pdg-tech/blob/master/gcloud/gcloud-setup.md
+
+`gcloud auth application-default login`
+
+This will create a file at `~/.config/gcloud/application_default_credentials.json`
+
+Now, you will want to add this secret to your kubernetes cluster using this command:
+
+`kubectl create secret generic personal-gcp-creds -n argo --from-file=key.json=$HOME/.config/gcloud/application_default_credentials.json
+`
+
+Check that the secret was created using this command:
+
+` kubectl get secret personal-gcp-creds -n argo -o jsonpath='{.data}' | jq 'keys'
+`
+
+expect to see the following output:
+`[
+  "key.json"
+]`
+
+
+## Setup Credentials for Google Cloud Artifact Registry (in progress)
+
+These instructions are 'in progress' and will be updated soon. Currently the service account does not have permission,
+so you will need to use your personal credentials to push images to the registry. You will need to regenerate them before any workflow run.
+
+Run this command first
+
+`gcloud auth configure-docker us-west1-docker.pkg.dev`
+
+Now, delete any existing secret 
+
+`kubectl delete secret artifact-registry-pull-secret -n argo --ignore-not-found=true
+`
+
+Generate a new secret with this command:
+
+`kubectl create secret docker-registry artifact-registry-pull-secret \
+    --namespace argo \
+    --docker-server=https://us-west1-docker.pkg.dev \
+    --docker-username=oauth2accesstoken \
+    --docker-password="$(gcloud auth application-default print-access-token)" \
+    --dry-run=client -o yaml | kubectl apply -f -
+`
+
+NOTE - these secrets will expire quickly, so you will need to regenerate them before any workflow run.
+
+## Github container registry setup
+
+First install gh on the command line. This gets your token. Make sure it works locally.
+
+`export GH_TOKEN=$(gh auth status --show-token | grep "Token:" | awk '{print $3}')
+`
+
+This creates the secret on the kubernetes namespace
+
+`kubectl create secret docker-registry ghcr-secret \
+  --namespace=argo \
+  --docker-server=ghcr.io \
+  --docker-username=tcnichol \
+  --docker-password="${GH_TOKEN}" \
+  --docker-email=tcnichol@illinois.edu`
+
+Checks it exists
+
+`kubectl get secret ghcr-secret -n argo -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | jq
+`
+
+## earthengine setup
+
+
+`ls ~/.config/earthengine/`
+
+
+`kubectl create secret generic earth-engine-creds \
+  --from-file=credentials=$HOME/.config/earthengine/credentials \
+  -n argo`
+
+`secret/earth-engine-creds created
