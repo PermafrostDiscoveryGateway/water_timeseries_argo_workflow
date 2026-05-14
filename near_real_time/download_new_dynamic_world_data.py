@@ -4,9 +4,12 @@ from netCDF4 import num2date
 from datetime import datetime
 from loguru import logger
 import os
+import glob
 import sys
+import xarray as xr
 from dotenv import load_dotenv
 from water_timeseries.downloader import EarthEngineDownloader
+import water_timeseries.dataset
 
 def find_missing_summer_dates(existing_dates, current_date=None):
     """
@@ -205,7 +208,11 @@ def download_new_dynamic_world_data(env_path=None):
     project = os.environ['project']
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
+    dynamic_world_dir = os.environ['dynamic_world_dir']
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
+    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     dynamic_world_data_file = os.environ['dynamic_world_data_file']
+    # TODO replace this with the directory, and find the
     vector_lake_file = os.environ['vector_lake_file']
     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
 
@@ -217,7 +224,8 @@ def download_new_dynamic_world_data(env_path=None):
 
     if not missing_dates:
         logger.debug(f"No missing dates found in {dynamic_world_data_file}")
-        return
+        logger.debug(f"Returning most recent file {most_recent_dynamic_world_file}")
+        return most_recent_dynamic_world_file
     logger.debug(f"Missing dates found are {missing_dates}")
     missing_years = []
     missing_months = []
@@ -251,7 +259,60 @@ def download_new_dynamic_world_data(env_path=None):
 
     logger.debug(f"Finished downloading to {download_filepath}")
 
-    # TODO combine this new filepath
+    logger.debug("Combining existing ")
+    new_dynamic_world_filename = 'lakes_dw_V2d_' + current_date_stamp + '.nc'
+    new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
+
+    # TODO combine these 2 files
+    # new_dynamic_world_data_file
+    # most_recent_dynamic_world_file
+    existing_ds = xr.open_dataset(most_recent_dynamic_world_file)
+    new_ds = xr.open_dataset(download_filepath)
+
+    # Verify no date overlap (should be true based on missing dates logic)
+    existing_dates = set(pd.to_datetime(existing_ds.date.values))
+    new_dates = set(pd.to_datetime(new_ds.date.values))
+    overlapping_dates = existing_dates & new_dates
+
+    if overlapping_dates:
+        logger.warning(f"Found {len(overlapping_dates)} overlapping dates: {sorted(overlapping_dates)}")
+        logger.warning("Removing overlapping dates from new dataset...")
+        # Remove overlapping dates from new dataset
+        mask = ~new_ds.date.isin(list(overlapping_dates))
+        new_ds = new_ds.sel(date=mask)
+
+    # Create DWDataset instances for both
+    existing_dw = water_timeseries.dataset.DWDataset(existing_ds)
+    new_dw = water_timeseries.dataset.DWDataset(new_ds)
+
+    merged_dw = existing_dw.merge(new_dw, how="date")
+
+    # Create the final filename with timestamp
+    new_dynamic_world_filename = 'lakes_dw_V2d_' + current_date_stamp + '.nc'
+    new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
+
+    # Save the merged dataset
+    merged_dw.ds.to_netcdf(new_dynamic_world_data_file)
+
+    logger.debug(f"Successfully merged datasets!")
+
+    logger.debug(f"Original file: {most_recent_dynamic_world_file}")
+    logger.debug(f"New data file: {download_filepath}")
+    logger.debug(f"Merged file saved as: {new_dynamic_world_data_file}")
+
+    # Optional: Print summary of the merged data
+    merged_dates = pd.to_datetime(merged_dw.ds.date.values)
+    logger.info(f"Merged dataset contains {len(merged_dates)} dates")
+    logger.info(f"Date range: {merged_dates.min()} to {merged_dates.max()}")
+    logger.info(f"Number of lakes: {len(merged_dw.object_ids_)}")
+
+    # Close datasets to free memory
+    existing_ds.close()
+    new_ds.close()
+    merged_dw.ds.close()
+
+    return new_dynamic_world_data_file
+
 
 
 
