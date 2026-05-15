@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from water_timeseries.downloader import EarthEngineDownloader
 import water_timeseries.dataset
 
+
 def find_missing_summer_dates(existing_dates, current_date=None):
     """
     Find missing June, July, August, September dates that are not in the existing list.
@@ -72,6 +73,7 @@ def find_missing_summer_dates(existing_dates, current_date=None):
 
     return missing_dates
 
+
 def find_missing_summer_months(existing_dates, current_date=None):
     """
     Alternative function that returns a more readable summary of missing months.
@@ -93,6 +95,7 @@ def find_missing_summer_months(existing_dates, current_date=None):
         missing_by_year[year].append(month)
 
     return missing_by_year
+
 
 def get_all_dates_simple(netcdf_path):
     """
@@ -123,6 +126,7 @@ def get_all_dates_simple(netcdf_path):
 
         return dates_pd
 
+
 # Or even simpler - use xarray directly (recommended for your use case)
 def get_dates_xarray(netcdf_path):
     """Get dates using xarray - simplest approach"""
@@ -132,6 +136,7 @@ def get_dates_xarray(netcdf_path):
     dates = pd.to_datetime(ds.date.values)
     ds.close()
     return dates
+
 
 # Or using pure netCDF4 with manual conversion (most robust)
 def get_dates_manual(netcdf_path):
@@ -159,6 +164,7 @@ def get_dates_manual(netcdf_path):
             return dates_pd
         else:
             raise ValueError(f"Could not parse units: {units}")
+
 
 def check_missing_data_in_netcdf(netcdf_path):
     """
@@ -198,35 +204,118 @@ def check_missing_data_in_netcdf(netcdf_path):
         return []
 
 
-def download_new_dynamic_world_data(env_path=None):
-    if env_path is None:
-        load_dotenv()
-        logger.info("Loading environment from default .env file")
-    else:
-        load_dotenv(dotenv_path=env_path)
-        logger.info(f"Loading environment from: {env_path}")
+def load_environment(env_path=None):
+    """
+    Load environment variables with fallback priority:
+    1. Provided env_path argument (.env file path)
+    2. Default ./.env file
+    3. Kubernetes/OS environment variables (already present)
 
+    Returns:
+        bool: True if environment variables were loaded from a .env file, False if using K8s/OS
+    """
+    loaded_from_file = False
+
+    # Priority 1: Provided env_path argument
+    if env_path:
+        env_path_obj = Path(env_path)
+        if env_path_obj.exists():
+            load_dotenv(dotenv_path=env_path, override=False)
+            logger.info(f"Loaded environment from provided .env: {env_path}")
+            loaded_from_file = True
+        else:
+            logger.warning(f".env file not found at {env_path}, checking other sources")
+
+    # Priority 2: Default .env file in current directory
+    if not loaded_from_file:
+        default_env = Path.cwd() / ".env"
+        if default_env.exists():
+            load_dotenv(dotenv_path=default_env, override=False)
+            logger.info(f"Loaded environment from default .env: {default_env}")
+            loaded_from_file = True
+        else:
+            logger.info("No .env file found, using Kubernetes/OS environment variables")
+
+    # Validate required environment variables
+    required_vars = [
+        'project',
+        'dynamic_world_dir',
+        'vector_lake_file',
+        'new_dynamic_world_data_dir'
+    ]
+
+    missing_vars = []
+    for var in required_vars:
+        if var not in os.environ:
+            missing_vars.append(var)
+
+    if missing_vars:
+        error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
+        logger.error(error_msg)
+        raise EnvironmentError(error_msg)
+
+    # Log which source is providing each variable (debug)
+    logger.debug("Environment configuration:")
+    for var in required_vars + ['dynamic_world_data_file']:
+        if var in os.environ:
+            source = ".env" if loaded_from_file else "K8s/OS"
+            # Don't log full values if they contain sensitive data
+            if any(sensitive in var.lower() for sensitive in ['key', 'secret', 'password', 'token']):
+                logger.debug(f"  {var} = *** (source: {source})")
+            else:
+                logger.debug(f"  {var} = {os.environ[var]} (source: {source})")
+
+    return loaded_from_file
+
+
+def download_new_dynamic_world_data(env_path=None):
+    """
+    Download new Dynamic World data for missing dates.
+
+    Parameters:
+    -----------
+    env_path : str or Path, optional
+        Path to .env file to load environment variables from.
+        If None, tries default ./.env, then falls back to K8s/OS env vars.
+
+    Returns:
+    --------
+    str: Path to the merged dataset file
+    """
+    # Load environment with fallback logic
+    load_environment(env_path)
+
+    # Get environment variables (now guaranteed to exist after validation)
     project = os.environ['project']
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
     dynamic_world_dir = os.environ['dynamic_world_dir']
-    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
-    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
-    dynamic_world_data_file = os.environ['dynamic_world_data_file']
-    # TODO replace this with the directory, and find the
     vector_lake_file = os.environ['vector_lake_file']
     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
 
-    logger.debug(f"Dynamic world data file: {dynamic_world_data_file}")
+    # Handle optional dynamic_world_data_file
+    dynamic_world_data_file = os.environ.get('dynamic_world_data_file')
+
+    # Find most recent existing file
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
+    if not all_dynamic_world_files:
+        raise FileNotFoundError(f"No .nc files found in {dynamic_world_dir}")
+
+    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+
+    logger.debug(f"Dynamic world data file (optional): {dynamic_world_data_file}")
     logger.debug(f"Vector lake file: {vector_lake_file}")
     logger.debug(f"New dynamic world data dir: {new_dynamic_world_data_dir}")
+    logger.debug(f"Most recent existing file: {most_recent_dynamic_world_file}")
 
+    # Check for missing dates
     missing_dates = check_missing_data_in_netcdf(most_recent_dynamic_world_file)
 
     if not missing_dates or len(missing_dates) == 0:
-        logger.debug(f"No missing dates found in {dynamic_world_data_file}")
+        logger.debug(f"No missing dates found, returning most recent file: {most_recent_dynamic_world_file}")
         return most_recent_dynamic_world_file
-    logger.debug(f"Missing dates found are {missing_dates}")
+
+    logger.debug(f"Missing dates found: {missing_dates}")
     missing_years = []
     missing_months = []
     for date in missing_dates:
@@ -240,11 +329,16 @@ def download_new_dynamic_world_data(env_path=None):
 
     logger.debug(f"Downloading new dynamic world data")
 
+    # Create download filename
     current_date = str(datetime.now())
     current_date_stamp = current_date.split(' ')[0]
     current_date_stamp = current_date_stamp.replace('-', '_')
     download_filename = 'dynamic_world_download_' + current_date_stamp + '.nc'
     download_filepath = os.path.join(new_dynamic_world_data_dir, download_filename)
+
+    # Ensure download directory exists
+    os.makedirs(new_dynamic_world_data_dir, exist_ok=True)
+
     # DOWNLOAD INDIVIDUAL NETCDF FILES FROM THE SPLIT FILES
     dl = EarthEngineDownloader(ee_auth=True, logger=logger)
     ds = dl.download_dw_monthly(
@@ -326,6 +420,9 @@ def download_new_dynamic_world_data(env_path=None):
     return new_dynamic_world_data_file
 
 
-
-
-
+# For testing purposes
+# if __name__ == "__main__":
+#     # Allow command line argument for .env path when run directly
+#     env_path = sys.argv[1] if len(sys.argv) > 1 else None
+#     result = download_new_dynamic_world_data(env_path=env_path)
+#     print(f"Download complete: {result}")

@@ -9,11 +9,70 @@ import sys
 from dotenv import load_dotenv
 import download_new_dynamic_world_data
 from water_timeseries.breakpoint import NRTBreakpoint
-from water_timeseries.breakpoint import NRTBreakpoint
 from water_timeseries.dataset import DWDataset
 import xarray as xr
 import pandas as pd
 from pathlib import Path
+
+
+def load_environment():
+    """
+    Load environment variables with fallback priority:
+    1. Command line argument (.env file path)
+    2. Default ./.env file
+    3. Kubernetes/OS environment variables (already present)
+    """
+    env_path = None
+
+    # Priority 1: Command line argument for .env file
+    if len(sys.argv) > 1:
+        env_path = sys.argv[1]
+        if Path(env_path).exists():
+            load_dotenv(dotenv_path=env_path, override=False)  # Don't override existing env vars
+            logger.info(f"Loaded environment from command line .env: {env_path}")
+        else:
+            logger.warning(f".env file not found at {env_path}, checking other sources")
+
+    # Priority 2: Default .env file in current directory
+    if not env_path or not Path(env_path).exists():
+        default_env = Path.cwd() / ".env"
+        if default_env.exists():
+            load_dotenv(dotenv_path=default_env, override=False)
+            logger.info(f"Loaded environment from default .env: {default_env}")
+        else:
+            logger.info("No .env file found, using Kubernetes/OS environment variables")
+
+    # Priority 3: Kubernetes/OS environment variables are already in os.environ
+
+    # Validate required variables (with helpful error messages)
+    required_vars = [
+        'output_dir',
+        'project',
+        'dynamic_world_dir',
+        'vector_lake_file',
+        'new_dynamic_world_data_dir'
+    ]
+
+    missing_vars = []
+    for var in required_vars:
+        if var not in os.environ:
+            missing_vars.append(var)
+
+    if missing_vars:
+        error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
+        logger.error(error_msg)
+        logger.info("Available environment variables: {list(os.environ.keys())}")
+        raise EnvironmentError(error_msg)
+
+    # Optional variables with defaults
+    if 'dynamic_world_data_file' not in os.environ:
+        logger.warning("dynamic_world_data_file not set, will use most recent file")
+
+    # Log which source is providing each variable (debug)
+    logger.debug("Environment configuration:")
+    for var in required_vars:
+        source = "K8s/OS" if var not in locals() else ".env"
+        logger.debug(f"  {var} = {os.environ[var]} (source: {source})")
 
 
 def precompute_nrt_breakpoints(
@@ -24,36 +83,7 @@ def precompute_nrt_breakpoints(
         analysis_date: str | pd.Timestamp | None = None,
         data_aggregation_period: str = "monthly"
 ) -> pd.DataFrame:
-    """
-    Precompute NRT breakpoints for a Dynamic World dataset.
-
-    This replicates the functionality of:
-    uv run water-timeseries nrt-precompute \
-        downloads/lakes_dw_V2d.nc \
-        --output-dir precomputed/nrt \
-        --lake-chunk-size 2000 \
-        --n-jobs 1
-
-    Parameters
-    ----------
-    input_nc_file : str or Path
-        Path to the Dynamic World NetCDF file
-    output_dir : str or Path
-        Directory where output files will be saved
-    lake_chunk_size : int, optional
-        Number of lakes to process in each chunk (default: 2000)
-    n_jobs : int, optional
-        Number of parallel jobs for processing (default: 1)
-    analysis_date : str or pd.Timestamp, optional
-        Date for NRT analysis. If None, uses the most recent date in the dataset
-    data_aggregation_period : str, optional
-        Period for data aggregation, either "all" or "monthly" (default: "monthly")
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame containing breakpoint analysis results
-    """
+    """[Your existing function remains unchanged]"""
 
     # Convert to Path objects
     input_nc_file = Path(input_nc_file)
@@ -127,41 +157,43 @@ def precompute_nrt_breakpoints(
         print("⚠ No results generated")
         return pd.DataFrame()
 
-def main():
-    # env_path = os.environ.get('ENV_FILE_PATH', '/data/.env')
-    # if Path(env_path).exists():
-    #     load_dotenv(env_path)
-    # else:
-    #     # Fall back to default location
-    #     load_dotenv()
-    env_path = None
-    if len(sys.argv) > 1:
-        # Custom .env file path provided as command line argument
-        env_path = sys.argv[1]
-        load_dotenv(dotenv_path=env_path)
-        logger.info(f"Loading environment from: {env_path}")
-    else:
-        # Default to .env file in current directory
-        load_dotenv()
-        logger.info("Loading environment from default .env file")
 
+def main():
+    # Load environment with fallback logic
+    load_environment()
+
+    # Now all variables should be available in os.environ
     output_dir = os.environ['output_dir']
     project = os.environ['project']
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
     dynamic_world_dir = os.environ['dynamic_world_dir']
-    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
-    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
-    dynamic_world_data_file = os.environ['dynamic_world_data_file']
-    # TODO replace this with the directory, and find the
+
+    # Handle optional variable with fallback logic
+    dynamic_world_data_file = os.environ.get('dynamic_world_data_file')
+    if dynamic_world_data_file:
+        logger.info(f"Using specified dynamic world data file: {dynamic_world_data_file}")
+    else:
+        all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
+        if all_dynamic_world_files:
+            dynamic_world_data_file = max(all_dynamic_world_files, key=os.path.getctime)
+            logger.info(f"No dynamic_world_data_file specified, using most recent: {dynamic_world_data_file}")
+        else:
+            logger.error(f"No .nc files found in {dynamic_world_dir}")
+            sys.exit(1)
+
     vector_lake_file = os.environ['vector_lake_file']
     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
 
+    # Get env_path for download function (if provided via command line)
+    env_path = sys.argv[1] if len(sys.argv) > 1 else None
 
+    # Download new data
     new_dynamic_world_dataset_file = download_new_dynamic_world_data.download_new_dynamic_world_data(env_path=env_path)
     logger.debug(f"New dynamic world dataset file is: {new_dynamic_world_dataset_file}")
     logger.debug(f"Run near real time analysis for {new_dynamic_world_dataset_file}")
 
+    # Run analysis
     results = precompute_nrt_breakpoints(
         input_nc_file=new_dynamic_world_dataset_file,
         output_dir=output_dir,
@@ -170,7 +202,6 @@ def main():
     )
     logger.debug(f"Results saved to {output_dir} : {results}")
 
+
 if __name__ == "__main__":
     main()
-
-
