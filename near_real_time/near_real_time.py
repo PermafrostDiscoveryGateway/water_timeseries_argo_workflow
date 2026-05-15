@@ -189,7 +189,7 @@ def main():
     env_path = sys.argv[1] if len(sys.argv) > 1 else None
 
     # Download new data
-    new_dynamic_world_dataset_file = download_new_dynamic_world_data.download_new_dynamic_world_data(env_path=env_path)
+    new_dynamic_world_dataset_file = download_new_dynamic_world_data.download_new_dynamic_world_data_split_files(env_path=env_path)
     logger.debug(f"New dynamic world dataset file is: {new_dynamic_world_dataset_file}")
     logger.debug(f"Run near real time analysis for {new_dynamic_world_dataset_file}")
 
