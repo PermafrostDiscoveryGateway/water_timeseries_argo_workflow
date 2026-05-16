@@ -243,7 +243,8 @@ def load_environment(env_path=None):
         'project',
         'dynamic_world_dir',
         'vector_lake_file',
-        'new_dynamic_world_data_dir'
+        'new_dynamic_world_data_dir',
+        'split_new_dynamic_world_data_dir'
     ]
 
     missing_vars = []
@@ -445,7 +446,7 @@ def download_new_dynamic_world_data_split_files(env_path=None):
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
     dynamic_world_dir = os.environ['dynamic_world_dir']
     vector_lake_file = os.environ['vector_lake_file']
-    new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
+    split_new_dynamic_world_data_dir = os.environ['split_new_dynamic_world_data_dir']
     split_vector_dataset_dir = os.environ['split_vector_dataset_dir']
 
     all_split_vector_dataset_files = glob.glob(os.path.join(split_vector_dataset_dir, "*.parquet"))
@@ -462,7 +463,7 @@ def download_new_dynamic_world_data_split_files(env_path=None):
 
     logger.debug(f"Dynamic world data file (optional): {dynamic_world_data_file}")
     logger.debug(f"Vector lake file: {vector_lake_file}")
-    logger.debug(f"New dynamic world data dir: {new_dynamic_world_data_dir}")
+    logger.debug(f"New dynamic world split data dir: {split_new_dynamic_world_data_dir}")
     logger.debug(f"Most recent existing file: {most_recent_dynamic_world_file}")
     logger.debug(f"Found {len(all_split_vector_dataset_files)} split vector files")
 
@@ -493,7 +494,7 @@ def download_new_dynamic_world_data_split_files(env_path=None):
     current_date_stamp = current_date_stamp.replace('-', '_')
 
     # Ensure download directory exists
-    os.makedirs(new_dynamic_world_data_dir, exist_ok=True)
+    os.makedirs(split_new_dynamic_world_data_dir, exist_ok=True)
 
     all_download_filepaths = []
     failed_split_vector_files = []
@@ -506,7 +507,7 @@ def download_new_dynamic_world_data_split_files(env_path=None):
             split_vector_file_number = split_vector_file_name.split('_')[-1]
 
             download_filename = f'dynamic_world_download_{split_vector_file_number}_{current_date_stamp}.nc'
-            download_filepath = os.path.join(new_dynamic_world_data_dir, download_filename)
+            download_filepath = os.path.join(split_new_dynamic_world_data_dir, download_filename)
 
             logger.info(f"Downloading data for split file {split_vector_file_number}: {split_vector_dataset_file}")
 
