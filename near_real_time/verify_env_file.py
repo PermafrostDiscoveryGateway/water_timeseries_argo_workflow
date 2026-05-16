@@ -4,6 +4,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import os
 
+
 def load_environment():
     """
     Load environment variables with fallback priority:
@@ -39,7 +40,11 @@ def load_environment():
         'project',
         'dynamic_world_dir',
         'vector_lake_file',
-        'new_dynamic_world_data_dir'
+        'new_dynamic_world_data_dir',
+        'base_dir',
+        'split_vector_dataset_dir',
+        'dynamic_world_data_file',
+        'split_new_dynamic_world_data_dir'
     ]
 
     missing_vars = []
@@ -50,19 +55,103 @@ def load_environment():
     if missing_vars:
         error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
         logger.error(error_msg)
-        logger.info("Available environment variables: {list(os.environ.keys())}")
+        logger.info(f"Available environment variables: {list(os.environ.keys())}")
         raise EnvironmentError(error_msg)
-
-    # Optional variables with defaults
-    if 'dynamic_world_data_file' not in os.environ:
-        logger.warning("dynamic_world_data_file not set, will use most recent file")
 
     # Log which source is providing each variable (debug)
     logger.debug("Environment configuration:")
     for var in required_vars:
-        source = "K8s/OS" if var not in locals() else ".env"
-        logger.debug(f"  {var} = {os.environ[var]} (source: {source})")
+        logger.debug(f"  {var} = {os.environ[var]}")
+
+
+def validate_paths():
+    """
+    Validate that environment variables containing paths exist and are accessible.
+    Returns True if all paths are valid, False otherwise.
+    """
+    # List of environment variables that represent directory paths
+    dir_path_vars = [
+        'base_dir',
+        'dynamic_world_dir',
+        'new_dynamic_world_data_dir',
+        'output_dir',
+        'split_vector_dataset_dir',
+        'split_new_dynamic_world_data_dir'
+    ]
+
+    # List of environment variables that represent file paths
+    file_path_vars = [
+        'vector_lake_file',
+        'dynamic_world_data_file'
+    ]
+
+    all_valid = True
+
+    # Validate directory paths
+    for var in dir_path_vars:
+        if var in os.environ:
+            path = Path(os.environ[var])
+            if path.exists():
+                if path.is_dir():
+                    logger.info(f"✓ {var} = {path} (directory exists)")
+                else:
+                    logger.error(f"✗ {var} = {path} exists but is NOT a directory")
+                    all_valid = False
+            else:
+                logger.error(f"✗ {var} = {path} does NOT exist")
+                all_valid = False
+
+    # Validate file paths
+    for var in file_path_vars:
+        if var in os.environ:
+            path = Path(os.environ[var])
+            if path.exists():
+                if path.is_file():
+                    logger.info(f"✓ {var} = {path} (file exists)")
+                else:
+                    logger.error(f"✗ {var} = {path} exists but is NOT a file")
+                    all_valid = False
+            else:
+                # For files, also check if parent directory exists
+                if path.parent.exists():
+                    logger.warning(
+                        f"⚠ {var} = {path} does not exist yet, but parent directory is valid (file may be created later)")
+                else:
+                    logger.error(f"✗ {var} = {path} does NOT exist and parent directory is missing")
+                    all_valid = False
+
+    # Additional check for project (non-path variable)
+    if 'project' in os.environ:
+        logger.info(f"✓ project = {os.environ['project']}")
+
+    return all_valid
 
 
 def main():
-    load_environment()
+    """Main function to load environment and validate paths"""
+    logger.info("Starting environment validation...")
+
+    # Load environment variables
+    try:
+        load_environment()
+        logger.info("✓ Environment variables loaded successfully")
+    except EnvironmentError as e:
+        logger.error(f"Failed to load environment variables: {e}")
+        sys.exit(1)
+
+    # Validate paths
+    logger.info("\nValidating paths...")
+    if validate_paths():
+        logger.info("\n✓ All environment variables and paths are valid!")
+        return True
+    else:
+        logger.error("\n✗ Path validation failed. Please check the errors above.")
+        return False
+
+
+if __name__ == "__main__":
+    # Run validation
+    valid = main()
+
+    # Exit with appropriate code
+    sys.exit(0 if valid else 1)
