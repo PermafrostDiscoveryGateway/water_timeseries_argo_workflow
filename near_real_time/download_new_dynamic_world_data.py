@@ -495,12 +495,14 @@ def download_new_dynamic_world_data_split_files(env_path=None):
 
     # Ensure download directory exists
     os.makedirs(split_new_dynamic_world_data_dir, exist_ok=True)
+    logger.debug(f"New dynamic world data will go to {split_new_dynamic_world_data_dir}")
 
     all_download_filepaths = []
     failed_split_vector_files = []
 
     # DOWNLOAD INDIVIDUAL NETCDF FILES FROM THE SPLIT FILES
-    for split_vector_dataset_file in all_split_vector_dataset_files:
+    for i in range(0, len(all_split_vector_dataset_files)):
+        split_vector_dataset_file = all_split_vector_dataset_files[i]
         try:
             # Extract file number from the split file name
             split_vector_file_name = os.path.basename(split_vector_dataset_file).replace('.parquet', '')
@@ -509,8 +511,8 @@ def download_new_dynamic_world_data_split_files(env_path=None):
             download_filename = f'dynamic_world_download_{split_vector_file_number}_{current_date_stamp}.nc'
             download_filepath = os.path.join(split_new_dynamic_world_data_dir, download_filename)
 
-            logger.info(f"Downloading data for split file {split_vector_file_number}: {split_vector_dataset_file}")
-
+            logger.info(f"Downloading data for split file index {i} and {split_vector_file_number}: {split_vector_dataset_file}")
+            logger.debug(f"This data will be downloaded to {download_filepath}")
             dl = EarthEngineDownloader(ee_auth=True, logger=logger)
             ds = dl.download_dw_monthly(
                 vector_dataset=split_vector_dataset_file,
