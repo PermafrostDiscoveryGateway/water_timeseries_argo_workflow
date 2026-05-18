@@ -15,7 +15,6 @@ def precompute_nrt_breakpoints(
         input_nc_file: str | Path,
         output_dir: str | Path,
         lake_chunk_size: int = 2000,
-        n_jobs: int = 1,
         analysis_date: str | pd.Timestamp | None = None,
         data_aggregation_period: str = "monthly"
 ) -> pd.DataFrame:
@@ -86,7 +85,7 @@ def precompute_nrt_breakpoints(
             dataset=dw_dataset,
             analysis_date=analysis_date,
             data_aggregation_period=data_aggregation_period,
-            object_id=chunk_ids
+            object_id=chunk_ids,
         )
 
         results.append(chunk_result)
@@ -156,7 +155,6 @@ def main():
         input_nc_file=new_dynamic_world_dataset_file,
         output_dir=output_dir,
         lake_chunk_size=2000,
-        n_jobs=1
     )
     logger.debug(f"Results saved to {output_dir} : {results}")
 
