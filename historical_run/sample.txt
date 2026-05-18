@@ -1,0 +1,12 @@
+# Simple breakpoint analysis over historical period
+python your_script.py --mode historical --method simple \
+    --start-date 2020-01-01 --end-date 2023-12-31 \
+    --threshold -0.25 --window 3 .env
+
+# Beast breakpoint analysis over historical period
+python your_script.py --mode historical --method beast \
+    --start-date 2020-01-01 --end-date 2023-12-31 \
+    --break-threshold 0.7 .env
+
+# NRT mode (original functionality)
+python your_script.py --mode nrt .env
