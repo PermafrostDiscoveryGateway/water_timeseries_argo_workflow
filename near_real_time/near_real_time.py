@@ -1,14 +1,9 @@
-import netCDF4 as nc
-import pandas as pd
-from netCDF4 import num2date
-from datetime import datetime
 from loguru import logger
 import os
 import glob
 import sys
 from dotenv import load_dotenv
-import download_new_dynamic_world_data
-from water_timeseries.breakpoint import NRTBreakpoint
+from . import download_new_dynamic_world_data
 from water_timeseries.breakpoint import NRTBreakpoint
 from water_timeseries.dataset import DWDataset
 import xarray as xr
@@ -139,6 +134,8 @@ def main():
         load_dotenv()
         logger.info("Loading environment from default .env file")
 
+    # environment variables are read here so it works with a .env file, or if they are
+    # in the yaml file for an argo workflow
     output_dir = os.environ['output_dir']
     project = os.environ['project']
     EE_PROJECT_ID = project
@@ -147,7 +144,6 @@ def main():
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     dynamic_world_data_file = os.environ['dynamic_world_data_file']
-    # TODO replace this with the directory, and find the
     vector_lake_file = os.environ['vector_lake_file']
     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
 

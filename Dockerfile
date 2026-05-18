@@ -7,9 +7,6 @@ RUN uv pip install --system -r /tmp/requirements.txt
 # Copy google_cloud_utils folder and everything in it to /app/google_cloud_utils
 COPY google_cloud_utils/ /app/google_cloud_utils/
 
-# Copy utils folder and everything in it to /app/utils
-COPY utils/ /app/utils/
-
 COPY near_real_time /app/near_real_time
 
 # Add /app to Python path so modules can be imported
