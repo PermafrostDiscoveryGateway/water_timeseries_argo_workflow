@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Run historical Simple breakpoint analysis on lake water time series data.
+Run historical BEAST breakpoint analysis on lake water time series data.
 
-This script uses a rolling window statistical approach to detect significant
-drops in lake water area over a historical time period.
+This script performs Bayesian changepoint detection using the RBEAST library
+to identify significant changes in lake water area at specific analysis dates.
 
 Usage:
-    python run_historical_simple_breakpoint.py [env_file_path]
+    python run_historical_beast_breakpoint.py [env_file_path]
 
 Example:
-    python run_historical_simple_breakpoint.py .env
+    python run_historical_beast_breakpoint.py .env
 """
 
 import os
@@ -31,17 +31,33 @@ from historical_breakpoint_analyzer import HistoricalBreakpointAnalyzer
 # CONFIGURATION - Edit these values as needed
 # ============================================================================
 
-# Historical analysis date range
+# Analysis dates - List of specific dates to analyze
+# Format: YYYY-MM-DD
+ANALYSIS_DATES = [
+    "2020-06-01",
+    "2020-12-01",
+    "2021-06-01",
+    "2021-12-01",
+    "2022-06-01",
+    "2022-12-01",
+    "2023-06-01",
+    "2023-12-01",
+]
+
+# Alternative: Use date range with step months
+# If USE_DATE_RANGE = True, the above ANALYSIS_DATES will be ignored
+USE_DATE_RANGE = False
 START_DATE = "2020-01-01"  # Format: YYYY-MM-DD
 END_DATE = "2023-12-31"  # Format: YYYY-MM-DD
+STEP_MONTHS = 3  # Number of months between analyses (3 = quarterly)
 
-# Simple breakpoint parameters
-THRESHOLD = -0.25  # Threshold for detecting a break (negative values indicate drop)
-WINDOW = 3  # Rolling window size (number of observations)
-METHOD = "median"  # Rolling statistic: "mean", "median", or "max"
+# BEAST-specific parameters
+BREAK_THRESHOLD = 0.5  # Probability threshold for detecting a break (0-1)
+TREND_MAX_ORDER = 0  # Maximum order of trend component (0 = no trend)
+TREND_MIN_SEP_DIST = 1  # Minimum separation between change points
 
 # Processing parameters
-LAKE_CHUNK_SIZE = 2000  # Number of lakes to process in each chunk (Simple is faster)
+LAKE_CHUNK_SIZE = 500  # Number of lakes to process in each chunk
 SAVE_INTERMEDIATE = True  # Save intermediate chunk results
 
 # Optional: Filter to specific lakes (set to None for all lakes)
@@ -49,7 +65,7 @@ SAVE_INTERMEDIATE = True  # Save intermediate chunk results
 SPECIFIC_LAKES = None
 
 # Output directory (relative or absolute path)
-OUTPUT_DIR = "./historical_simple_results"
+OUTPUT_DIR = "./historical_beast_results"
 
 
 # ============================================================================
@@ -131,37 +147,46 @@ def get_input_file():
 # MAIN ANALYSIS FUNCTION
 # ============================================================================
 
-def run_historical_simple_breakpoint(
+def run_historical_beast_breakpoint(
         input_nc_file: Path,
-        start_date: str,
-        end_date: str,
         output_dir: Path,
-        threshold: float = -0.25,
-        window: int = 3,
-        method: str = "median",
-        lake_chunk_size: int = 2000,
+        analysis_dates: List[str] = None,
+        use_date_range: bool = False,
+        start_date: str = None,
+        end_date: str = None,
+        step_months: int = 3,
+        break_threshold: float = 0.5,
+        trend_max_order: int = 0,
+        trend_min_sep_dist: int = 1,
+        lake_chunk_size: int = 500,
         specific_lakes: list = None,
         save_intermediate: bool = True
 ) -> pd.DataFrame:
     """
-    Run historical Simple breakpoint analysis on lake data.
+    Run historical BEAST breakpoint analysis on lake data.
 
     Parameters
     ----------
     input_nc_file : Path
         Path to the NetCDF file containing lake data
-    start_date : str
-        Start date for analysis (YYYY-MM-DD)
-    end_date : str
-        End date for analysis (YYYY-MM-DD)
     output_dir : Path
         Directory to save results
-    threshold : float
-        Threshold for detecting a break (negative values indicate water loss)
-    window : int
-        Rolling window size for calculating statistics
-    method : str
-        Rolling statistic to use: "mean", "median", or "max"
+    analysis_dates : List[str], optional
+        List of specific dates to analyze (YYYY-MM-DD)
+    use_date_range : bool
+        If True, generate dates from start_date to end_date with step_months
+    start_date : str, optional
+        Start date for date range (required if use_date_range=True)
+    end_date : str, optional
+        End date for date range (required if use_date_range=True)
+    step_months : int
+        Number of months between analyses (default: 3)
+    break_threshold : float
+        Probability threshold for break detection (0-1)
+    trend_max_order : int
+        Maximum order of trend component for BEAST
+    trend_min_sep_dist : int
+        Minimum separation between change points
     lake_chunk_size : int
         Number of lakes to process in each chunk
     specific_lakes : list, optional
@@ -178,19 +203,29 @@ def run_historical_simple_breakpoint(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Validate method
-    if method not in ["mean", "median", "max"]:
-        raise ValueError(f"Method must be 'mean', 'median', or 'max', got '{method}'")
+    # Determine analysis dates
+    if use_date_range:
+        if not start_date or not end_date:
+            raise ValueError("start_date and end_date are required when use_date_range=True")
+        start = pd.to_datetime(start_date)
+        end = pd.to_datetime(end_date)
+        analysis_dates = pd.date_range(start=start, end=end, freq=f'{step_months}MS')
+        logger.info(f"Generated {len(analysis_dates)} analysis dates from {start_date} to {end_date}")
+    else:
+        if not analysis_dates:
+            raise ValueError("Either analysis_dates or use_date_range must be provided")
+        analysis_dates = [pd.to_datetime(date) for date in analysis_dates]
+        logger.info(f"Using {len(analysis_dates)} specified analysis dates")
 
     # Log configuration
     logger.info("=" * 80)
-    logger.info("HISTORICAL SIMPLE BREAKPOINT ANALYSIS")
+    logger.info("HISTORICAL BEAST BREAKPOINT ANALYSIS")
     logger.info("=" * 80)
     logger.info(f"Input file: {input_nc_file}")
-    logger.info(f"Date range: {start_date} to {end_date}")
-    logger.info(f"Threshold: {threshold}")
-    logger.info(f"Window size: {window}")
-    logger.info(f"Method: {method}")
+    logger.info(f"Analysis dates: {[d.strftime('%Y-%m-%d') for d in analysis_dates]}")
+    logger.info(f"Break threshold: {break_threshold}")
+    logger.info(f"Trend max order: {trend_max_order}")
+    logger.info(f"Trend min separation: {trend_min_sep_dist}")
     logger.info(f"Lake chunk size: {lake_chunk_size}")
     logger.info(f"Output directory: {output_dir}")
     logger.info("=" * 80)
@@ -203,20 +238,19 @@ def run_historical_simple_breakpoint(
     logger.info(f"Dataset contains {len(dw_dataset.object_ids_)} lakes")
     logger.info(f"Date range in dataset: {dw_dataset.dates_[0]} to {dw_dataset.dates_[-1]}")
 
-    # Initialize Simple analyzer
+    # Initialize BEAST analyzer
     analyzer = HistoricalBreakpointAnalyzer(
-        method="simple",
-        threshold=threshold,
-        window=window,
-        method_name=method  # Pass the rolling statistic method
+        method="beast",
+        break_threshold=break_threshold,
+        trendMaxOrder=trend_max_order,
+        trendMinSepDist=trend_min_sep_dist
     )
 
     # Run analysis
-    logger.info("Starting Simple breakpoint detection...")
-    results = analyzer.analyze_time_range(
+    logger.info("Starting BEAST breakpoint detection...")
+    results = analyzer.analyze_dates(
         dataset=dw_dataset,
-        start_date=start_date,
-        end_date=end_date,
+        analysis_dates=analysis_dates,
         object_ids=specific_lakes,
         lake_chunk_size=lake_chunk_size,
         save_intermediate=save_intermediate,
@@ -225,48 +259,47 @@ def run_historical_simple_breakpoint(
 
     # Save and summarize results
     if not results.empty:
+        # Create filename based on date range or specific dates
+        if use_date_range:
+            date_str = f"{start_date}_to_{end_date}_step{step_months}m"
+        else:
+            date_str = f"{analysis_dates[0].strftime('%Y%m%d')}_to_{analysis_dates[-1].strftime('%Y%m%d')}_{len(analysis_dates)}dates"
+
         # Save main results files
-        csv_file = output_dir / f"simple_breakpoints_{start_date}_to_{end_date}.csv"
-        parquet_file = output_dir / f"simple_breakpoints_{start_date}_to_{end_date}.parquet"
+        csv_file = output_dir / f"beast_breakpoints_{date_str}.csv"
+        parquet_file = output_dir / f"beast_breakpoints_{date_str}.parquet"
 
         results.to_csv(csv_file)
         results.to_parquet(parquet_file)
 
-        # Calculate additional statistics
-        stats = {
-            'total_breakpoints': len(results),
-            'unique_lakes': results.index.nunique(),
-            'date_range': {
-                'earliest_break': results['date_break'].min() if 'date_break' in results.columns else None,
-                'latest_break': results['date_break'].max() if 'date_break' in results.columns else None
-            }
-        }
-
-        # Calculate water area changes if columns exist
-        if 'water_area_before' in results.columns and 'water_area_after' in results.columns:
-            results['water_area_change'] = results['water_area_after'] - results['water_area_before']
-            results['water_area_change_pct'] = (results['water_area_change'] / results['water_area_before']) * 100
-            stats['mean_water_area_change'] = float(results['water_area_change'].mean())
-            stats['mean_water_area_change_pct'] = float(results['water_area_change_pct'].mean())
-
-        # Save summary
+        # Save summary statistics
         summary = {
             'analysis_date': datetime.now().isoformat(),
-            'method': 'simple',
-            'start_date': start_date,
-            'end_date': end_date,
-            'threshold': threshold,
-            'window': window,
-            'method_type': method,
-            **stats,
+            'method': 'beast',
+            'analysis_dates': [d.strftime('%Y-%m-%d') for d in analysis_dates],
+            'break_threshold': break_threshold,
+            'total_breakpoints_found': len(results),
+            'unique_lakes_with_breaks': results.index.nunique(),
+            'unique_analysis_dates': results['analysis_date'].nunique() if 'analysis_date' in results.columns else len(
+                analysis_dates),
             'output_files': {
                 'csv': str(csv_file),
                 'parquet': str(parquet_file)
             }
         }
 
+        # Add BEAST-specific statistics
+        if 'proba_rbeast' in results.columns:
+            summary['mean_break_probability'] = float(results['proba_rbeast'].mean())
+            summary['max_break_probability'] = float(results['proba_rbeast'].max())
+            summary['min_break_probability'] = float(results['proba_rbeast'].min())
+
+        if 'break_number' in results.columns:
+            summary['total_break_events'] = int(results['break_number'].max())
+
+        # Save summary to JSON
         import json
-        summary_file = output_dir / f"simple_analysis_summary_{start_date}_to_{end_date}.json"
+        summary_file = output_dir / f"beast_analysis_summary_{date_str}.json"
         with open(summary_file, 'w') as f:
             json.dump(summary, f, indent=2, default=str)
 
@@ -276,10 +309,13 @@ def run_historical_simple_breakpoint(
         logger.info("=" * 80)
         logger.info(f"Total breakpoints found: {len(results)}")
         logger.info(f"Unique lakes with breaks: {results.index.nunique()}")
+        logger.info(
+            f"Analysis dates processed: {results['analysis_date'].nunique() if 'analysis_date' in results.columns else len(analysis_dates)}")
 
-        if 'water_area_change' in results.columns:
-            logger.info(f"Mean water area change: {results['water_area_change'].mean():.2f} km²")
-            logger.info(f"Mean change percentage: {results['water_area_change_pct'].mean():.1f}%")
+        if 'proba_rbeast' in results.columns:
+            logger.info(f"Mean break probability: {results['proba_rbeast'].mean():.3f}")
+            logger.info(
+                f"Break probability range: {results['proba_rbeast'].min():.3f} - {results['proba_rbeast'].max():.3f}")
 
         logger.info(f"\nResults saved to:")
         logger.info(f"  CSV: {csv_file}")
@@ -289,7 +325,7 @@ def run_historical_simple_breakpoint(
 
         return results
     else:
-        logger.warning("No breakpoints found in the specified time range")
+        logger.warning("No breakpoints found for any analysis date")
         return pd.DataFrame()
 
 
@@ -318,25 +354,23 @@ def main():
 
     # Run analysis
     try:
-        results = run_historical_simple_breakpoint(
+        results = run_historical_beast_breakpoint(
             input_nc_file=input_file,
+            output_dir=Path(OUTPUT_DIR),
+            analysis_dates=ANALYSIS_DATES,
+            use_date_range=USE_DATE_RANGE,
             start_date=START_DATE,
             end_date=END_DATE,
-            output_dir=Path(OUTPUT_DIR),
-            threshold=THRESHOLD,
-            window=WINDOW,
-            method=METHOD,
+            step_months=STEP_MONTHS,
+            break_threshold=BREAK_THRESHOLD,
+            trend_max_order=TREND_MAX_ORDER,
+            trend_min_sep_dist=TREND_MIN_SEP_DIST,
             lake_chunk_size=LAKE_CHUNK_SIZE,
             specific_lakes=SPECIFIC_LAKES,
             save_intermediate=SAVE_INTERMEDIATE
         )
 
-        logger.info("✅ Simple breakpoint analysis completed successfully!")
-
-        # Optional: Print first few results as preview
-        if not results.empty:
-            logger.info("\n📊 Preview of results (first 5 rows):")
-            logger.info(results.head().to_string())
+        logger.info("✅ BEAST breakpoint analysis completed successfully!")
 
     except Exception as e:
         logger.error(f"❌ Analysis failed: {e}")

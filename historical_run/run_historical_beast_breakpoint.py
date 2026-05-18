@@ -3,7 +3,7 @@
 Run historical BEAST breakpoint analysis on lake water time series data.
 
 This script performs Bayesian changepoint detection using the RBEAST library
-to identify significant changes in lake water area over a historical time period.
+to identify significant changes in lake water area at specific analysis dates.
 
 Usage:
     python run_historical_beast_breakpoint.py [env_file_path]
@@ -31,9 +31,25 @@ from historical_breakpoint_analyzer import HistoricalBreakpointAnalyzer
 # CONFIGURATION - Edit these values as needed
 # ============================================================================
 
-# Historical analysis date range
+# Analysis dates - List of specific dates to analyze
+# Format: YYYY-MM-DD
+ANALYSIS_DATES = [
+    "2020-06-01",
+    "2020-12-01",
+    "2021-06-01",
+    "2021-12-01",
+    "2022-06-01",
+    "2022-12-01",
+    "2023-06-01",
+    "2023-12-01",
+]
+
+# Alternative: Use date range with step months
+# If USE_DATE_RANGE = True, the above ANALYSIS_DATES will be ignored
+USE_DATE_RANGE = False
 START_DATE = "2020-01-01"  # Format: YYYY-MM-DD
 END_DATE = "2023-12-31"  # Format: YYYY-MM-DD
+STEP_MONTHS = 3  # Number of months between analyses (3 = quarterly)
 
 # BEAST-specific parameters
 BREAK_THRESHOLD = 0.5  # Probability threshold for detecting a break (0-1)
@@ -133,9 +149,12 @@ def get_input_file():
 
 def run_historical_beast_breakpoint(
         input_nc_file: Path,
-        start_date: str,
-        end_date: str,
         output_dir: Path,
+        analysis_dates: List[str] = None,
+        use_date_range: bool = False,
+        start_date: str = None,
+        end_date: str = None,
+        step_months: int = 3,
         break_threshold: float = 0.5,
         trend_max_order: int = 0,
         trend_min_sep_dist: int = 1,
@@ -150,12 +169,18 @@ def run_historical_beast_breakpoint(
     ----------
     input_nc_file : Path
         Path to the NetCDF file containing lake data
-    start_date : str
-        Start date for analysis (YYYY-MM-DD)
-    end_date : str
-        End date for analysis (YYYY-MM-DD)
     output_dir : Path
         Directory to save results
+    analysis_dates : List[str], optional
+        List of specific dates to analyze (YYYY-MM-DD)
+    use_date_range : bool
+        If True, generate dates from start_date to end_date with step_months
+    start_date : str, optional
+        Start date for date range (required if use_date_range=True)
+    end_date : str, optional
+        End date for date range (required if use_date_range=True)
+    step_months : int
+        Number of months between analyses (default: 3)
     break_threshold : float
         Probability threshold for break detection (0-1)
     trend_max_order : int
@@ -178,12 +203,26 @@ def run_historical_beast_breakpoint(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Determine analysis dates
+    if use_date_range:
+        if not start_date or not end_date:
+            raise ValueError("start_date and end_date are required when use_date_range=True")
+        start = pd.to_datetime(start_date)
+        end = pd.to_datetime(end_date)
+        analysis_dates = pd.date_range(start=start, end=end, freq=f'{step_months}MS')
+        logger.info(f"Generated {len(analysis_dates)} analysis dates from {start_date} to {end_date}")
+    else:
+        if not analysis_dates:
+            raise ValueError("Either analysis_dates or use_date_range must be provided")
+        analysis_dates = [pd.to_datetime(date) for date in analysis_dates]
+        logger.info(f"Using {len(analysis_dates)} specified analysis dates")
+
     # Log configuration
     logger.info("=" * 80)
     logger.info("HISTORICAL BEAST BREAKPOINT ANALYSIS")
     logger.info("=" * 80)
     logger.info(f"Input file: {input_nc_file}")
-    logger.info(f"Date range: {start_date} to {end_date}")
+    logger.info(f"Analysis dates: {[d.strftime('%Y-%m-%d') for d in analysis_dates]}")
     logger.info(f"Break threshold: {break_threshold}")
     logger.info(f"Trend max order: {trend_max_order}")
     logger.info(f"Trend min separation: {trend_min_sep_dist}")
@@ -209,10 +248,9 @@ def run_historical_beast_breakpoint(
 
     # Run analysis
     logger.info("Starting BEAST breakpoint detection...")
-    results = analyzer.analyze_time_range(
+    results = analyzer.analyze_dates(
         dataset=dw_dataset,
-        start_date=start_date,
-        end_date=end_date,
+        analysis_dates=analysis_dates,
         object_ids=specific_lakes,
         lake_chunk_size=lake_chunk_size,
         save_intermediate=save_intermediate,
@@ -221,9 +259,15 @@ def run_historical_beast_breakpoint(
 
     # Save and summarize results
     if not results.empty:
+        # Create filename based on date range or specific dates
+        if use_date_range:
+            date_str = f"{start_date}_to_{end_date}_step{step_months}m"
+        else:
+            date_str = f"{analysis_dates[0].strftime('%Y%m%d')}_to_{analysis_dates[-1].strftime('%Y%m%d')}_{len(analysis_dates)}dates"
+
         # Save main results files
-        csv_file = output_dir / f"beast_breakpoints_{start_date}_to_{end_date}.csv"
-        parquet_file = output_dir / f"beast_breakpoints_{start_date}_to_{end_date}.parquet"
+        csv_file = output_dir / f"beast_breakpoints_{date_str}.csv"
+        parquet_file = output_dir / f"beast_breakpoints_{date_str}.parquet"
 
         results.to_csv(csv_file)
         results.to_parquet(parquet_file)
@@ -232,11 +276,12 @@ def run_historical_beast_breakpoint(
         summary = {
             'analysis_date': datetime.now().isoformat(),
             'method': 'beast',
-            'start_date': start_date,
-            'end_date': end_date,
+            'analysis_dates': [d.strftime('%Y-%m-%d') for d in analysis_dates],
             'break_threshold': break_threshold,
             'total_breakpoints_found': len(results),
             'unique_lakes_with_breaks': results.index.nunique(),
+            'unique_analysis_dates': results['analysis_date'].nunique() if 'analysis_date' in results.columns else len(
+                analysis_dates),
             'output_files': {
                 'csv': str(csv_file),
                 'parquet': str(parquet_file)
@@ -254,7 +299,7 @@ def run_historical_beast_breakpoint(
 
         # Save summary to JSON
         import json
-        summary_file = output_dir / f"beast_analysis_summary_{start_date}_to_{end_date}.json"
+        summary_file = output_dir / f"beast_analysis_summary_{date_str}.json"
         with open(summary_file, 'w') as f:
             json.dump(summary, f, indent=2, default=str)
 
@@ -264,6 +309,8 @@ def run_historical_beast_breakpoint(
         logger.info("=" * 80)
         logger.info(f"Total breakpoints found: {len(results)}")
         logger.info(f"Unique lakes with breaks: {results.index.nunique()}")
+        logger.info(
+            f"Analysis dates processed: {results['analysis_date'].nunique() if 'analysis_date' in results.columns else len(analysis_dates)}")
 
         if 'proba_rbeast' in results.columns:
             logger.info(f"Mean break probability: {results['proba_rbeast'].mean():.3f}")
@@ -278,7 +325,7 @@ def run_historical_beast_breakpoint(
 
         return results
     else:
-        logger.warning("No breakpoints found in the specified time range")
+        logger.warning("No breakpoints found for any analysis date")
         return pd.DataFrame()
 
 
@@ -309,9 +356,12 @@ def main():
     try:
         results = run_historical_beast_breakpoint(
             input_nc_file=input_file,
+            output_dir=Path(OUTPUT_DIR),
+            analysis_dates=ANALYSIS_DATES,
+            use_date_range=USE_DATE_RANGE,
             start_date=START_DATE,
             end_date=END_DATE,
-            output_dir=Path(OUTPUT_DIR),
+            step_months=STEP_MONTHS,
             break_threshold=BREAK_THRESHOLD,
             trend_max_order=TREND_MAX_ORDER,
             trend_min_sep_dist=TREND_MIN_SEP_DIST,
