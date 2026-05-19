@@ -260,6 +260,17 @@ spec:
           DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)"
           mkdir -p "$DEBUG_DIR"
           
+          # Debug: Check where packages are installed
+          echo "=== DEBUG: Package locations ==="
+          python -c "import site; print('Site packages:', site.getsitepackages())"
+          python -c "import sys; print('sys.path:', sys.path)"
+          
+          # Try to find dotenv manually
+          find / -name "dotenv" -type d 2>/dev/null | head -5
+          
+          # Force install with explicit target
+          python -m pip install --target=/usr/local/lib/python3.12/site-packages python-dotenv
+          
           # Run the near-real-time breakpoint script
           echo "=== RUNNING NEAR REAL-TIME BREAKPOINT SCRIPT ==="
           echo "Python script will load .env from: /data/.env"
