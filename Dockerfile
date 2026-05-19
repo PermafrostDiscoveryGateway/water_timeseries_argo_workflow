@@ -1,6 +1,7 @@
 FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:main
 
 # Install additional Python dependencies using uv (matching the base image)
+# Move this BEFORE the verification
 COPY requirements.txt /tmp/requirements.txt
 
 # Use uv to install packages (ensures they go to the right environment)
@@ -20,9 +21,11 @@ ENV PYTHONPATH="/app:${PYTHONPATH}"
 # Set working directory
 WORKDIR /app
 
-# Verify installations
-RUN python -c "import dotenv; print('✅ dotenv installed successfully')"
+# Verify installations (now AFTER the pip install)
+RUN python -c "import dotenv; print('✅ dotenv installed successfully')" && \
+    python -c "import google.cloud.storage; print('✅ google-cloud-storage installed successfully')" && \
+    python -c "import toml; print('✅ toml installed successfully')"
 
 # Entrypoint
 ENTRYPOINT ["python"]
-CMD ["-c", "print('Usage: docker run </td> <script.py> [args...]')"]
+CMD ["-c", "print('Usage: docker run <script.py> [args...]')"]
