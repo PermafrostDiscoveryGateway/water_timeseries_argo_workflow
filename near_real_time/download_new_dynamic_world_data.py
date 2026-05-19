@@ -5,11 +5,9 @@ from datetime import datetime
 from loguru import logger
 import os
 import glob
-import sys
 import xarray as xr
 from dotenv import load_dotenv
 from water_timeseries.downloader import EarthEngineDownloader
-import water_timeseries.dataset
 
 def find_missing_summer_dates(existing_dates, current_date=None):
     """
