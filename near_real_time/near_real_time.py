@@ -91,7 +91,7 @@ def precompute_nrt_breakpoints(
             dataset=dw_dataset,
             analysis_date=analysis_date,
             data_aggregation_period=data_aggregation_period,
-            object_id=chunk_ids
+            object_id=str(chunk_ids)
         )
 
         results.append(chunk_result)
