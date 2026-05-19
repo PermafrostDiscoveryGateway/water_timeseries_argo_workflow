@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  name: near-real-time
+  name: near-real-time-autopilot
   namespace: argo
   annotations:
     workflows.argoproj.io/pod-keep: "OnCompletion"
@@ -9,8 +9,49 @@ spec:
   ttlStrategy:
     secondsAfterCompletion: 86400
   entrypoint: main
+
+  # Set default resource requests for all pods in this workflow
+  podResourceRequest:
+    cpu: "100m"
+    memory: "128Mi"
+    ephemeral-storage: "1Gi"
+
+  # Override resources for specific containers
+  podSpecPatch: |
+    initContainers:
+    - name: init
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+          ephemeral-storage: "1Gi"
+    containers:
+    - name: wait
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+          ephemeral-storage: "1Gi"
+    - name: main
+      resources:
+        requests:
+          cpu: "8"
+          memory: "32Gi"
+          ephemeral-storage: "8Gi"
+
+  # Configure artifact repository to use PVC
+  artifactRepository:
+    pvc:
+      claimName: argo-workflows-share
+      key: artifacts
+
+  # Disable artifact GC
+  artifactGC:
+    strategy: Never
+
   imagePullSecrets:
   - name: ghcr-secret
+
   volumes:
   - name: lake-drainage-volume
     persistentVolumeClaim:
@@ -27,34 +68,50 @@ spec:
       items:
       - key: credentials
         path: credentials
+
   templates:
   - name: main
     metadata:
       labels:
         long-running-job: "true"
+    # Disable automatic artifact passing
+    inputs: {}
+    outputs: {}
     container:
-      image: ghcr.io/tcnichol/water-timeseries:3-near-real-time-run-argo-workflow
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:3-near-real-time-run-argo-workflow
       imagePullPolicy: Always
+      # These resources will be overridden by podSpecPatch above
+      # but kept here as fallback
       resources:
         requests:
-          memory: "64Gi"
-          cpu: "16"
-          ephemeral-storage: "50Gi"
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
       command: ["bash", "-c"]
       args:
         - |
           set -e
           set -x
           
-          echo "=== STARTING NEAR REAL-TIME BREAKPOINT JOB ==="
+          echo "=== STARTING NEAR REAL-TIME BREAKPOINT JOB (AUTOPILOT) ==="
           echo "Timestamp: $(date)"
-          echo "Hostname: $(hostname)"
+          echo "Region: us-west1"
           echo "Pod: ${POD_NAME:-unknown}"
           
-          # Create ALL required directories as specified in .env file
-          echo "=== CREATING DIRECTORY STRUCTURE ==="
+          # Check allocated resources
+          echo "=== RESOURCE ALLOCATION ==="
+          echo "Memory limit: $(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null | numfmt --to=iec-i 2>/dev/null || echo 'Unknown')"
+          echo "CPU count: $(nproc)"
+          echo "Ephemeral storage available: $(df -h / | awk 'NR==2 {print $4}')"
           
-          # Main directories from .env
+          # IMPORTANT: Use PVC for large data, not ephemeral storage
+          echo "=== CHECKING PVC STORAGE ==="
+          df -h /data
+          
+          # Create ALL required directories on PVC (not ephemeral storage)
+          echo "=== CREATING DIRECTORY STRUCTURE ON PVC ==="
+          
+          # Main directories from .env - all on /data (PVC)
           mkdir -p /data/water_timeseries
           mkdir -p /data/water_timeseries/dynamic_world_data
           mkdir -p /data/water_timeseries/split_lakes
@@ -62,10 +119,30 @@ spec:
           mkdir -p /data/water_timeseries/new_dynamic_world
           mkdir -p /data/water_timeseries/split_new_dynamic_world
           mkdir -p /data/water_timeseries/output
-          s
+          
+          # Additional directories for processing - also on PVC
+          mkdir -p /data/water_timeseries/checkpoint
+          mkdir -p /data/water_timeseries/temp_netcdf
+          mkdir -p /data/water_timeseries/subsets
+          mkdir -p /data/water_timeseries/breakpoints
           
           # Set permissions
           chmod -R 755 /data/water_timeseries
+          
+          # Set TMPDIR to use PVC instead of ephemeral storage
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          
+          # Check available space on PVC
+          echo "=== PVC STORAGE AVAILABLE ==="
+          df -h /data
+          AVAILABLE_GB=$(df /data | awk 'NR==2 {print $4}' | sed 's/G//')
+          echo "Available space on PVC: ${AVAILABLE_GB}GB"
+          
+          if [ ${AVAILABLE_GB%.*} -lt 50 ]; then
+            echo "WARNING: Less than 50GB available on PVC. May run out of space!"
+          fi
           
           # Check if input files exist
           echo "=== CHECKING INPUT FILES ==="
@@ -97,20 +174,16 @@ spec:
           download_recent_data=False
           EOF
           
-          # Also create a version with download_recent_data=True for testing
-          # Uncomment to always download fresh data
-          # sed -i 's/download_recent_data=False/download_recent_data=True/' /data/.env
+          echo "Created .env file at /data/.env"
           
-          echo "Created .env file at /data/.env with contents:"
-          cat /data/.env
-          
-          # Check available space and system info
+          # Check system resources
           echo "=== SYSTEM INFORMATION ==="
-          df -h /data
           echo "Memory info:"
           free -h
           echo "CPU info:"
-          lscpu | grep -E "^(CPU\(s\):|Model name:|Architecture:)"
+          nproc
+          cat /proc/cpuinfo | grep "model name" | head -1
+          
           echo "Python version:"
           python --version
           
@@ -123,7 +196,7 @@ spec:
             echo "✅ GCP credentials found"
           else
             echo "❌ GCP credentials missing"
-            ls -la /root/.config/gcloud/
+            ls -la /root/.config/gcloud/ 2>/dev/null || echo "Directory not found"
           fi
           
           # Earth Engine credentials
@@ -132,7 +205,7 @@ spec:
             echo "✅ Earth Engine credentials found"
           else
             echo "❌ Earth Engine credentials missing"
-            ls -la /root/.config/earthengine/
+            ls -la /root/.config/earthengine/ 2>/dev/null || echo "Directory not found"
           fi
           
           # Set Earth Engine project
@@ -141,7 +214,7 @@ spec:
           
           # Environment variables dump (excluding secrets)
           echo "=== KEY ENVIRONMENT VARIABLES ==="
-          env | grep -E "EE_|GOOGLE_|PROJECT|_DIR|_FILE" | sort
+          env | grep -E "EE_|GOOGLE_|PROJECT|_DIR|_FILE|TMP" | sort
           
           # Create a debug directory for logs
           DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)"
@@ -150,10 +223,13 @@ spec:
           # Run the near-real-time breakpoint script
           echo "=== RUNNING NEAR REAL-TIME BREAKPOINT SCRIPT ==="
           echo "Python script will load .env from: /data/.env"
+          echo "Using TMPDIR: $TMPDIR"
           
-          # Run the script with the .env file path as argument
+          # Run the script with memory monitoring
           cd /app
-          python /app/near_real_time/near_real_time.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
+          
+          # Use time command to track resources
+          /usr/bin/time -v python /app/near_real_time/near_real_time.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
           
           SCRIPT_EXIT_CODE=${PIPESTATUS[0]}
           
@@ -172,19 +248,26 @@ spec:
             if [ $OUTPUT_COUNT -gt 0 ]; then
               echo "✅ Successfully generated output files"
               # List the most recent output files
-              find /data/water_timeseries/output -type f -printf '%T@ %p\n' | sort -rn | head -5 | cut -d' ' -f2-
+              find /data/water_timeseries/output -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -5 | cut -d' ' -f2-
             fi
           else
             echo "❌ Output directory not found or empty"
+          fi
+          
+          # Clean up temp files if successful
+          if [ $SCRIPT_EXIT_CODE -eq 0 ]; then
+            echo "=== CLEANING UP TEMP FILES ==="
+            rm -rf /data/water_timeseries/temp_netcdf/*
+            rm -rf /data/water_timeseries/checkpoint/*
+            echo "Temp files cleaned"
           fi
           
           # Capture additional diagnostics if script failed
           if [ $SCRIPT_EXIT_CODE -ne 0 ]; then
             echo "=== SCRIPT FAILED - CAPTURING DEBUG INFO ==="
             
-            # Save all possible debug info
             echo "=== Python package versions ==="
-            pip list | grep -E "xarray|pandas|loguru|earthengine|google"
+            pip list | grep -E "xarray|pandas|loguru|earthengine|google" || echo "pip not available"
             
             echo "=== Directory structure ==="
             find /data/water_timeseries -type d | head -20
@@ -192,18 +275,19 @@ spec:
             echo "=== Available .nc files ==="
             find /data -name "*.nc" 2>/dev/null | head -10
             
-            echo "=== Last 50 lines of script output ==="
-            tail -50 "$DEBUG_DIR/script_output.log"
+            echo "=== Memory usage at failure ==="
+            free -h
             
-            # Keep container alive for debugging
-            echo "Debug mode activated. Pod will remain for 6 hours."
-            echo "Use: kubectl -n argo exec -it $POD_NAME -- /bin/bash"
+            echo "=== Disk usage at failure ==="
+            df -h /data
+            df -h /
             
-            # Create a marker file to indicate debugging
+            echo "=== Last 100 lines of script output ==="
+            tail -100 "$DEBUG_DIR/script_output.log"
+            
+            # Create marker file for debugging
             touch "$DEBUG_DIR/DEBUG_MODE_ACTIVE"
-            
-            # Wait for debugger
-            sleep 21600
+            echo "Debug information saved to: $DEBUG_DIR"
           fi
           
           exit $SCRIPT_EXIT_CODE
@@ -227,7 +311,9 @@ spec:
           fieldRef:
             fieldPath: metadata.namespace
       - name: PYTHONUNBUFFERED
-        value: "1"  # Ensures Python output is not buffered
+        value: "1"
+      - name: TMPDIR
+        value: "/data/water_timeseries/temp_netcdf"
       volumeMounts:
       - name: gcp-creds
         mountPath: /root/.config/gcloud

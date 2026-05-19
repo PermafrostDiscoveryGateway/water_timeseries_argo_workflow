@@ -33,7 +33,7 @@ spec:
       labels:
         long-running-job: "true"
     container:
-      image: ghcr.io/tcnichol/water-timeseries:3-near-real-time-run-argo-workflow
+      image: ghcr.io/tcnichol/water_timeseries_argo_workflow:3-near-real-time-run-argo-workflow
       imagePullPolicy: Always
       resources:
         requests:
