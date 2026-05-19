@@ -29,20 +29,34 @@ def precompute_nrt_breakpoints(
         total_lakes = len(all_lake_ids)
         print(f"Total lakes: {total_lakes}")
 
+        # Convert analysis_date to datetime if needed
         if analysis_date is None:
             dates = ds_meta.date.values
-            analysis_date = pd.to_datetime(dates[-1])
+            analysis_date = pd.to_datetime(dates[-3])
             print(f"Using most recent date: {analysis_date}")
+        else:
+            # Convert string to datetime if necessary
+            if isinstance(analysis_date, str):
+                analysis_date = pd.to_datetime(analysis_date)
+                print(f"Using specified analysis date: {analysis_date}")
+
+            # Verify the date exists in the dataset
+            if analysis_date not in ds_meta.date.values:
+                print(f"Warning: {analysis_date} not in dataset dates")
+                dates = ds_meta.date.values
+                print(f"Available date range: {dates[0]} to {dates[-1]}")
+                # Use the most recent date instead
+                analysis_date = pd.to_datetime(dates[-1])
+                print(f"Using most recent date instead: {analysis_date}")
 
     results = []
 
-    # Process each chunk by loading ONLY that chunk of data
+    # Process each chunk
     for i in range(0, total_lakes, lake_chunk_size):
         chunk_ids = all_lake_ids[i:i + lake_chunk_size]
-        print(f"\nProcessing chunk {i // lake_chunk_size + 1}/{(total_lakes + lake_chunk_size - 1) // lake_chunk_size} "
-              f"({len(chunk_ids)} lakes)...")
+        print(f"\nProcessing chunk {i // lake_chunk_size + 1}/{(total_lakes + lake_chunk_size - 1) // lake_chunk_size}")
 
-        # Load only this chunk using Dask
+        # Load chunk
         ds = xr.open_dataset(
             input_nc_file,
             engine='netcdf4',
@@ -51,6 +65,28 @@ def precompute_nrt_breakpoints(
         ds_chunk = ds.sel(id_geohash=chunk_ids).load()
         ds.close()
 
+        # Verify the chunk has data for analysis_date
+        if analysis_date not in ds_chunk.date.values:
+            print(f"  Warning: analysis_date {analysis_date} not in this chunk's dates")
+            print(f"  Chunk date range: {ds_chunk.date.values[0]} to {ds_chunk.date.values[-1]}")
+            # Use the most recent date from this chunk
+            chunk_analysis_date = pd.to_datetime(ds_chunk.date.values[-1])
+            print(f"  Using chunk's most recent date: {chunk_analysis_date}")
+        else:
+            chunk_analysis_date = analysis_date
+
+        # Check if chunk has valid lakes for this date
+        ds_analysis_test = ds_chunk.sel(date=chunk_analysis_date)
+        valid_lakes = ds_analysis_test.dropna(dim="id_geohash", how="all").id_geohash.values
+
+        if len(valid_lakes) == 0:
+            print(f"  No valid lakes for date {chunk_analysis_date}, skipping chunk")
+            ds_chunk.close()
+            del ds_chunk
+            continue
+
+        print(f"  Found {len(valid_lakes)} valid lakes for date {chunk_analysis_date}")
+
         # Create dataset wrapper for just this chunk
         dw_dataset_chunk = DWDataset(ds_chunk)
 
@@ -58,19 +94,30 @@ def precompute_nrt_breakpoints(
         nrt_breakpoint = NRTBreakpoint(kwargs_break={})
 
         # Calculate breakpoints for this chunk
-        chunk_result = nrt_breakpoint.calculate_break(
-            dataset=dw_dataset_chunk,
-            analysis_date=analysis_date,
-            data_aggregation_period=data_aggregation_period,
-            object_id=str(chunk_ids),
-        )
+        try:
+            chunk_result = nrt_breakpoint.calculate_break(
+                dataset=dw_dataset_chunk,
+                analysis_date=chunk_analysis_date,  # Use the datetime64 version
+                data_aggregation_period=data_aggregation_period,
+                object_id=str(chunk_ids),
+            )
 
-        results.append(chunk_result)
+            if chunk_result is not None and len(chunk_result) > 0:
+                results.append(chunk_result)
 
-        # Save chunk results as Parquet
-        chunk_output_file = output_dir / f"nrt_results_chunk_{i // lake_chunk_size + 1}.parquet"
-        chunk_result.to_parquet(chunk_output_file, index=True)
-        print(f"  Saved chunk results to {chunk_output_file}")
+                # Save chunk results
+                chunk_output_file = output_dir / f"nrt_results_chunk_{i // lake_chunk_size + 1}.parquet"
+                chunk_result.to_parquet(chunk_output_file, index=True)
+                print(f"  Saved chunk results to {chunk_output_file}")
+            else:
+                print(f"  No results generated for chunk")
+
+        except ValueError as e:
+            if "n_jobs == 0" in str(e):
+                print(f"  No valid lakes for analysis in this chunk")
+            else:
+                print(f"  Error processing chunk: {e}")
+            continue
 
         # Clear memory
         ds_chunk.close()
@@ -79,29 +126,12 @@ def precompute_nrt_breakpoints(
         import gc
         gc.collect()
 
-        print(f"  Memory cleared for next chunk")
-
-    # Combine all results
+    # Combine results
     if results:
         final_results = pd.concat(results, axis=0)
-
-        # Save final results as Parquet
         final_output_file = output_dir / "nrt_breakpoints_all_lakes.parquet"
         final_results.to_parquet(final_output_file, index=True)
         print(f"\n✅ Final results saved to {final_output_file}")
-
-        # Print summary statistics
-        print(f"\n📊 Summary Statistics:")
-        print(f"  - Total lakes processed: {len(final_results)}")
-        if 'water_predicted' in final_results.columns:
-            print(f"  - Lakes with predictions: {final_results['water_predicted'].notna().sum()}")
-            print(f"  - Mean predicted water: {final_results['water_predicted'].mean():.4f}")
-            print(f"  - Mean residual: {final_results['water_residual'].mean():.4f}")
-
-        # Print file size
-        file_size_gb = final_output_file.stat().st_size / (1024 ** 3)
-        print(f"  - Output file size: {file_size_gb:.2f} GB")
-
         return final_results
     else:
         print("⚠ No results generated")
