@@ -74,14 +74,11 @@ spec:
     metadata:
       labels:
         long-running-job: "true"
-    # Disable automatic artifact passing
     inputs: {}
     outputs: {}
     container:
       image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:3-near-real-time-run-argo-workflow
       imagePullPolicy: Always
-      # These resources will be overridden by podSpecPatch above
-      # but kept here as fallback
       resources:
         requests:
           memory: "32Gi"
@@ -100,7 +97,8 @@ spec:
           
           # Check allocated resources
           echo "=== RESOURCE ALLOCATION ==="
-          echo "Memory limit: $(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null | numfmt --to=iec-i 2>/dev/null || echo 'Unknown')"
+          echo "Memory info:"
+          free -h
           echo "CPU count: $(nproc)"
           echo "Ephemeral storage available: $(df -h / | awk 'NR==2 {print $4}')"
           
@@ -128,11 +126,7 @@ spec:
           
           # Set permissions
           chmod -R 755 /data/water_timeseries
-          
-          # Set TMPDIR to use PVC instead of ephemeral storage
-          export TMPDIR=/data/water_timeseries/temp_netcdf
-          export TEMP=/data/water_timeseries/temp_netcdf
-          export TMP=/data/water_timeseries/temp_netcdf
+        
           
           # Check available space on PVC
           echo "=== PVC STORAGE AVAILABLE ==="
@@ -225,11 +219,9 @@ spec:
           echo "Python script will load .env from: /data/.env"
           echo "Using TMPDIR: $TMPDIR"
           
-          # Run the script with memory monitoring
+          # Run the script (removed /usr/bin/time which wasn't installed)
           cd /app
-          
-          # Use time command to track resources
-          /usr/bin/time -v python /app/near_real_time/near_real_time.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
+          python /app/near_real_time/near_real_time.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
           
           SCRIPT_EXIT_CODE=${PIPESTATUS[0]}
           
