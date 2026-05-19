@@ -227,6 +227,8 @@ spec:
           
           exit $SCRIPT_EXIT_CODE
       env:
+      - name: lake_chunk_size
+        value: "500"
       - name: ENV_FILE_PATH
         value: "/data/.env"
       - name: GOOGLE_APPLICATION_CREDENTIALS
