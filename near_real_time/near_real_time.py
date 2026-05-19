@@ -167,6 +167,14 @@ def main():
         logger.debug(f"Results saved to {output_dir} : {results}")
     else:
         logger.debug(f"Not downloading new dynamic world data")
+        logger.debug(f"Using {most_recent_dynamic_world_file} as input data.")
+        results = precompute_nrt_breakpoints(
+            input_nc_file=most_recent_dynamic_world_file,
+            output_dir=output_dir,
+            lake_chunk_size=2000,
+            n_jobs=1
+        )
+        logger.debug(f"Results saved to {output_dir} : {results}")
 
 if __name__ == "__main__":
     main()
