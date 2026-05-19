@@ -145,8 +145,8 @@ def extract_lake_subset_with_specific_ids(
 # Example usage in your main script
 if __name__ == "__main__":
     # For testing: create a small subset of your large file
-    large_file = Path("/data/water_timeseries/dynamic_world_data/lakes_dw_V2d.nc")
-    test_file = Path("/data/water_timeseries/dynamic_world_data/lakes_dw_V2d_test_5000.nc")
+    large_file = Path("/mnt/argo-filestore/water_timeseries/dynamic_world_data/lakes_dw_V2d.nc")
+    test_file = Path("/mnt/argo-filestore/water_timeseries/dynamic_world_data_test/lakes_dw_V2d_test_5000.nc")
 
     # Extract 5000 random lakes for testing
     extract_lake_subset(
