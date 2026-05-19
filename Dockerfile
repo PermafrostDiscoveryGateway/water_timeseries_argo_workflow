@@ -1,22 +1,28 @@
 FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:main
 
-# Install additional Python dependencies
+# Install additional Python dependencies using uv (matching the base image)
 COPY requirements.txt /tmp/requirements.txt
-RUN uv pip install --system -r /tmp/requirements.txt
 
-# Copy google_cloud_utils folder and everything in it to /app/google_cloud_utils
+# Use uv to install packages (ensures they go to the right environment)
+RUN uv pip install --system \
+    python-dotenv \
+    google-cloud-storage \
+    google-api-core \
+    toml
+
+# Copy your application code
 COPY google_cloud_utils/ /app/google_cloud_utils/
-
 COPY near_real_time /app/near_real_time
 
-# Add /app to Python path so modules can be imported
+# Add /app to Python path
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 
 # Set working directory
 WORKDIR /app
 
-# Entrypoint - allows running any Python script with parameters
-ENTRYPOINT ["python"]
+# Verify installations
+RUN python -c "import dotenv; print('✅ dotenv installed successfully')"
 
-# Default command (shows help if no script specified)
-CMD ["-c", "print('Usage: docker run <image> <script.py> [args...]')"]
+# Entrypoint
+ENTRYPOINT ["python"]
+CMD ["-c", "print('Usage: docker run </td> <script.py> [args...]')"]

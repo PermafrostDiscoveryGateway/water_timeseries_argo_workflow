@@ -106,6 +106,48 @@ spec:
           echo "=== CHECKING PVC STORAGE ==="
           df -h /data
           
+          # Debug: Check Python environment
+          echo "=== PYTHON ENVIRONMENT DEBUG ==="
+          which python
+          python --version
+          echo "Python sys.path:"
+          python -c "import sys; print('\n'.join(sys.path))"
+          
+          # Use uv to install missing packages (matches the base image)
+          echo "=== INSTALLING MISSING PACKAGES WITH UV ==="
+          
+          # Check if uv is available
+          if command -v uv &> /dev/null; then
+            echo "✅ Using uv for package installation"
+            
+            # Install python-dotenv and other missing packages using uv
+            uv pip install --system \
+              python-dotenv \
+              google-cloud-storage \
+              google-api-core \
+              toml
+            
+            # Verify installation
+            echo "=== VERIFYING INSTALLATIONS ==="
+            uv pip list | grep -E "dotenv|google-cloud|toml"
+            
+            # Test imports
+            python -c "import dotenv; print('✅ dotenv imported successfully')"
+            python -c "import google.cloud.storage; print('✅ google-cloud-storage imported successfully')"
+            python -c "import toml; print('✅ toml imported successfully')"
+            
+          else
+            echo "❌ uv not found! This image may not have the expected environment."
+            echo "Available commands:"
+            ls -la /usr/local/bin/ | grep -E "python|pip|uv"
+            
+            # Fallback to pip with --target to a specific directory
+            mkdir -p /app/packages
+            pip install --target=/app/packages python-dotenv google-cloud-storage toml
+            export PYTHONPATH="/app/packages:${PYTHONPATH}"
+            echo "Added /app/packages to PYTHONPATH"
+          fi
+          
           # Create ALL required directories on PVC (not ephemeral storage)
           echo "=== CREATING DIRECTORY STRUCTURE ON PVC ==="
           
@@ -126,7 +168,11 @@ spec:
           
           # Set permissions
           chmod -R 755 /data/water_timeseries
-        
+          
+          # Set TMPDIR to use PVC instead of ephemeral storage
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
           
           # Check available space on PVC
           echo "=== PVC STORAGE AVAILABLE ==="
@@ -208,7 +254,7 @@ spec:
           
           # Environment variables dump (excluding secrets)
           echo "=== KEY ENVIRONMENT VARIABLES ==="
-          env | grep -E "EE_|GOOGLE_|PROJECT|_DIR|_FILE|TMP" | sort
+          env | grep -E "EE_|GOOGLE_|PROJECT|_DIR|_FILE|TMP|PYTHONPATH" | sort
           
           # Create a debug directory for logs
           DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)"
@@ -218,8 +264,9 @@ spec:
           echo "=== RUNNING NEAR REAL-TIME BREAKPOINT SCRIPT ==="
           echo "Python script will load .env from: /data/.env"
           echo "Using TMPDIR: $TMPDIR"
+          echo "PYTHONPATH: $PYTHONPATH"
           
-          # Run the script (removed /usr/bin/time which wasn't installed)
+          # Run the script
           cd /app
           python /app/near_real_time/near_real_time.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
           
@@ -258,8 +305,12 @@ spec:
           if [ $SCRIPT_EXIT_CODE -ne 0 ]; then
             echo "=== SCRIPT FAILED - CAPTURING DEBUG INFO ==="
             
-            echo "=== Python package versions ==="
-            pip list | grep -E "xarray|pandas|loguru|earthengine|google" || echo "pip not available"
+            echo "=== Installed packages ==="
+            if command -v uv &> /dev/null; then
+              uv pip list | grep -E "dotenv|google-cloud|toml" || echo "Packages not found"
+            else
+              pip list | grep -E "dotenv|google-cloud|toml" || echo "Packages not found"
+            fi
             
             echo "=== Directory structure ==="
             find /data/water_timeseries -type d | head -20
