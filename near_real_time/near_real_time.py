@@ -99,7 +99,7 @@ def precompute_nrt_breakpoints(
                 dataset=dw_dataset_chunk,
                 analysis_date=chunk_analysis_date,  # Use the datetime64 version
                 data_aggregation_period=data_aggregation_period,
-                object_id=str(chunk_ids),
+                object_id=chunk_ids,
             )
 
             if chunk_result is not None and len(chunk_result) > 0:
