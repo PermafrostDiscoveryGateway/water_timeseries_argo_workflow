@@ -147,22 +147,26 @@ def main():
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     dynamic_world_data_file = os.environ['dynamic_world_data_file']
+    download_recent_data = os.environ.get('download_recent_data', 'false').lower() == 'true'
     # TODO replace this with the directory, and find the
     vector_lake_file = os.environ['vector_lake_file']
     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
 
 
-    new_dynamic_world_dataset_file = download_new_dynamic_world_data.download_new_dynamic_world_data(env_path=env_path)
-    logger.debug(f"New dynamic world dataset file is: {new_dynamic_world_dataset_file}")
-    logger.debug(f"Run near real time analysis for {new_dynamic_world_dataset_file}")
+    if download_recent_data:
+        new_dynamic_world_dataset_file = download_new_dynamic_world_data.download_new_dynamic_world_data(env_path=env_path)
+        logger.debug(f"New dynamic world dataset file is: {new_dynamic_world_dataset_file}")
+        logger.debug(f"Run near real time analysis for {new_dynamic_world_dataset_file}")
 
-    results = precompute_nrt_breakpoints(
-        input_nc_file=new_dynamic_world_dataset_file,
-        output_dir=output_dir,
-        lake_chunk_size=2000,
-        n_jobs=1
-    )
-    logger.debug(f"Results saved to {output_dir} : {results}")
+        results = precompute_nrt_breakpoints(
+            input_nc_file=new_dynamic_world_dataset_file,
+            output_dir=output_dir,
+            lake_chunk_size=2000,
+            n_jobs=1
+        )
+        logger.debug(f"Results saved to {output_dir} : {results}")
+    else:
+        logger.debug(f"Not downloading new dynamic world data")
 
 if __name__ == "__main__":
     main()
