@@ -1,14 +1,9 @@
-import netCDF4 as nc
-import pandas as pd
-from netCDF4 import num2date
-from datetime import datetime
 from loguru import logger
 import os
 import glob
 import sys
 from dotenv import load_dotenv
 import download_new_dynamic_world_data
-from water_timeseries.breakpoint import NRTBreakpoint
 from water_timeseries.breakpoint import NRTBreakpoint
 from water_timeseries.dataset import DWDataset
 import xarray as xr
@@ -20,7 +15,6 @@ def precompute_nrt_breakpoints(
         input_nc_file: str | Path,
         output_dir: str | Path,
         lake_chunk_size: int = 2000,
-        n_jobs: int = 1,
         analysis_date: str | pd.Timestamp | None = None,
         data_aggregation_period: str = "monthly"
 ) -> pd.DataFrame:
@@ -91,7 +85,7 @@ def precompute_nrt_breakpoints(
             dataset=dw_dataset,
             analysis_date=analysis_date,
             data_aggregation_period=data_aggregation_period,
-            object_id=str(chunk_ids)
+            object_id=str(chunk_ids),
         )
 
         results.append(chunk_result)
@@ -148,7 +142,6 @@ def main():
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     dynamic_world_data_file = os.environ['dynamic_world_data_file']
     download_recent_data = os.environ.get('download_recent_data', 'false').lower() == 'true'
-    # TODO replace this with the directory, and find the
     vector_lake_file = os.environ['vector_lake_file']
     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
 
@@ -162,7 +155,6 @@ def main():
             input_nc_file=new_dynamic_world_dataset_file,
             output_dir=output_dir,
             lake_chunk_size=2000,
-            n_jobs=1
         )
         logger.debug(f"Results saved to {output_dir} : {results}")
     else:
@@ -172,7 +164,6 @@ def main():
             input_nc_file=most_recent_dynamic_world_file,
             output_dir=output_dir,
             lake_chunk_size=2000,
-            n_jobs=1
         )
         logger.debug(f"Results saved to {output_dir} : {results}")
 
