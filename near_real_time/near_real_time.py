@@ -144,6 +144,9 @@ def main():
     download_recent_data = os.environ.get('download_recent_data', 'false').lower() == 'true'
     vector_lake_file = os.environ['vector_lake_file']
     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
+    # NEW: Get analysis_date from environment
+    analysis_date = os.environ.get('analysis_date', None)
+    data_aggregation_period = os.environ.get('data_aggregation_period', 'monthly')
 
 
     if download_recent_data:
@@ -155,6 +158,8 @@ def main():
             input_nc_file=new_dynamic_world_dataset_file,
             output_dir=output_dir,
             lake_chunk_size=2000,
+            analysis_date=analysis_date,  # ADD THIS
+            data_aggregation_period=data_aggregation_period,
         )
         logger.debug(f"Results saved to {output_dir} : {results}")
     else:
@@ -164,6 +169,8 @@ def main():
             input_nc_file=most_recent_dynamic_world_file,
             output_dir=output_dir,
             lake_chunk_size=2000,
+            analysis_date=analysis_date,  # ADD THIS
+            data_aggregation_period=data_aggregation_period,
         )
         logger.debug(f"Results saved to {output_dir} : {results}")
 

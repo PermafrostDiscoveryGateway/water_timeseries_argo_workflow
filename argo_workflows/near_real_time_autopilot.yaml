@@ -10,13 +10,11 @@ spec:
     secondsAfterCompletion: 86400
   entrypoint: main
 
-  # Set default resource requests for all pods in this workflow
   podResourceRequest:
     cpu: "100m"
     memory: "128Mi"
     ephemeral-storage: "1Gi"
 
-  # Override resources for specific containers
   podSpecPatch: |
     initContainers:
     - name: init
@@ -39,13 +37,11 @@ spec:
           memory: "32Gi"
           ephemeral-storage: "8Gi"
 
-  # Configure artifact repository to use PVC
   artifactRepository:
     pvc:
       claimName: argo-workflows-share
       key: artifacts
 
-  # Disable artifact GC
   artifactGC:
     strategy: Never
 
@@ -92,112 +88,87 @@ spec:
           
           echo "=== STARTING NEAR REAL-TIME BREAKPOINT JOB (AUTOPILOT) ==="
           echo "Timestamp: $(date)"
-          echo "Region: us-west1"
           echo "Pod: ${POD_NAME:-unknown}"
           
-          # Check allocated resources
+          # Check resources
           echo "=== RESOURCE ALLOCATION ==="
-          echo "Memory info:"
           free -h
           echo "CPU count: $(nproc)"
-          echo "Ephemeral storage available: $(df -h / | awk 'NR==2 {print $4}')"
-          
-          # IMPORTANT: Use PVC for large data, not ephemeral storage
-          echo "=== CHECKING PVC STORAGE ==="
+          df -h /
           df -h /data
           
-          # Debug: Check Python environment
-          echo "=== PYTHON ENVIRONMENT DEBUG ==="
+          # Debug Python environment
+          echo "=== PYTHON ENVIRONMENT ==="
           which python
           python --version
+          which pip
+          pip --version
+          
           echo "Python sys.path:"
           python -c "import sys; print('\n'.join(sys.path))"
           
-          # Use uv to install missing packages (matches the base image)
-          echo "=== INSTALLING MISSING PACKAGES WITH UV ==="
+          # Try multiple methods to install packages
+          echo "=== INSTALLING PYTHON PACKAGES ==="
           
-          # Check if uv is available
+          # Method 1: Try uv
           if command -v uv &> /dev/null; then
-            echo "✅ Using uv for package installation"
-            
-            # Install python-dotenv and other missing packages using uv
-            uv pip install --system \
-              python-dotenv \
-              google-cloud-storage \
-              google-api-core \
-              toml
-            
-            # Verify installation
-            echo "=== VERIFYING INSTALLATIONS ==="
-            uv pip list | grep -E "dotenv|google-cloud|toml"
-            
-            # Test imports
-            python -c "import dotenv; print('✅ dotenv imported successfully')"
-            python -c "import google.cloud.storage; print('✅ google-cloud-storage imported successfully')"
-            python -c "import toml; print('✅ toml imported successfully')"
-            
-          else
-            echo "❌ uv not found! This image may not have the expected environment."
-            echo "Available commands:"
-            ls -la /usr/local/bin/ | grep -E "python|pip|uv"
-            
-            # Fallback to pip with --target to a specific directory
-            mkdir -p /app/packages
-            pip install --target=/app/packages python-dotenv google-cloud-storage toml
-            export PYTHONPATH="/app/packages:${PYTHONPATH}"
-            echo "Added /app/packages to PYTHONPATH"
+            echo "Method 1: Using uv"
+            uv pip install --system python-dotenv || true
           fi
           
-          # Create ALL required directories on PVC (not ephemeral storage)
-          echo "=== CREATING DIRECTORY STRUCTURE ON PVC ==="
+          # Method 2: Try pip with --user
+          echo "Method 2: Using pip with --user"
+          pip install --user --no-cache-dir python-dotenv google-cloud-storage toml || true
           
-          # Main directories from .env - all on /data (PVC)
-          mkdir -p /data/water_timeseries
-          mkdir -p /data/water_timeseries/dynamic_world_data
-          mkdir -p /data/water_timeseries/split_lakes
-          mkdir -p /data/water_timeseries/input
-          mkdir -p /data/water_timeseries/new_dynamic_world
-          mkdir -p /data/water_timeseries/split_new_dynamic_world
-          mkdir -p /data/water_timeseries/output
+          # Method 3: Try pip with --target
+          echo "Method 3: Using pip with --target"
+          mkdir -p /tmp/packages
+          pip install --target=/tmp/packages --no-cache-dir python-dotenv google-cloud-storage toml || true
+          export PYTHONPATH="/tmp/packages:${PYTHONPATH}"
           
-          # Additional directories for processing - also on PVC
-          mkdir -p /data/water_timeseries/checkpoint
-          mkdir -p /data/water_timeseries/temp_netcdf
-          mkdir -p /data/water_timeseries/subsets
-          mkdir -p /data/water_timeseries/breakpoints
+          # Method 4: Direct download and install
+          echo "Method 4: Direct download"
+          curl -s https://bootstrap.pypa.io/get-pip.py | python
+          pip install python-dotenv --no-cache-dir || true
           
-          # Set permissions
+          # Verify installations
+          echo "=== VERIFYING INSTALLATIONS ==="
+          
+          # Check where pip installs packages
+          echo "Pip show python-dotenv:"
+          pip show python-dotenv || echo "Not found via pip show"
+          
+          # Try to import with different Python paths
+          echo "Testing import with default PYTHONPATH:"
+          python -c "import dotenv" 2>&1 || echo "Import failed"
+          
+          echo "Testing import with /tmp/packages:"
+          PYTHONPATH="/tmp/packages" python -c "import dotenv" 2>&1 || echo "Import failed"
+          
+          # Find dotenv location
+          echo "Searching for dotenv module:"
+          find / -name "dotenv.py" -o -name "dotenv" -type d 2>/dev/null | head -10
+          
+          # List installed packages
+          echo "Pip list:"
+          pip list | grep -i dotenv || echo "dotenv not in pip list"
+          
+          # Create directories on PVC
+          echo "=== CREATING DIRECTORIES ==="
+          mkdir -p /data/water_timeseries/{dynamic_world_data,split_lakes,input,new_dynamic_world,split_new_dynamic_world,output,checkpoint,temp_netcdf,subsets,breakpoints}
           chmod -R 755 /data/water_timeseries
           
-          # Set TMPDIR to use PVC instead of ephemeral storage
+          # Set environment variables
           export TMPDIR=/data/water_timeseries/temp_netcdf
           export TEMP=/data/water_timeseries/temp_netcdf
           export TMP=/data/water_timeseries/temp_netcdf
+          export PYTHONPATH="/tmp/packages:${PYTHONPATH}"
           
-          # Check available space on PVC
-          echo "=== PVC STORAGE AVAILABLE ==="
+          # Check PVC space
+          echo "=== PVC STORAGE ==="
           df -h /data
-          AVAILABLE_GB=$(df /data | awk 'NR==2 {print $4}' | sed 's/G//')
-          echo "Available space on PVC: ${AVAILABLE_GB}GB"
           
-          if [ ${AVAILABLE_GB%.*} -lt 50 ]; then
-            echo "WARNING: Less than 50GB available on PVC. May run out of space!"
-          fi
-          
-          # Check if input files exist
-          echo "=== CHECKING INPUT FILES ==="
-          if [ ! -f "/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet" ]; then
-            echo "WARNING: Vector lake file not found. This may be expected if first run."
-            ls -la /data/water_timeseries/input/ 2>/dev/null || echo "Input directory empty or missing"
-          fi
-          
-          # Check for existing Dynamic World files
-          if [ -d "/data/water_timeseries/dynamic_world_data" ]; then
-            DW_COUNT=$(find /data/water_timeseries/dynamic_world_data -name "*.nc" 2>/dev/null | wc -l)
-            echo "Found $DW_COUNT existing Dynamic World .nc files"
-          fi
-          
-          # Create .env file in the expected location
+          # Create .env file
           echo "=== CREATING .env FILE ==="
           cat > /data/.env << 'EOF'
           project=pdg-project-406720
@@ -214,134 +185,44 @@ spec:
           download_recent_data=False
           EOF
           
-          echo "Created .env file at /data/.env"
-          
-          # Check system resources
-          echo "=== SYSTEM INFORMATION ==="
-          echo "Memory info:"
-          free -h
-          echo "CPU info:"
-          nproc
-          cat /proc/cpuinfo | grep "model name" | head -1
-          
-          echo "Python version:"
-          python --version
-          
           # Set up credentials
           echo "=== SETTING UP CREDENTIALS ==="
-          
-          # GCP credentials
           export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
-          if [ -f "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
-            echo "✅ GCP credentials found"
-          else
-            echo "❌ GCP credentials missing"
-            ls -la /root/.config/gcloud/ 2>/dev/null || echo "Directory not found"
-          fi
-          
-          # Earth Engine credentials
           export EARTHENGINE_TOKEN=/root/.config/earthengine/credentials
-          if [ -f "$EARTHENGINE_TOKEN" ]; then
-            echo "✅ Earth Engine credentials found"
-          else
-            echo "❌ Earth Engine credentials missing"
-            ls -la /root/.config/earthengine/ 2>/dev/null || echo "Directory not found"
-          fi
-          
-          # Set Earth Engine project
           export EE_CLOUD_PROJECT=pdg-wg-workflow
           export EE_PROJECT=pdg-project-406720
           
-          # Environment variables dump (excluding secrets)
-          echo "=== KEY ENVIRONMENT VARIABLES ==="
-          env | grep -E "EE_|GOOGLE_|PROJECT|_DIR|_FILE|TMP|PYTHONPATH" | sort
-          
-          # Create a debug directory for logs
+          # Create debug directory
           DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)"
           mkdir -p "$DEBUG_DIR"
           
-          # Debug: Check where packages are installed
-          echo "=== DEBUG: Package locations ==="
-          python -c "import site; print('Site packages:', site.getsitepackages())"
-          python -c "import sys; print('sys.path:', sys.path)"
+          # Final attempt: Install to the system Python directory
+          echo "=== FINAL INSTALLATION ATTEMPT ==="
+          sudo pip install python-dotenv google-cloud-storage toml 2>&1 || echo "sudo not available"
           
-          # Try to find dotenv manually
-          find / -name "dotenv" -type d 2>/dev/null | head -5
-          
-          # Force install with explicit target
-          python -m pip install --target=/usr/local/lib/python3.12/site-packages python-dotenv
-          
-          # Run the near-real-time breakpoint script
-          echo "=== RUNNING NEAR REAL-TIME BREAKPOINT SCRIPT ==="
-          echo "Python script will load .env from: /data/.env"
-          echo "Using TMPDIR: $TMPDIR"
-          echo "PYTHONPATH: $PYTHONPATH"
-          
-          # Run the script
+          # Run the script with explicit PYTHONPATH
+          echo "=== RUNNING SCRIPT ==="
           cd /app
+          echo "Current directory: $(pwd)"
+          echo "Files in /app:"
+          ls -la /app/
+          echo "Files in /app/near_real_time:"
+          ls -la /app/near_real_time/ || echo "Directory not found"
+          
+          # Try to run with detailed error
+          export PYTHONPATH="/tmp/packages:/usr/local/lib/python3.12/site-packages:${PYTHONPATH}"
+          echo "Final PYTHONPATH: $PYTHONPATH"
+          
           python /app/near_real_time/near_real_time.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
           
           SCRIPT_EXIT_CODE=${PIPESTATUS[0]}
           
-          echo "=== SCRIPT COMPLETED ==="
-          echo "Exit code: $SCRIPT_EXIT_CODE"
-          echo "Timestamp: $(date)"
+          echo "=== SCRIPT COMPLETED with exit code: $SCRIPT_EXIT_CODE ==="
           
           # Check for output files
-          echo "=== CHECKING OUTPUT ==="
           if [ -d "/data/water_timeseries/output" ]; then
-            echo "Output directory contents:"
+            echo "Output files:"
             ls -lh /data/water_timeseries/output/
-            OUTPUT_COUNT=$(find /data/water_timeseries/output -type f -name "*.csv" -o -name "*.parquet" 2>/dev/null | wc -l)
-            echo "Total output files: $OUTPUT_COUNT"
-            
-            if [ $OUTPUT_COUNT -gt 0 ]; then
-              echo "✅ Successfully generated output files"
-              # List the most recent output files
-              find /data/water_timeseries/output -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -5 | cut -d' ' -f2-
-            fi
-          else
-            echo "❌ Output directory not found or empty"
-          fi
-          
-          # Clean up temp files if successful
-          if [ $SCRIPT_EXIT_CODE -eq 0 ]; then
-            echo "=== CLEANING UP TEMP FILES ==="
-            rm -rf /data/water_timeseries/temp_netcdf/*
-            rm -rf /data/water_timeseries/checkpoint/*
-            echo "Temp files cleaned"
-          fi
-          
-          # Capture additional diagnostics if script failed
-          if [ $SCRIPT_EXIT_CODE -ne 0 ]; then
-            echo "=== SCRIPT FAILED - CAPTURING DEBUG INFO ==="
-            
-            echo "=== Installed packages ==="
-            if command -v uv &> /dev/null; then
-              uv pip list | grep -E "dotenv|google-cloud|toml" || echo "Packages not found"
-            else
-              pip list | grep -E "dotenv|google-cloud|toml" || echo "Packages not found"
-            fi
-            
-            echo "=== Directory structure ==="
-            find /data/water_timeseries -type d | head -20
-            
-            echo "=== Available .nc files ==="
-            find /data -name "*.nc" 2>/dev/null | head -10
-            
-            echo "=== Memory usage at failure ==="
-            free -h
-            
-            echo "=== Disk usage at failure ==="
-            df -h /data
-            df -h /
-            
-            echo "=== Last 100 lines of script output ==="
-            tail -100 "$DEBUG_DIR/script_output.log"
-            
-            # Create marker file for debugging
-            touch "$DEBUG_DIR/DEBUG_MODE_ACTIVE"
-            echo "Debug information saved to: $DEBUG_DIR"
           fi
           
           exit $SCRIPT_EXIT_CODE
@@ -360,10 +241,6 @@ spec:
         valueFrom:
           fieldRef:
             fieldPath: metadata.name
-      - name: POD_NAMESPACE
-        valueFrom:
-          fieldRef:
-            fieldPath: metadata.namespace
       - name: PYTHONUNBUFFERED
         value: "1"
       - name: TMPDIR
