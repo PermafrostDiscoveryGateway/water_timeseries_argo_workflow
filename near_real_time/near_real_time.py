@@ -3,7 +3,7 @@ import os
 import glob
 import sys
 from dotenv import load_dotenv
-from near_real_time.download_new_dynamic_world_data import download_new_dynamic_world_data
+from download_new_dynamic_world_data import download_new_dynamic_world_data
 from water_timeseries.breakpoint import NRTBreakpoint
 from water_timeseries.dataset import DWDataset
 import xarray as xr
