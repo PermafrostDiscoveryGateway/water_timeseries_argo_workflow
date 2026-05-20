@@ -13,11 +13,11 @@ import dask.dataframe as dd
 from pathlib import Path
 import psutil
 import gc
-import os
-os.environ["OMP_NUM_THREADS"] = "8"  # Prevent thread oversubscription
-os.environ["MKL_NUM_THREADS"] = "8"
-os.environ["OPENBLAS_NUM_THREADS"] = "8"
-os.environ["NUMEXPR_NUM_THREADS"] = "8"
+# import os
+# os.environ["OMP_NUM_THREADS"] = "8"  # Prevent thread oversubscription
+# os.environ["MKL_NUM_THREADS"] = "8"
+# os.environ["OPENBLAS_NUM_THREADS"] = "8"
+# os.environ["NUMEXPR_NUM_THREADS"] = "8"
 
 
 def log_memory_usage(stage="", threshold_mb=None):
@@ -280,7 +280,7 @@ def precompute_nrt_breakpoints(
         dw_dataset_chunk = DWDataset(ds_chunk)
 
         # Initialize NRT breakpoint detector
-        nrt_breakpoint = NRTBreakpoint(kwargs_break={'n_jobs': 8})
+        nrt_breakpoint = NRTBreakpoint(kwargs_break={})
 
         # Calculate breakpoints for this chunk
         chunk_output_file = chunk_output_dir / f"nrt_results_chunk_{chunk_num}_{total_chunks}.parquet"
