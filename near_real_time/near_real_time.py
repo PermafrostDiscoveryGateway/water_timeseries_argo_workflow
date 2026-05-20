@@ -278,7 +278,7 @@ def precompute_nrt_breakpoints(
         nrt_breakpoint = NRTBreakpoint(kwargs_break={})
 
         # Calculate breakpoints for this chunk
-        chunk_output_file = chunk_output_dir / f"nrt_results_chunk_{chunk_num}.parquet"
+        chunk_output_file = chunk_output_dir / f"nrt_results_chunk_{chunk_num}_{total_chunks}.parquet"
         chunk_output_file_exists = os.path.exists(chunk_output_file)
         logger.debug(f"  Chunk output file {chunk_output_file} exists: {chunk_output_file_exists}")
 
