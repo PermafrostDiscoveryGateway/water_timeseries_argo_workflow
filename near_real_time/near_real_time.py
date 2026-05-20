@@ -19,11 +19,9 @@ def precompute_nrt_breakpoints(
         analysis_date: str | pd.Timestamp | None = None,
         data_aggregation_period: str = "monthly"
 ) -> pd.DataFrame:
-
     input_nc_file = Path(input_nc_file)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
 
     # FIRST: Get lake IDs without loading full dataset
     print("Reading lake IDs from file...")
@@ -52,13 +50,13 @@ def precompute_nrt_breakpoints(
                 analysis_date = pd.to_datetime(dates[-1])
                 print(f"Using most recent date instead: {analysis_date}")
     analysis_date_string = str(analysis_date)
-    analysis_date_string = analysis_date_string.split(" ")[0].replace('-','_')
+    analysis_date_string = analysis_date_string.split(" ")[0].replace('-', '_')
     chunk_output_subdir_name = f"chunk_output_{analysis_date_string}"
     chunk_output_dir = os.path.join(output_dir, chunk_output_subdir_name)
     chunk_output_dir = Path(chunk_output_dir)
     chunk_output_dir.mkdir(parents=True, exist_ok=True)
 
-    results = []
+    results = []  # Keep this for comparison
 
     # Process each chunk
     for i in range(0, total_lakes, lake_chunk_size):
@@ -116,7 +114,7 @@ def precompute_nrt_breakpoints(
                 )
 
                 if chunk_result is not None and len(chunk_result) > 0:
-                    results.append(chunk_result)
+                    results.append(chunk_result)  # Keep for comparison
 
                     # Save chunk results
                     chunk_output_file = chunk_output_dir / f"nrt_results_chunk_{i // lake_chunk_size + 1}.parquet"
@@ -141,19 +139,48 @@ def precompute_nrt_breakpoints(
 
     # TODO combine not from results, but from the parquet files in the directory
     # save to a file
-    final_output_file_name_from_parquet = "nrt_breakpoints_all_lakes_from_parquet" + analysis_date_string + ".parquet"
+    final_output_file_name_from_parquet = "nrt_breakpoints_all_lakes_from_parquet_" + analysis_date_string + ".parquet"
     logger.debug(f"Combining results from {chunk_output_dir} to file {final_output_file_name_from_parquet}")
-    # Combine results
-    if results:
-        final_results = pd.concat(results, axis=0)
-        final_output_file_name = "nrt_breakpoints_all_lakes_" + analysis_date_string + ".parquet"
-        final_output_file = output_dir / final_output_file_name
-        final_results.to_parquet(final_output_file, index=True)
-        print(f"\n✅ Final results saved to {final_output_file}")
-        return final_results
+
+    # NEW METHOD: Combine results from parquet files
+    parquet_files = sorted(chunk_output_dir.glob("nrt_results_chunk_*.parquet"))
+    if parquet_files:
+        print(f"\n📂 Found {len(parquet_files)} chunk parquet files to combine")
+        combined_results_from_parquet = []
+        for parquet_file in parquet_files:
+            chunk_df = pd.read_parquet(parquet_file)
+            combined_results_from_parquet.append(chunk_df)
+            print(f"  Loaded {parquet_file.name}: {len(chunk_df)} rows")
+
+        final_results_from_parquet = pd.concat(combined_results_from_parquet, axis=0)
+        final_output_file_from_parquet = output_dir / final_output_file_name_from_parquet
+        final_results_from_parquet.to_parquet(final_output_file_from_parquet, index=True)
+        print(f"\n✅ Combined results from parquet files saved to {final_output_file_from_parquet}")
+        print(f"   Total rows: {len(final_results_from_parquet)}")
     else:
-        print("⚠ No results generated")
-        return pd.DataFrame()
+        print("⚠ No parquet files found to combine")
+        final_results_from_parquet = pd.DataFrame()
+
+    # OLD METHOD: Combine from results list (keep for comparison)
+    if results:
+        final_results_old_method = pd.concat(results, axis=0)
+        final_output_file_old = output_dir / f"nrt_breakpoints_all_lakes_old_method_{analysis_date_string}.parquet"
+        final_results_old_method.to_parquet(final_output_file_old, index=True)
+        print(f"\n✅ Old method results saved to {final_output_file_old}")
+        print(f"   Total rows: {len(final_results_old_method)}")
+
+        # Optional: Compare the two results if both methods produced data
+        if not final_results_from_parquet.empty:
+            if len(final_results_old_method) == len(final_results_from_parquet):
+                print(f"\n✅ Results match: both methods produced {len(final_results_from_parquet)} rows")
+            else:
+                print(
+                    f"\n⚠️ Results size mismatch: Old method={len(final_results_old_method)}, Parquet method={len(final_results_from_parquet)}")
+
+        return final_results_from_parquet if not final_results_from_parquet.empty else final_results_old_method
+    else:
+        print("⚠ No results generated from old method")
+        return final_results_from_parquet
 
 
 def main():
