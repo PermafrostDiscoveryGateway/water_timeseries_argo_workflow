@@ -113,7 +113,6 @@ def precompute_nrt_breakpoints(
                 results.append(chunk_result)
 
                 # Save chunk results
-                # TODO save to the split directory, subdir with date of run
                 chunk_output_file = chunk_output_dir / f"nrt_results_chunk_{i // lake_chunk_size + 1}.parquet"
                 chunk_result.to_parquet(chunk_output_file, index=True)
                 print(f"  Saved chunk results to {chunk_output_file}")
