@@ -36,6 +36,10 @@ spec:
           cpu: "8"
           memory: "32Gi"
           ephemeral-storage: "8Gi"
+        limits:
+          cpu: "16"
+          memory: "48Gi"  # Higher limit
+          ephemeral-storage: "16Gi"
 
   artifactRepository:
     pvc:
@@ -224,7 +228,7 @@ spec:
           dynamic_world_data_file=/data/water_timeseries/input/lakes_dw_V2d.nc
           output_dir=/data/water_timeseries/output
           download_recent_data=False
-          lake_chunk_size=500
+          lake_chunk_size=100
           data_aggregation_period=all
           EOF
           
@@ -263,7 +267,7 @@ spec:
           ddf = dd.read_parquet(test_file)
           result = ddf.compute()
           print(f'Dask test successful! Result shape: {result.shape}')
-          print(f'Dask version: {dd.__version__}')
+          # print(f'Dask version: {dd.__version__}')
 
           # Clean up
           os.remove(test_file)
