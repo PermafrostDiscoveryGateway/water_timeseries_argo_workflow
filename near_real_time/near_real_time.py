@@ -3,6 +3,7 @@ import os
 import glob
 import sys
 from dotenv import load_dotenv
+import datetime
 import download_new_dynamic_world_data
 from water_timeseries.breakpoint import NRTBreakpoint
 from water_timeseries.dataset import DWDataset
@@ -18,9 +19,14 @@ def precompute_nrt_breakpoints(
         analysis_date: str | pd.Timestamp | None = None,
         data_aggregation_period: str = "monthly"
 ) -> pd.DataFrame:
+    current_timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    chunk_output_dir = os.path.join(output_dir, current_timestamp)
     input_nc_file = Path(input_nc_file)
     output_dir = Path(output_dir)
+    chunk_output_dir = Path(chunk_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    chunk_output_dir.mkdir(parents=True, exist_ok=True)
+
 
     # FIRST: Get lake IDs without loading full dataset
     print("Reading lake IDs from file...")
@@ -106,7 +112,8 @@ def precompute_nrt_breakpoints(
                 results.append(chunk_result)
 
                 # Save chunk results
-                chunk_output_file = output_dir / f"nrt_results_chunk_{i // lake_chunk_size + 1}.parquet"
+                # TODO save to the split directory, subdir with date of run
+                chunk_output_file = chunk_output_dir / f"nrt_results_chunk_{i // lake_chunk_size + 1}.parquet"
                 chunk_result.to_parquet(chunk_output_file, index=True)
                 print(f"  Saved chunk results to {chunk_output_file}")
             else:
@@ -129,7 +136,8 @@ def precompute_nrt_breakpoints(
     # Combine results
     if results:
         final_results = pd.concat(results, axis=0)
-        final_output_file = output_dir / "nrt_breakpoints_all_lakes.parquet"
+        final_output_file_name = "nrt_breakpoints_all_lakes_" + current_timestamp + ".parquet"
+        final_output_file = output_dir / final_output_file_name
         final_results.to_parquet(final_output_file, index=True)
         print(f"\n✅ Final results saved to {final_output_file}")
         return final_results
