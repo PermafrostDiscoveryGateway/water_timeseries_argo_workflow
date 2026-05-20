@@ -403,7 +403,10 @@ def main():
     analysis_date = os.environ.get('analysis_date', None)
     data_aggregation_period = os.environ.get('data_aggregation_period', 'monthly')
     lake_chunk_size = int(os.environ.get('lake_chunk_size', '200'))  # Reduced default from 500 to 200
-
+    print(f"🔧 LAKE_CHUNK_SIZE from environment: {lake_chunk_size}")
+    print(f"🔧 All relevant env vars:")
+    for var in ['lake_chunk_size', 'data_aggregation_period', 'analysis_date']:
+        print(f"   {var} = {os.environ.get(var, 'NOT SET')}")
     print(f"Using lake chunk size: {lake_chunk_size}")
     log_memory_usage("Main start")
 
