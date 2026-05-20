@@ -230,7 +230,7 @@ def precompute_nrt_breakpoints(
         gc.collect()
 
         # Load chunk with smaller chunk size for memory efficiency
-        load_chunk_size = min(lake_chunk_size, 100)  # Don't load more than 100 lakes at once
+        load_chunk_size = lake_chunk_size  # Don't load more than 100 lakes at once
         ds = xr.open_dataset(
             input_nc_file,
             engine='netcdf4',
