@@ -251,6 +251,13 @@ def precompute_nrt_breakpoints(
         else:
             chunk_analysis_date = analysis_date
 
+        if 'date' in ds_chunk.coords:
+            # Convert to pandas datetime if needed
+            dates = pd.to_datetime(ds_chunk.date.values)
+            # Reassign the date coordinate with proper datetime
+            ds_chunk = ds_chunk.assign_coords(date=dates)
+            print(f"  Fixed date coordinate for chunk {chunk_num}")
+
         # Check if chunk has valid lakes for this date
         ds_analysis_test = ds_chunk.sel(date=chunk_analysis_date)
         valid_lakes = ds_analysis_test.dropna(dim="id_geohash", how="all").id_geohash.values
