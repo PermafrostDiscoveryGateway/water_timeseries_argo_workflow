@@ -9,6 +9,7 @@ from water_timeseries.breakpoint import NRTBreakpoint
 from water_timeseries.dataset import DWDataset
 import xarray as xr
 import pandas as pd
+import dask.dataframe as dd
 from pathlib import Path
 
 
@@ -137,47 +138,81 @@ def precompute_nrt_breakpoints(
             import gc
             gc.collect()
 
-    # TODO combine not from results, but from the parquet files in the directory
-    # save to a file
+    # Combine results from parquet files using Dask (memory-efficient)
     final_output_file_name_from_parquet = "nrt_breakpoints_all_lakes_from_parquet_" + analysis_date_string + ".parquet"
-    logger.debug(f"Combining results from {chunk_output_dir} to file {final_output_file_name_from_parquet}")
+    final_output_file_from_parquet = output_dir / final_output_file_name_from_parquet
 
-    # NEW METHOD: Combine results from parquet files
     parquet_files = sorted(chunk_output_dir.glob("nrt_results_chunk_*.parquet"))
+
     if parquet_files:
         print(f"\n📂 Found {len(parquet_files)} chunk parquet files to combine")
-        combined_results_from_parquet = []
-        for parquet_file in parquet_files:
-            chunk_df = pd.read_parquet(parquet_file)
-            combined_results_from_parquet.append(chunk_df)
-            print(f"  Loaded {parquet_file.name}: {len(chunk_df)} rows")
 
-        final_results_from_parquet = pd.concat(combined_results_from_parquet, axis=0)
-        final_output_file_from_parquet = output_dir / final_output_file_name_from_parquet
+        # Use Dask to read all parquet files lazily
+        # This doesn't load data into memory immediately
+        print("  Using Dask for out-of-core processing...")
+        ddf = dd.read_parquet(
+            str(chunk_output_dir / "nrt_results_chunk_*.parquet"),
+            engine='pyarrow'  # Use pyarrow engine for better performance
+        )
+
+        # Show the Dask task graph info
+        print(f"  Dask DataFrame partitions: {ddf.npartitions}")
+        print(f"  Dask DataFrame columns: {list(ddf.columns)}")
+
+        # Compute the result (this is where data is actually loaded and combined)
+        # Dask handles the chunking and memory management automatically
+        print("  Computing combined DataFrame (this may take a moment)...")
+        final_results_from_parquet = ddf.compute()
+
+        # Save combined results
         final_results_from_parquet.to_parquet(final_output_file_from_parquet, index=True)
         print(f"\n✅ Combined results from parquet files saved to {final_output_file_from_parquet}")
-        print(f"   Total rows: {len(final_results_from_parquet)}")
+        print(f"   Total rows: {len(final_results_from_parquet):,}")
+        print(f"   Memory usage: {final_results_from_parquet.memory_usage(deep=True).sum() / 1024 ** 2:.2f} MB")
+
+        # Optional: Save as CSV as well for easy inspection (commented out)
+        # csv_output_file = output_dir / f"nrt_breakpoints_all_lakes_{analysis_date_string}.csv"
+        # final_results_from_parquet.to_csv(csv_output_file, index=False)
+        # print(f"   Also saved as CSV: {csv_output_file}")
+
     else:
         print("⚠ No parquet files found to combine")
         final_results_from_parquet = pd.DataFrame()
 
     # OLD METHOD: Combine from results list (keep for comparison)
     if results:
+        print(f"\n📊 Old method collected {len(results)} result chunks in memory")
         final_results_old_method = pd.concat(results, axis=0)
         final_output_file_old = output_dir / f"nrt_breakpoints_all_lakes_old_method_{analysis_date_string}.parquet"
         final_results_old_method.to_parquet(final_output_file_old, index=True)
-        print(f"\n✅ Old method results saved to {final_output_file_old}")
-        print(f"   Total rows: {len(final_results_old_method)}")
+        print(f"✅ Old method results saved to {final_output_file_old}")
+        print(f"   Total rows: {len(final_results_old_method):,}")
 
-        # Optional: Compare the two results if both methods produced data
+        # Compare the two results if both methods produced data
         if not final_results_from_parquet.empty:
             if len(final_results_old_method) == len(final_results_from_parquet):
-                print(f"\n✅ Results match: both methods produced {len(final_results_from_parquet)} rows")
+                print(f"\n✅ Results match: both methods produced {len(final_results_from_parquet):,} rows")
             else:
                 print(
-                    f"\n⚠️ Results size mismatch: Old method={len(final_results_old_method)}, Parquet method={len(final_results_from_parquet)}")
+                    f"\n⚠️ Results size mismatch: Old method={len(final_results_old_method):,}, Parquet method={len(final_results_from_parquet):,}")
 
-        return final_results_from_parquet if not final_results_from_parquet.empty else final_results_old_method
+            # Optional: Check if the dataframes are identical
+            try:
+                if final_results_old_method.equals(final_results_from_parquet):
+                    print("  ✅ DataFrames are identical (content matches)")
+                else:
+                    print("  ⚠️ DataFrames have different content (check column order or data types)")
+                    # TODO check more for this case
+            except Exception as e:
+                print(f"  Could not compare DataFrames: {e}")
+
+        # Free memory from old method results
+        del results
+        del final_results_old_method
+        import gc
+        gc.collect()
+
+        return final_results_from_parquet if not final_results_from_parquet.empty else pd.DataFrame()
     else:
         print("⚠ No results generated from old method")
         return final_results_from_parquet
