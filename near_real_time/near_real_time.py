@@ -19,14 +19,10 @@ def precompute_nrt_breakpoints(
         analysis_date: str | pd.Timestamp | None = None,
         data_aggregation_period: str = "monthly"
 ) -> pd.DataFrame:
-    current_timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-    chunk_output_subdir_name = f"chunk_output_{current_timestamp}"
-    chunk_output_dir = os.path.join(output_dir, chunk_output_subdir_name)
+
     input_nc_file = Path(input_nc_file)
     output_dir = Path(output_dir)
-    chunk_output_dir = Path(chunk_output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    chunk_output_dir.mkdir(parents=True, exist_ok=True)
 
 
     # FIRST: Get lake IDs without loading full dataset
@@ -55,6 +51,12 @@ def precompute_nrt_breakpoints(
                 # Use the most recent date instead
                 analysis_date = pd.to_datetime(dates[-1])
                 print(f"Using most recent date instead: {analysis_date}")
+    analysis_date_string = str(analysis_date)
+    analysis_date_string = analysis_date_string.split(" ")[0].replace('-','_')
+    chunk_output_subdir_name = f"chunk_output_{analysis_date_string}"
+    chunk_output_dir = os.path.join(output_dir, chunk_output_subdir_name)
+    chunk_output_dir = Path(chunk_output_dir)
+    chunk_output_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
 
@@ -101,42 +103,50 @@ def precompute_nrt_breakpoints(
         nrt_breakpoint = NRTBreakpoint(kwargs_break={})
 
         # Calculate breakpoints for this chunk
-        try:
-            chunk_result = nrt_breakpoint.calculate_break(
-                dataset=dw_dataset_chunk,
-                analysis_date=chunk_analysis_date,  # Use the datetime64 version
-                data_aggregation_period=data_aggregation_period,
-                object_id=chunk_ids,
-            )
+        chunk_output_file = chunk_output_dir / f"nrt_results_chunk_{i // lake_chunk_size + 1}.parquet"
+        chunk_output_file_exists = os.path.exists(chunk_output_file)
+        logger.debug(f"  Chunk output file {chunk_output_file} exists: {chunk_output_file_exists}")
+        if not chunk_output_file_exists:
+            try:
+                chunk_result = nrt_breakpoint.calculate_break(
+                    dataset=dw_dataset_chunk,
+                    analysis_date=chunk_analysis_date,  # Use the datetime64 version
+                    data_aggregation_period=data_aggregation_period,
+                    object_id=chunk_ids,
+                )
 
-            if chunk_result is not None and len(chunk_result) > 0:
-                results.append(chunk_result)
+                if chunk_result is not None and len(chunk_result) > 0:
+                    results.append(chunk_result)
 
-                # Save chunk results
-                chunk_output_file = chunk_output_dir / f"nrt_results_chunk_{i // lake_chunk_size + 1}.parquet"
-                chunk_result.to_parquet(chunk_output_file, index=True)
-                print(f"  Saved chunk results to {chunk_output_file}")
-            else:
-                print(f"  No results generated for chunk")
+                    # Save chunk results
+                    chunk_output_file = chunk_output_dir / f"nrt_results_chunk_{i // lake_chunk_size + 1}.parquet"
+                    chunk_result.to_parquet(chunk_output_file, index=True)
+                    print(f"  Saved chunk results to {chunk_output_file}")
+                else:
+                    print(f"  No results generated for chunk")
 
-        except ValueError as e:
-            if "n_jobs == 0" in str(e):
-                print(f"  No valid lakes for analysis in this chunk")
-            else:
-                print(f"  Error processing chunk: {e}")
-            continue
+            except ValueError as e:
+                if "n_jobs == 0" in str(e):
+                    print(f"  No valid lakes for analysis in this chunk")
+                else:
+                    print(f"  Error processing chunk: {e}")
+                continue
 
-        # Clear memory
-        ds_chunk.close()
-        del ds_chunk
-        del dw_dataset_chunk
-        import gc
-        gc.collect()
+            # Clear memory
+            ds_chunk.close()
+            del ds_chunk
+            del dw_dataset_chunk
+            import gc
+            gc.collect()
 
+    # TODO combine not from results, but from the parquet files in the directory
+    # save to a file
+    final_output_file_name_from_parquet = "nrt_breakpoints_all_lakes_from_parquet" + analysis_date_string + ".parquet"
+    logger.debug(f"Combining results from {chunk_output_dir} to file {final_output_file_name_from_parquet}")
     # Combine results
     if results:
         final_results = pd.concat(results, axis=0)
-        final_output_file_name = "nrt_breakpoints_all_lakes_" + current_timestamp + ".parquet"
+        final_output_file_name = "nrt_breakpoints_all_lakes_" + analysis_date_string + ".parquet"
         final_output_file = output_dir / final_output_file_name
         final_results.to_parquet(final_output_file, index=True)
         print(f"\n✅ Final results saved to {final_output_file}")
