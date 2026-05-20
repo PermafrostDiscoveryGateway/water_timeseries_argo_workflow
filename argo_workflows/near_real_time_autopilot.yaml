@@ -183,6 +183,8 @@ spec:
           dynamic_world_data_file=/data/water_timeseries/input/lakes_dw_V2d.nc
           output_dir=/data/water_timeseries/output
           download_recent_data=False
+          lake_chunk_size=500
+          data_aggregation_period=all
           EOF
           
           # Set up credentials
