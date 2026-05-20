@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - 8-chunk-lakes-for-near-real-time-argo-workflow
+      - 10-for-chunk-progress-save-intermediate-results-allow-resume
   workflow_dispatch:
     inputs:
       tag:
