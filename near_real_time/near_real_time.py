@@ -20,7 +20,8 @@ def precompute_nrt_breakpoints(
         data_aggregation_period: str = "monthly"
 ) -> pd.DataFrame:
     current_timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-    chunk_output_dir = os.path.join(output_dir, current_timestamp)
+    chunk_output_subdir_name = f"chunk_output_{current_timestamp}"
+    chunk_output_dir = os.path.join(output_dir, chunk_output_subdir_name)
     input_nc_file = Path(input_nc_file)
     output_dir = Path(output_dir)
     chunk_output_dir = Path(chunk_output_dir)
