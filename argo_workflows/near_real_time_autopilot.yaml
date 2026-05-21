@@ -228,7 +228,7 @@ spec:
           dynamic_world_data_file=/data/water_timeseries/input/lakes_dw_V2d.nc
           output_dir=/data/water_timeseries/output
           download_recent_data=False
-          lake_chunk_size=10000
+          lake_chunk_size=20000
           data_aggregation_period=all
           EOF
           
@@ -331,7 +331,7 @@ spec:
           exit $SCRIPT_EXIT_CODE
       env:
       - name: lake_chunk_size
-        value: "10000"
+        value: "20000"
       - name: ENV_FILE_PATH
         value: "/data/.env"
       - name: GOOGLE_APPLICATION_CREDENTIALS
