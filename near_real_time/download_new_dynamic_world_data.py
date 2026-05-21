@@ -339,22 +339,24 @@ def download_new_dynamic_world_data_split_files(env_path=None):
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     dynamic_world_data_file = os.environ['dynamic_world_data_file']
-    # TODO replace this with the directory, and find the
-    vector_lake_file = os.environ['vector_lake_file']
     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
 
     logger.debug(f"Dynamic world data file: {dynamic_world_data_file}")
-    logger.debug(f"Vector lake file: {vector_lake_file}")
     logger.debug(f"New dynamic world data dir: {new_dynamic_world_data_dir}")
 
+    # Check for missing dates
     missing_dates = check_missing_data_in_netcdf(most_recent_dynamic_world_file)
-    latest_missing_date = max(missing_dates)
-    latest_missing_date = str(latest_missing_date).split(" ")[0].replace('-', '_')
-    logger.info(f"Latest missing date: {latest_missing_date}")
+
     if not missing_dates or len(missing_dates) == 0:
         logger.debug(f"No missing dates found in {dynamic_world_data_file}")
         return most_recent_dynamic_world_file
-    logger.debug(f"Missing dates found are {missing_dates}")
+
+    # Get latest missing date for naming
+    latest_missing_date = max(missing_dates)
+    latest_missing_date_str = str(latest_missing_date).split(" ")[0].replace('-', '_')
+    logger.info(f"Latest missing date: {latest_missing_date_str}")
+
+    # Extract unique years and months from missing dates
     missing_years = []
     missing_months = []
     for date in missing_dates:
@@ -365,90 +367,156 @@ def download_new_dynamic_world_data_split_files(env_path=None):
 
     logger.debug(f"Missing years: {missing_years}")
     logger.debug(f"Missing months: {missing_months}")
+    logger.debug(f"Downloading new dynamic world data using split files")
 
-    logger.debug(f"Downloading new dynamic world data")
-
-    # split vector files
+    # Get split vector files directory
     split_vector_dataset_dir = os.environ['split_vector_dataset_dir']
-    all_split_vector_files = glob.glob(os.path.join(split_vector_dataset_dir, "*.parquet"))
+    all_split_vector_files = sorted(glob.glob(os.path.join(split_vector_dataset_dir, "*.parquet")))
 
-    current_date = str(datetime.now())
-    #current_date_stamp = current_date.split(' ')[0]
-    #mcurrent_date_stamp = current_date_stamp.replace('-', '_')
+    if not all_split_vector_files:
+        logger.error(f"No split vector files found in {split_vector_dataset_dir}")
+        return None
 
+    logger.info(f"Found {len(all_split_vector_files)} split vector files")
 
-    # DOWNLOAD INDIVIDUAL NETCDF FILES FROM THE SPLIT FILES
-    current_split_download_directory = os.path.join(new_dynamic_world_data_dir, latest_missing_date)
+    # Create session directory for this download
+    current_split_download_directory = os.path.join(new_dynamic_world_data_dir, f"download_{latest_missing_date_str}")
     os.makedirs(current_split_download_directory, exist_ok=True)
-    for i in range(0, len(all_split_vector_files)):
-        current_split_vector_file =  all_split_vector_files[i]
-        current_split_vector_file_name = os.path.basename(current_split_vector_file)
-        current_split_vector_label = current_split_vector_file_name.split('_')[1].rstrip('.parquet')
-        # correct file path
-        download_filename = 'dynamic_world_download_' + current_split_vector_label + '.nc'
-        download_filepath = os.path.join(current_split_download_directory, download_filename)
-        logger.debug(f"Vector lake file: {current_split_vector_file}")
-    dl = EarthEngineDownloader(ee_auth=True, logger=logger)
-    ds = dl.download_dw_monthly(
-        vector_dataset=vector_lake_file,
-        name_attribute="id_geohash",
-        years=missing_years,
-        months=missing_months,
-        save_to_file=download_filepath,
-        max_total_requests=500,
-        n_parallel=1,
-    )
+    logger.info(f"Downloading chunks to: {current_split_download_directory}")
 
-    logger.debug(f"Finished downloading to {download_filepath}")
+    # Download each split file
+    downloaded_files = []
+    successful_chunks = 0
 
-    # Merge the existing and new data
-    logger.debug("Merging existing data with new data...")
+    for i, split_vector_file in enumerate(all_split_vector_files):
+        try:
+            # Extract label from filename (assuming format like "vector_chunk_00197.parquet")
+            split_filename = os.path.basename(split_vector_file)
+            # Get the number/label part (between underscores and before .parquet)
+            if 'chunk_' in split_filename:
+                chunk_label = split_filename.split('chunk_')[1].replace('.parquet', '')
+            else:
+                # Fallback: use index with padding
+                chunk_label = f"{i + 1:05d}"
 
-    # Open both datasets using xarray
+            # Create numbered download filename
+            download_filename = f'dynamic_world_download_{chunk_label}_{latest_missing_date_str}.nc'
+            download_filepath = os.path.join(current_split_download_directory, download_filename)
+
+            # Skip if already downloaded
+            if os.path.exists(download_filepath):
+                logger.info(f"Chunk {chunk_label} already exists, skipping: {download_filepath}")
+                downloaded_files.append(download_filepath)
+                successful_chunks += 1
+                continue
+
+            logger.info(f"Downloading chunk {chunk_label} ({i + 1}/{len(all_split_vector_files)})")
+            logger.debug(f"  Vector file: {split_vector_file}")
+            logger.debug(f"  Output: {download_filepath}")
+
+            # Initialize downloader
+            dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+
+            # Download using the split vector file
+            ds = dl.download_dw_monthly(
+                vector_dataset=split_vector_file,  # Use the split file directly
+                name_attribute="id_geohash",
+                years=missing_years,
+                months=missing_months,
+                save_to_file=download_filepath,
+                max_total_requests=500,
+                n_parallel=1,
+            )
+
+            if ds is not None:
+                logger.info(f"✓ Successfully downloaded chunk {chunk_label}")
+                downloaded_files.append(download_filepath)
+                successful_chunks += 1
+            else:
+                logger.warning(f"✗ Chunk {chunk_label} returned no data")
+
+        except Exception as e:
+            logger.error(f"Failed to download chunk {i + 1}: {e}")
+            continue
+
+    if not downloaded_files:
+        logger.error("No chunks were successfully downloaded")
+        return None
+
+    logger.info(f"Successfully downloaded {successful_chunks}/{len(all_split_vector_files)} chunks")
+
+    # Merge all downloaded chunks
+    logger.info("Merging downloaded chunks...")
+    merged_new_ds = None
+
+    for chunk_file in downloaded_files:
+        logger.debug(f"Loading chunk: {chunk_file}")
+        try:
+            ds_chunk = xr.open_dataset(chunk_file)
+
+            if merged_new_ds is None:
+                merged_new_ds = ds_chunk
+            else:
+                # Concatenate along id_geohash dimension
+                merged_new_ds = xr.concat([merged_new_ds, ds_chunk], dim="id_geohash")
+        except Exception as e:
+            logger.error(f"Failed to load chunk {chunk_file}: {e}")
+            continue
+
+    if merged_new_ds is None:
+        logger.error("No data to merge from chunks")
+        return None
+
+    # Remove duplicates in id_geohash if any
+    _, unique_indices = np.unique(merged_new_ds.id_geohash.values, return_index=True)
+    merged_new_ds = merged_new_ds.isel(id_geohash=sorted(unique_indices))
+
+    logger.info(f"Merged new data: {len(merged_new_ds.id_geohash)} lakes x {len(merged_new_ds.date)} dates")
+
+    # Merge with existing data
+    logger.info("Merging existing data with new data...")
     existing_ds = xr.open_dataset(most_recent_dynamic_world_file)
-    new_ds = xr.open_dataset(download_filepath)
 
     # Verify no date overlap (should be true based on missing dates logic)
     existing_dates = set(pd.to_datetime(existing_ds.date.values))
-    new_dates = set(pd.to_datetime(new_ds.date.values))
+    new_dates = set(pd.to_datetime(merged_new_ds.date.values))
     overlapping_dates = existing_dates & new_dates
 
     if overlapping_dates:
         logger.warning(f"Found {len(overlapping_dates)} overlapping dates: {sorted(overlapping_dates)}")
         logger.warning("Removing overlapping dates from new dataset...")
         # Remove overlapping dates from new dataset
-        mask = ~new_ds.date.isin(list(overlapping_dates))
-        new_ds = new_ds.sel(date=mask)
+        mask = ~merged_new_ds.date.isin(list(overlapping_dates))
+        merged_new_ds = merged_new_ds.sel(date=mask)
 
-    # Simple concatenation along date dimension
-    # This doesn't require matching id_geohash values
-    merged_ds = xr.concat([existing_ds, new_ds], dim="date")
+    # Concatenate along date dimension
+    final_ds = xr.concat([existing_ds, merged_new_ds], dim="date")
 
     # Sort by date
-    merged_ds = merged_ds.sortby("date")
+    final_ds = final_ds.sortby("date")
 
     # Verify the merge was successful
-    final_dates = pd.to_datetime(merged_ds.date.values)
+    final_dates = pd.to_datetime(final_ds.date.values)
     logger.info(f"Original dates: {len(existing_dates)}")
-    logger.info(f"New dates added: {len(new_dates)}")
+    logger.info(f"New dates added: {len(new_dates) - len(overlapping_dates)}")
     logger.info(f"Total dates after merge: {len(final_dates)}")
     logger.info(f"Date range after merge: {final_dates.min()} to {final_dates.max()}")
 
-    # Create the final filename with timestamp
-    new_dynamic_world_filename = 'lakes_dw_V2d_' + current_date_stamp + '.nc'
+    # Create the final filename with the latest missing date
+    new_dynamic_world_filename = f'lakes_dw_V2d_{latest_missing_date_str}.nc'
     new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
 
     # Save the merged dataset
-    merged_ds.to_netcdf(new_dynamic_world_data_file)
+    final_ds.to_netcdf(new_dynamic_world_data_file)
 
-    logger.debug(f"Successfully merged datasets!")
-    logger.debug(f"Original file: {most_recent_dynamic_world_file}")
-    logger.debug(f"New data file: {download_filepath}")
-    logger.debug(f"Merged file saved as: {new_dynamic_world_data_file}")
+    logger.info(f"Successfully merged datasets!")
+    logger.info(f"Original file: {most_recent_dynamic_world_file}")
+    logger.info(f"New data chunks: {len(downloaded_files)} files in {current_split_download_directory}")
+    logger.info(f"Merged file saved as: {new_dynamic_world_data_file}")
 
-    # Optional: Print summary statistics about lake coverage
+    # Print summary statistics about lake coverage
     existing_lakes = set(existing_ds.id_geohash.values)
-    new_lakes = set(new_ds.id_geohash.values)
+    new_lakes = set(merged_new_ds.id_geohash.values)
     common_lakes = existing_lakes & new_lakes
     only_in_existing = existing_lakes - new_lakes
     only_in_new = new_lakes - existing_lakes
@@ -460,10 +528,22 @@ def download_new_dynamic_world_data_split_files(env_path=None):
     logger.info(f"  - Lakes only in existing: {len(only_in_existing)}")
     logger.info(f"  - Lakes only in new: {len(only_in_new)}")
 
+    # Optional: Clean up chunk directory
+    cleanup_chunks = os.environ.get('CLEANUP_DOWNLOAD_CHUNKS', 'false').lower() == 'true'
+    if cleanup_chunks:
+        import shutil
+        try:
+            shutil.rmtree(current_split_download_directory)
+            logger.info(f"Cleaned up chunk directory: {current_split_download_directory}")
+        except Exception as e:
+            logger.warning(f"Could not clean up chunk directory: {e}")
+    else:
+        logger.info(f"Chunk files preserved in: {current_split_download_directory}")
+
     # Close datasets to free memory
     existing_ds.close()
-    new_ds.close()
-    merged_ds.close()
+    merged_new_ds.close()
+    final_ds.close()
 
     return new_dynamic_world_data_file
 
