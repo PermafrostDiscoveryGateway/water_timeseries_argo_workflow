@@ -383,10 +383,10 @@ def download_new_dynamic_world_data_split_files(env_path=None):
     for i in range(0, len(all_split_vector_files)):
         current_split_vector_file =  all_split_vector_files[i]
         current_split_vector_file_name = os.path.basename(current_split_vector_file)
-        current_split_vector_label = current_split_vector_file_name.split('_')[1].rstrip('parquet')
+        current_split_vector_label = current_split_vector_file_name.split('_')[1].rstrip('.parquet')
         # correct file path
-        download_filename = 'dynamic_world_download_' + current_date_stamp + '.nc'
-        download_filepath = os.path.join(new_dynamic_world_data_dir, download_filename)
+        download_filename = 'dynamic_world_download_' + current_split_vector_label + '.nc'
+        download_filepath = os.path.join(current_split_download_directory, download_filename)
         logger.debug(f"Vector lake file: {current_split_vector_file}")
     dl = EarthEngineDownloader(ee_auth=True, logger=logger)
     ds = dl.download_dw_monthly(
