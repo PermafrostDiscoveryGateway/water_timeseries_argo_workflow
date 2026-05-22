@@ -4,6 +4,7 @@ from netCDF4 import num2date
 from datetime import datetime
 from loguru import logger
 import os
+import numpy as np
 import glob
 import xarray as xr
 from dotenv import load_dotenv
