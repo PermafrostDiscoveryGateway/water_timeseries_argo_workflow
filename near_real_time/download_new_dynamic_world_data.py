@@ -216,7 +216,6 @@ def download_new_dynamic_world_data(env_path=None):
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     dynamic_world_data_file = os.environ['dynamic_world_data_file']
-    # TODO replace this with the directory, and find the
     vector_lake_file = os.environ['vector_lake_file']
     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
 
@@ -422,7 +421,6 @@ def download_new_dynamic_world_data_split_files_v1(env_path=None):
     # DOWNLOAD INDIVIDUAL NETCDF FILES FROM THE SPLIT FILES
     for i in range(0, len(all_split_vector_dataset_files)):
         split_vector_dataset_file = all_split_vector_dataset_files[i]
-        # TODO iterate over individual dates
         for date in missing_dates:
             current_date_string = get_date_label(date)
             # Extract file number from the split file name
@@ -434,33 +432,23 @@ def download_new_dynamic_world_data_split_files_v1(env_path=None):
             logger.debug(f"Downloading new dynamic world data from {date} to {download_filepath}")
             logger.debug(f"Begin download")
             try:
-                print('this')
+                dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+                ds = dl.download_dw_monthly(
+                    vector_dataset=split_vector_dataset_file,
+                    name_attribute="id_geohash",
+                    years=missing_years,
+                    months=missing_months,
+                    save_to_file=download_filepath,
+                    max_total_requests=500,
+                    n_parallel=1,
+                )
+                logger.debug(f"Finished downloading to {download_filepath}")
+                all_download_filepaths.append(download_filepath)
             except Exception as e:
-                print('that')
-        try:
+                logger.error(f"Failed to download data for {split_vector_dataset_file}: {e}")
+                failed_split_vector_files.append(split_vector_dataset_file)
 
 
-            download_filename = f'dynamic_world_download_{split_vector_file_number}_{current_date_stamp}.nc'
-            download_filepath = os.path.join(split_new_dynamic_world_data_dir, download_filename)
-
-            logger.info(f"Downloading data for split file index {i} and {split_vector_file_number}: {split_vector_dataset_file}")
-            logger.debug(f"This data will be downloaded to {download_filepath}")
-            dl = EarthEngineDownloader(ee_auth=True, logger=logger)
-            ds = dl.download_dw_monthly(
-                vector_dataset=split_vector_dataset_file,
-                name_attribute="id_geohash",
-                years=missing_years,
-                months=missing_months,
-                save_to_file=download_filepath,
-                max_total_requests=500,
-                n_parallel=1,
-            )
-            logger.debug(f"Finished downloading to {download_filepath}")
-            all_download_filepaths.append(download_filepath)
-
-        except Exception as e:
-            logger.error(f"Failed to download data for {split_vector_dataset_file}: {e}")
-            failed_split_vector_files.append(split_vector_dataset_file)
 
     logger.info(f"Successfully downloaded {len(all_download_filepaths)} files")
     if failed_split_vector_files:
@@ -481,6 +469,10 @@ def download_new_dynamic_world_data_split_files_v1(env_path=None):
     all_new_datasets = []
     total_new_dates = set()
     total_new_lakes = set()
+
+    # TODO not the download filepaths, all the files under the directory
+    # current_split_dynamic_world_dir
+    all_download_filepaths = os.listdir(current_split_dynamic_world_dir)
 
     # Process each downloaded file
     for i, download_filepath in enumerate(all_download_filepaths, 1):
