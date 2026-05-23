@@ -17,6 +17,7 @@ need to whitelist your IP
 
 gcloud compute instances stop download-vm --zone=us-west1-a
 gcloud compute instances start download-vm --zone=us-west1-a
+gcloud compute ssh download-vm --zone=us-west1-a
 
 # NOTE ON THE ENVIRONMENT
 
