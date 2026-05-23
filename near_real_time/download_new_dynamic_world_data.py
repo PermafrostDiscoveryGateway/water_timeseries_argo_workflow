@@ -561,7 +561,7 @@ def download_new_dynamic_world_data_split_files_v1(env_path=None):
     logger.info(f"Date range after merge: {final_dates.min()} to {final_dates.max()}")
 
     # Create the final filename with timestamp
-    new_dynamic_world_filename = f'lakes_dw_V2d_{current_date_stamp}.nc'
+    new_dynamic_world_filename = f'lakes_dw_V2d_{most_recent_date_string}.nc'
     new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
 
     # Save the merged dataset
