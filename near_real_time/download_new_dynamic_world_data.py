@@ -10,6 +10,10 @@ import xarray as xr
 from dotenv import load_dotenv
 from water_timeseries.downloader import EarthEngineDownloader
 
+def get_date_label(current_date):
+    return str(current_date).split(' ')[0].replace('-', '_')
+
+
 def find_missing_summer_dates(existing_dates, current_date=None):
     """
     Find missing June, July, August, September dates that are not in the existing list.
@@ -375,8 +379,8 @@ def download_new_dynamic_world_data_split_files_v1(env_path=None):
 
     # Check for missing dates
     missing_dates = check_missing_data_in_netcdf(most_recent_dynamic_world_file)
-
     most_recent_date = max(missing_dates)
+    most_recent_date_string = get_date_label(most_recent_date)
 
     if not missing_dates or len(missing_dates) == 0:
         logger.debug(f"No missing dates found, returning most recent file: {most_recent_dynamic_world_file}")
@@ -385,6 +389,7 @@ def download_new_dynamic_world_data_split_files_v1(env_path=None):
     logger.debug(f"Missing dates found: {missing_dates}")
     missing_years = []
     missing_months = []
+
     for date in missing_dates:
         if date.year not in missing_years:
             missing_years.append(date.year)
@@ -404,16 +409,36 @@ def download_new_dynamic_world_data_split_files_v1(env_path=None):
     os.makedirs(split_new_dynamic_world_data_dir, exist_ok=True)
     logger.debug(f"New dynamic world data will go to {split_new_dynamic_world_data_dir}")
 
+    # split directory for this download run
+    current_split_dynamic_world_dir = os.path.join(split_new_dynamic_world_data_dir, most_recent_date_string)
+    os.makedirs(current_split_dynamic_world_dir, exist_ok=True)
+    os.makedirs(current_split_dynamic_world_dir, exist_ok=True)
+    logger.debug(f"New dynamic world data will go to {current_split_dynamic_world_dir}")
+
+
     all_download_filepaths = []
     failed_split_vector_files = []
 
     # DOWNLOAD INDIVIDUAL NETCDF FILES FROM THE SPLIT FILES
     for i in range(0, len(all_split_vector_dataset_files)):
         split_vector_dataset_file = all_split_vector_dataset_files[i]
-        try:
+        # TODO iterate over individual dates
+        for date in missing_dates:
+            current_date_string = get_date_label(date)
             # Extract file number from the split file name
             split_vector_file_name = os.path.basename(split_vector_dataset_file).replace('.parquet', '')
             split_vector_file_number = split_vector_file_name.split('_')[-1]
+            logger.debug(f"Downloading new dynamic world data from {date} for split vector file {split_vector_file_name}")
+            download_filename = f'dynamic_world_download_{split_vector_file_number}_{current_date_string}.nc'
+            download_filepath = os.path.join(split_new_dynamic_world_data_dir, download_filename)
+            logger.debug(f"Downloading new dynamic world data from {date} to {download_filepath}")
+            logger.debug(f"Begin download")
+            try:
+                print('this')
+            except Exception as e:
+                print('that')
+        try:
+
 
             download_filename = f'dynamic_world_download_{split_vector_file_number}_{current_date_stamp}.nc'
             download_filepath = os.path.join(split_new_dynamic_world_data_dir, download_filename)
