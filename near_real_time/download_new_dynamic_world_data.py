@@ -431,22 +431,27 @@ def download_new_dynamic_world_data_split_files_v1(env_path=None):
             download_filepath = os.path.join(split_new_dynamic_world_data_dir, download_filename)
             logger.debug(f"Downloading new dynamic world data from {date} to {download_filepath}")
             logger.debug(f"Begin download")
-            try:
-                dl = EarthEngineDownloader(ee_auth=True, logger=logger)
-                ds = dl.download_dw_monthly(
-                    vector_dataset=split_vector_dataset_file,
-                    name_attribute="id_geohash",
-                    years=missing_years,
-                    months=missing_months,
-                    save_to_file=download_filepath,
-                    max_total_requests=500,
-                    n_parallel=1,
-                )
-                logger.debug(f"Finished downloading to {download_filepath}")
-                all_download_filepaths.append(download_filepath)
-            except Exception as e:
-                logger.error(f"Failed to download data for {split_vector_dataset_file}: {e}")
-                failed_split_vector_files.append(split_vector_dataset_file)
+            current_year = date.year
+            current_month = date.month
+            if not os.path.exists(download_filepath):
+                try:
+                    dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+                    ds = dl.download_dw_monthly(
+                        vector_dataset=split_vector_dataset_file,
+                        name_attribute="id_geohash",
+                        years=[current_year],
+                        months=[current_month],
+                        save_to_file=download_filepath,
+                        max_total_requests=500,
+                        n_parallel=1,
+                    )
+                    logger.debug(f"Finished downloading to {download_filepath}")
+                    all_download_filepaths.append(download_filepath)
+                except Exception as e:
+                    logger.error(f"Failed to download data for {split_vector_dataset_file}: {e}")
+                    failed_split_vector_files.append(split_vector_dataset_file)
+            else:
+                logger.debug(f"Already have {download_filepath}")
 
 
 
@@ -472,7 +477,7 @@ def download_new_dynamic_world_data_split_files_v1(env_path=None):
 
     # TODO not the download filepaths, all the files under the directory
     # current_split_dynamic_world_dir
-    all_download_filepaths = os.listdir(current_split_dynamic_world_dir)
+    all_download_filepaths = glob.glob(os.path.join(current_split_dynamic_world_dir, "*.nc"))
 
     # Process each downloaded file
     for i, download_filepath in enumerate(all_download_filepaths, 1):
