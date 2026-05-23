@@ -412,6 +412,10 @@ def main():
     vector_lake_file = os.environ['vector_lake_file']
     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
 
+
+    missing_dates = download_new_dynamic_world_data.check_missing_data_in_netcdf(most_recent_dynamic_world_file, )
+    if missing_dates and len(missing_dates) > 0:
+        logger.debug(f"We are missing dates, the download has not completed yet")
     analysis_date = os.environ.get('analysis_date', None)
     data_aggregation_period = os.environ.get('data_aggregation_period', 'monthly')
     lake_chunk_size = int(os.environ.get('lake_chunk_size', '200'))  # Reduced default from 500 to 200
@@ -430,6 +434,7 @@ def main():
     except (OSError, IOError) as e:
         logger.warning(f"Could not get file size: {e}")
         file_size_gb = None
+
 
     if download_recent_data:
         logger.info("Downloading new dynamic world data...")
