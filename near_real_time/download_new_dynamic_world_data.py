@@ -428,7 +428,7 @@ def download_new_dynamic_world_data_split_files_v1(env_path=None):
             split_vector_file_number = split_vector_file_name.split('_')[-1]
             logger.debug(f"Downloading new dynamic world data from {date} for split vector file {split_vector_file_name}")
             download_filename = f'dynamic_world_download_{split_vector_file_number}_{current_date_string}.nc'
-            download_filepath = os.path.join(split_new_dynamic_world_data_dir, download_filename)
+            download_filepath = os.path.join(current_split_dynamic_world_dir, download_filename)
             logger.debug(f"Downloading new dynamic world data from {date} to {download_filepath}")
             logger.debug(f"Begin download")
             current_year = date.year
