@@ -30,6 +30,12 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     split_contents = os.listdir(split_new_dynamic_world_data_dir)
     logger.debug(f"Split contents: {split_contents}")
 
+    # get latest dynamic world file
+
+    # combine this with the other files
+
+    # save the file
+
 
 if __name__ == "__main__":
     combine_new_dynamic_world_data_with_latest()
