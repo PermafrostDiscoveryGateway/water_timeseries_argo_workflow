@@ -25,12 +25,17 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     dynamic_world_dir = os.environ['dynamic_world_dir']
     logger.debug(f"dynamic_world_dir: {dynamic_world_dir}")
     split_new_dynamic_world_data_dir = os.environ['split_new_dynamic_world_data_dir']
-    logger.debug(f"split_new_dynamic_world_data_dir: {split_new_dynamic_world_data_dir}")
+    logger.debug(f"split_new_dynamic_world_data_dir: {len(split_new_dynamic_world_data_dir)}")
+    for i in range(0, len(split_new_dynamic_world_data_dir)):
+        logger.debug(f"split_new_dynamic_world_data_dir: {i}")
 
     split_contents = os.listdir(split_new_dynamic_world_data_dir)
     logger.debug(f"Split contents: {split_contents}")
 
     # get latest dynamic world file
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
+    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+    logger.debug(f"Most recent dynamic world file: {most_recent_dynamic_world_file}")
 
     # combine this with the other files
 
