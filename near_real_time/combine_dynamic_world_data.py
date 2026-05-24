@@ -75,7 +75,8 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     # Remove duplicates in id_geohash if any
     _, unique_indices = np.unique(merged_new_ds.id_geohash.values, return_index=True)
     merged_new_ds = merged_new_ds.isel(id_geohash=sorted(unique_indices))
-
+    dates = merged_new_ds.date.values
+    logger.debug(f"New dates {dates}")
     logger.info(f"Merged new data: {len(merged_new_ds.id_geohash)} lakes x {len(merged_new_ds.date)} dates")
 
     # save the file
