@@ -45,7 +45,38 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     logger.debug(f"Most recent dynamic world file: {most_recent_dynamic_world_file}")
 
+
+    current_split_dir = split_new_dynamic_world_data_dir
     # combine this with the other files
+    downloaded_files = glob.glob(os.path.join(current_split_dir, "*.nc"))
+
+    # Merge all downloaded chunks
+    logger.info("Merging downloaded chunks...")
+    merged_new_ds = None
+
+    for chunk_file in downloaded_files:
+        logger.debug(f"Loading chunk: {chunk_file}")
+        try:
+            ds_chunk = xr.open_dataset(chunk_file)
+
+            if merged_new_ds is None:
+                merged_new_ds = ds_chunk
+            else:
+                # Concatenate along id_geohash dimension
+                merged_new_ds = xr.concat([merged_new_ds, ds_chunk], dim="id_geohash")
+        except Exception as e:
+            logger.error(f"Failed to load chunk {chunk_file}: {e}")
+            continue
+
+    if merged_new_ds is None:
+        logger.error("No data to merge from chunks")
+        return None
+
+    # Remove duplicates in id_geohash if any
+    _, unique_indices = np.unique(merged_new_ds.id_geohash.values, return_index=True)
+    merged_new_ds = merged_new_ds.isel(id_geohash=sorted(unique_indices))
+
+    logger.info(f"Merged new data: {len(merged_new_ds.id_geohash)} lakes x {len(merged_new_ds.date)} dates")
 
     # save the file
 
