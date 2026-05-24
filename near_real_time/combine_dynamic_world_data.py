@@ -77,6 +77,8 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     merged_new_ds = merged_new_ds.isel(id_geohash=sorted(unique_indices))
     dates = merged_new_ds.date.values
     logger.debug(f"New dates {dates}")
+    for date in dates:
+        print(date, type(date))
     logger.info(f"Merged new data: {len(merged_new_ds.id_geohash)} lakes x {len(merged_new_ds.date)} dates")
 
     # save the file
