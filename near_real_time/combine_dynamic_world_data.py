@@ -37,7 +37,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     logger.debug(f"Split new dynamic world data folders: {len(folders)} and files {len(files)}")
 
     split_contents = os.listdir(split_new_dynamic_world_data_dir)
-    logger.debug(f"Split contents: {split_contents}")
+    # logger.debug(f"Split contents: {split_contents}")
 
     # get latest dynamic world file
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
