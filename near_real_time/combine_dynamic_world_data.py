@@ -26,8 +26,15 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     logger.debug(f"dynamic_world_dir: {dynamic_world_dir}")
     split_new_dynamic_world_data_dir = os.environ['split_new_dynamic_world_data_dir']
     logger.debug(f"split_new_dynamic_world_data_dir: {len(split_new_dynamic_world_data_dir)}")
+    folders = []
+    files = []
     for i in range(0, len(split_new_dynamic_world_data_dir)):
-        logger.debug(f"split_new_dynamic_world_data_dir: {i}")
+        if os.path.isdir(split_new_dynamic_world_data_dir[i]):
+            folders.append(split_new_dynamic_world_data_dir[i])
+        else:
+            files.append(split_new_dynamic_world_data_dir[i])
+
+    logger.debug(f"Split new dynamic world data folders: {len(folders)} and files {len(files)}")
 
     split_contents = os.listdir(split_new_dynamic_world_data_dir)
     logger.debug(f"Split contents: {split_contents}")
