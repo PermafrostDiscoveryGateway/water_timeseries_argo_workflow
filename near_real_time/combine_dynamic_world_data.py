@@ -28,7 +28,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     split_new_dynamic_world_data_dir = os.environ['split_new_dynamic_world_data_dir']
     logger.debug(f"split_new_dynamic_world_data_dir: {split_new_dynamic_world_data_dir}")
 
-    # Find the latest valid dynamic world file (skip empty/corrupted ones)
+    # Find the latest valid dynamic world file
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
     valid_files = []
     for f in all_dynamic_world_files:
@@ -56,11 +56,9 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         logger.debug(f"Loading chunk: {chunk_file}")
         try:
             ds_chunk = xr.open_dataset(chunk_file)
-
             if merged_new_ds is None:
                 merged_new_ds = ds_chunk
             else:
-                # Concatenate along id_geohash dimension
                 merged_new_ds = xr.concat([merged_new_ds, ds_chunk], dim="id_geohash")
         except Exception as e:
             logger.error(f"Failed to load chunk {chunk_file}: {e}")
@@ -70,21 +68,13 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         logger.error("No data to merge from chunks")
         return None
 
-    # Remove duplicates in id_geohash if any
-    original_lake_count = len(merged_new_ds.id_geohash)
+    # Remove duplicates
     _, unique_indices = np.unique(merged_new_ds.id_geohash.values, return_index=True)
     merged_new_ds = merged_new_ds.isel(id_geohash=sorted(unique_indices))
-    unique_lake_count = len(merged_new_ds.id_geohash)
 
-    if original_lake_count != unique_lake_count:
-        logger.warning(f"Removed {original_lake_count - unique_lake_count} duplicate lake entries from new data")
-
-    # Get dates from new data
-    time_dim_in_new = 'date'  # Based on your file structure
-    dates = merged_new_ds[time_dim_in_new].values
+    # Get dates
+    dates = merged_new_ds.date.values
     latest_date = max(dates)
-
-    # Convert latest_date to string safely
     try:
         latest_date_string = str(latest_date).split('T')[0].replace('-', '_')
     except:
@@ -97,14 +87,10 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     logger.info("Loading existing dataset...")
     existing_ds = xr.open_dataset(most_recent_dynamic_world_file)
 
-    # Get existing dates
-    existing_dates = set(pd.to_datetime(existing_ds.date.values))
-    logger.info(f"Existing dates: {len(existing_dates)} dates (from {min(existing_dates)} to {max(existing_dates)})")
-
-    # Get existing lake IDs
+    # Get existing dates and lakes
+    existing_dates = existing_ds.date.values
     existing_lake_ids = existing_ds.id_geohash.values
     existing_lake_ids_set = set(str(lake_id) for lake_id in existing_lake_ids)
-    logger.info(f"Existing lakes: {len(existing_lake_ids_set):,}")
 
     # Get new lake IDs
     new_lake_ids = merged_new_ds.id_geohash.values
@@ -117,142 +103,139 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
     logger.info("=" * 60)
     logger.info("LAKE COMPARISON SUMMARY:")
-    logger.info(f"  Lakes in existing dataset: {len(existing_lake_ids_set):,}")
-    logger.info(f"  Lakes in new dataset: {len(new_lake_ids_set):,}")
+    logger.info(f"  Existing lakes: {len(existing_lake_ids_set):,}")
+    logger.info(f"  New lakes: {len(new_lake_ids_set):,}")
     logger.info(f"  Common lakes: {len(common_lakes):,}")
     logger.info(f"  New lakes to add: {len(lakes_only_in_new):,}")
-    logger.info(f"  Lakes only in existing (no new data): {len(lakes_only_in_existing):,}")
-
-    if lakes_only_in_new:
-        logger.info(f"✓ Will add {len(lakes_only_in_new):,} new lakes to the dataset")
-        # Save list of new lakes for reference
-        new_lakes_file = f"new_lakes_added_{latest_date_string}.txt"
-        with open(new_lakes_file, 'w') as f:
-            for lake_id in sorted(lakes_only_in_new):
-                f.write(f"{lake_id}\n")
-        logger.info(f"New lakes list saved to: {new_lakes_file}")
-    else:
-        logger.info("No new lakes detected")
 
     # Check for date overlap
-    new_dates = set(pd.to_datetime(merged_new_ds.date.values))
-    overlapping_dates = existing_dates & new_dates
+    new_dates_set = set(pd.to_datetime(merged_new_ds.date.values))
+    existing_dates_set = set(pd.to_datetime(existing_ds.date.values))
+    overlapping_dates = existing_dates_set & new_dates_set
 
     if overlapping_dates:
-        logger.warning(f"Found {len(overlapping_dates)} overlapping dates: {sorted(overlapping_dates)}")
-        logger.warning("Removing overlapping dates from new dataset...")
+        logger.warning(f"Removing {len(overlapping_dates)} overlapping dates")
         mask = ~merged_new_ds.date.isin(list(overlapping_dates))
         merged_new_ds = merged_new_ds.sel(date=mask)
         dates = merged_new_ds.date.values
 
     if len(dates) == 0:
-        logger.warning("No new dates to add after removing overlaps")
+        logger.warning("No new dates to add")
         return None
 
     logger.info(f"Adding {len(dates)} new dates: {dates}")
 
-    # Now merge the datasets, handling new lakes
+    # FAST MERGE using xarray's built-in concatenation
     logger.info("=" * 60)
-    logger.info("MERGING DATASETS (including new lakes)...")
+    logger.info("MERGING DATASETS (using xarray)...")
 
-    # Combine the lake IDs
-    all_lake_ids = list(existing_lake_ids_set.union(lakes_only_in_new))
-    logger.info(f"Total lakes after merge: {len(all_lake_ids):,}")
+    # Reindex the new dataset to match existing lake IDs
+    logger.info("Reindexing new data to match existing lake structure...")
 
-    # Create a mapping from lake ID to index in the merged dataset
-    lake_id_to_idx = {lake_id: idx for idx, lake_id in enumerate(all_lake_ids)}
+    # Create a mapping for common lakes
+    # Convert to pandas Series for faster mapping
+    existing_ids_series = pd.Series(range(len(existing_lake_ids)), index=[str(x) for x in existing_lake_ids])
 
-    # Get the list of variables to process (exclude coordinates)
-    data_vars = [var for var in existing_ds.data_vars if var not in ['date', 'id_geohash']]
-    logger.info(f"Variables to process: {data_vars}")
+    # Find indices of common lakes in existing dataset
+    common_lakes_list = list(common_lakes)
+    common_existing_indices = [existing_ids_series[lake_id] for lake_id in common_lakes_list]
 
-    # Create the merged dataset structure
-    merged_dates = sorted(list(existing_dates.union(new_dates)))
-    logger.info(f"Total dates after merge: {len(merged_dates)}")
+    # For new data, we need to align with existing lake order
+    # Create a new dataset aligned with existing lake order
+    aligned_new_data = []
 
-    # Create a new dataset with the combined dimensions
-    merged_data_vars = {}
+    for var_name in existing_ds.data_vars:
+        if var_name not in ['date', 'id_geohash']:
+            logger.info(f"  Aligning {var_name}...")
+            # Create array of NaN for all existing lakes
+            aligned_array = np.full((len(existing_lake_ids), len(dates)), np.nan, dtype=np.float64)
 
-    for var_name in data_vars:
-        logger.info(f"Processing variable: {var_name}")
+            # Fill in data for common lakes
+            for i, lake_id in enumerate(common_lakes_list):
+                # Find this lake in new data
+                new_lake_idx = np.where([str(x) == lake_id for x in new_lake_ids])[0]
+                if len(new_lake_idx) > 0:
+                    # Get data for this lake from new dataset
+                    lake_data = merged_new_ds[var_name].isel(id_geohash=new_lake_idx[0]).values
+                    if len(lake_data.shape) == 1:  # 1D array (time)
+                        aligned_array[common_existing_indices[i], :] = lake_data
+                    else:
+                        aligned_array[common_existing_indices[i], :] = lake_data.flatten()
 
-        # Initialize array with NaN
-        merged_array = np.full((len(all_lake_ids), len(merged_dates)), np.nan, dtype=np.float64)
+            aligned_new_data.append(aligned_array)
 
-        # Fill in existing data
-        logger.info(f"  Filling existing data for {var_name}...")
-        existing_data = existing_ds[var_name].values  # Shape: (existing_lakes, existing_dates)
-
-        for i, lake_id in enumerate(existing_lake_ids):
-            lake_id_str = str(lake_id)
-            if lake_id_str in lake_id_to_idx:
-                target_lake_idx = lake_id_to_idx[lake_id_str]
-                for j, date in enumerate(existing_ds.date.values):
-                    date_idx = merged_dates.index(date)
-                    merged_array[target_lake_idx, date_idx] = existing_data[i, j]
-
-        # Fill in new data
-        logger.info(f"  Filling new data for {var_name}...")
-        new_data = merged_new_ds[var_name].values  # Shape: (new_lakes, new_dates)
-
-        for i, lake_id in enumerate(new_lake_ids):
-            lake_id_str = str(lake_id)
-            if lake_id_str in lake_id_to_idx:
-                target_lake_idx = lake_id_to_idx[lake_id_str]
-                for j, date in enumerate(merged_new_ds.date.values):
-                    if date in merged_dates:
-                        date_idx = merged_dates.index(date)
-                        merged_array[target_lake_idx, date_idx] = new_data[i, j]
-
-        merged_data_vars[var_name] = merged_array
-
-    # Create the merged xarray dataset
-    logger.info("Creating final xarray dataset...")
-
-    # Prepare coordinate arrays
-    id_geohash_array = np.array(all_lake_ids, dtype=object)
-    date_array = np.array(merged_dates, dtype='datetime64[ns]')
-
-    # Create dataset
-    final_ds = xr.Dataset(
+    # Create new dataset for the aligned data
+    aligned_new_ds = xr.Dataset(
         data_vars={
-            var_name: (['id_geohash', 'date'], merged_data_vars[var_name])
-            for var_name in data_vars
+            var_name: (['id_geohash', 'date'], aligned_new_data[i])
+            for i, var_name in enumerate([v for v in existing_ds.data_vars if v not in ['date', 'id_geohash']])
         },
         coords={
-            'id_geohash': id_geohash_array,
-            'date': date_array
+            'id_geohash': existing_lake_ids,
+            'date': dates
         }
     )
 
-    # Add attributes to match original file
-    final_ds.attrs = {
-        'description': 'This datasets provides the monthly area of the dynamic world classes (water, trees, grass, flooded_vegetation, crops, shrub_and_scrub, built, bare, snow_and_ice) for selected lake polygons. The areas were calculated from the Dynamic World V1 dataset through Google Earth Engine. Lake polygons were calculated by Ingmar Nitze through the Permafrost Discovery Gateway Project. "id_geohash" is the lake_id, which needs be joined to the accompanying polygon vector dataset',
-        'author': 'Ingmar Nitze (Alfred Wegener Institute), Kayla Hardie (Google), Chen Wang (NCSA, U Illinois), Todd Nicholson(NCSA, U Illinois)',
-        'contact': 'ingmar.nitze@awi.de',
-        'date_merged': str(datetime.now())
-    }
-
-    # Add units attributes
-    for var_name in data_vars:
-        final_ds[var_name].attrs['units'] = 'ha'
-        final_ds[var_name].attrs['_FillValue'] = np.nan
+    # Now concatenate along date dimension
+    logger.info("Concatenating along date dimension...")
+    final_ds = xr.concat([existing_ds, aligned_new_ds], dim="date")
 
     # Sort by date
-    final_ds = final_ds.sortby('date')
+    final_ds = final_ds.sortby("date")
 
-    # Create output filename
+    logger.info(f"Final dataset: {len(final_ds.id_geohash):,} lakes x {len(final_ds.date)} dates")
+
+    # If there are new lakes, we need to add them
+    if lakes_only_in_new:
+        logger.info(f"Adding {len(lakes_only_in_new):,} new lakes to the dataset...")
+
+        # Create dataset for new lakes
+        new_lakes_data = {}
+        new_lake_ids_list = list(lakes_only_in_new)
+
+        # Find indices of new lakes in the new dataset
+        new_lake_indices = []
+        for lake_id in new_lake_ids_list:
+            idx = np.where([str(x) == lake_id for x in new_lake_ids])[0]
+            if len(idx) > 0:
+                new_lake_indices.append(idx[0])
+
+        for var_name in existing_ds.data_vars:
+            if var_name not in ['date', 'id_geohash']:
+                # Extract data for new lakes from merged_new_ds
+                new_lake_data = merged_new_ds[var_name].isel(id_geohash=new_lake_indices).values
+                if len(new_lake_data.shape) == 1:
+                    new_lake_data = new_lake_data.reshape(-1, 1)
+                new_lakes_data[var_name] = (['id_geohash', 'date'], new_lake_data)
+
+        # Create dataset for new lakes
+        new_lakes_ds = xr.Dataset(
+            data_vars=new_lakes_data,
+            coords={
+                'id_geohash': new_lake_ids_list,
+                'date': dates
+            }
+        )
+
+        # Concatenate along id_geohash dimension
+        final_ds = xr.concat([final_ds, new_lakes_ds], dim="id_geohash")
+        logger.info(f"Final dataset with new lakes: {len(final_ds.id_geohash):,} lakes x {len(final_ds.date)} dates")
+
+    # Save the final dataset
     new_dynamic_world_filename = f'lakes_dw_V2d_{latest_date_string}.nc'
     new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
 
-    # Save the final dataset with compression
     logger.info(f"Saving merged dataset to: {new_dynamic_world_data_file}")
-    encoding = {var_name: {'zlib': True, 'complevel': 5} for var_name in data_vars}
+
+    # Use compression for efficient storage
+    encoding = {var_name: {'zlib': True, 'complevel': 5}
+                for var_name in final_ds.data_vars if var_name not in ['date', 'id_geohash']}
+
     final_ds.to_netcdf(new_dynamic_world_data_file, encoding=encoding)
 
     logger.info("=" * 60)
     logger.info(f"✓ SUCCESSFULLY MERGED DATASETS!")
-    logger.info(f"  Original file: {most_recent_dynamic_world_file}")
+    logger.info(f"  Original: {most_recent_dynamic_world_file}")
     logger.info(f"  New file: {new_dynamic_world_data_file}")
     logger.info(f"  Total lakes: {len(final_ds.id_geohash):,}")
     logger.info(f"  Total dates: {len(final_ds.date)}")
