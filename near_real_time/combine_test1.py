@@ -2,6 +2,7 @@ import subprocess
 import os
 import glob
 import shutil
+import sys
 from datetime import datetime, timedelta
 from loguru import logger
 from dotenv import load_dotenv
@@ -48,17 +49,27 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     logger.info(f"Creating working copy: {working_file}")
     shutil.copy2(most_recent_dynamic_world_file, working_file)
 
-    # Process each chunk file - simple append without checking duplicates
+    # Get chunk files and immediately start processing
     chunk_files = sorted(glob.glob(os.path.join(split_new_dynamic_world_data_dir, "*.nc")))
-    logger.info(f"Processing {len(chunk_files)} chunk files...")
+    logger.info(f"Found {len(chunk_files)} chunk files to process")
+
+    # Force flush
+    sys.stdout.flush()
 
     days_offset = 3653
     ref_date = datetime(2015, 7, 1)
     all_new_dates = set()
+    processed = 0
+    failed = 0
+
+    logger.info(f"Starting to process {len(chunk_files)} files...")
 
     for i, chunk_file in enumerate(chunk_files):
-        if (i + 1) % 20 == 0:
-            logger.info(f"Progress: {i + 1}/{len(chunk_files)}")
+        filename = os.path.basename(chunk_file)
+
+        # Log every file to see progress
+        logger.info(f"Processing {i + 1}/{len(chunk_files)}: {filename}")
+        sys.stdout.flush()
 
         # Create temp file with adjusted dates
         temp_adjusted = os.path.join(temp_dir, f"adjusted_{i:04d}.nc")
@@ -68,7 +79,8 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
-            logger.warning(f"Failed to adjust dates in {os.path.basename(chunk_file)}: {result.stderr[:100]}")
+            logger.warning(f"  FAILED to adjust dates: {result.stderr[:100]}")
+            failed += 1
             continue
 
         # Append to working file using ncks
@@ -76,9 +88,13 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
-            logger.warning(f"Failed to append {os.path.basename(chunk_file)}: {result.stderr[:100]}")
+            logger.warning(f"  FAILED to append: {result.stderr[:100]}")
+            failed += 1
         else:
-            # Extract dates from this chunk to track what we added
+            logger.info(f"  SUCCESS")
+            processed += 1
+
+            # Extract dates from this chunk
             result = subprocess.run(['ncdump', '-v', 'date', temp_adjusted], capture_output=True, text=True)
             for line in result.stdout.split('\n'):
                 if 'date =' in line:
@@ -90,7 +106,13 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                             pass
 
         # Clean up temp file
-        os.remove(temp_adjusted)
+        if os.path.exists(temp_adjusted):
+            os.remove(temp_adjusted)
+
+        # Force flush every iteration
+        sys.stdout.flush()
+
+    logger.info(f"Processing complete. Processed: {processed}, Failed: {failed}")
 
     if not all_new_dates:
         logger.warning("No dates were added!")
@@ -105,13 +127,15 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     new_dynamic_world_filename = f'lakes_dw_V2d_{latest_date_string}.nc'
     new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
 
-    logger.info(f"Saving final file: {new_dynamic_world_data_file}")
+    logger.info(f"Sorting dates in final file...")
+    sys.stdout.flush()
 
     # Sort the final file by date
     sorted_file = os.path.join(temp_dir, "sorted.nc")
     cmd = ['ncks', '-O', '--msa', working_file, sorted_file]
     subprocess.run(cmd, capture_output=True, check=True)
 
+    logger.info(f"Saving final file: {new_dynamic_world_data_file}")
     shutil.move(sorted_file, new_dynamic_world_data_file)
 
     # Cleanup
@@ -133,7 +157,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     logger.info(f"✓ MERGE COMPLETE!")
     logger.info(f"  Output: {new_dynamic_world_data_file}")
     logger.info(f"  Total dates: {len(final_dates)}")
-    logger.info(f"  New dates added (approx): {len(all_new_dates)}")
+    logger.info(f"  New dates added: {len(all_new_dates)}")
     logger.info("=" * 60)
 
     return new_dynamic_world_data_file
