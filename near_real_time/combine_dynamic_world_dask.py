@@ -29,12 +29,11 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
     # Initialize Dask client with memory limits
     logger.info("Initializing Dask cluster...")
-    # Limit to single process with 12GB memory to leave room for system
     cluster = LocalCluster(
         n_workers=1,
         threads_per_worker=2,
         memory_limit='12GB',
-        dashboard_address=None  # Disable dashboard to save memory
+        dashboard_address=None
     )
     client = Client(cluster)
     logger.info(f"Dask client initialized: {client}")
@@ -44,7 +43,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
         valid_files = []
         for f in all_dynamic_world_files:
-            if os.path.getsize(f) > 1024 * 1024:  # Larger than 1 MB
+            if os.path.getsize(f) > 1024 * 1024:
                 valid_files.append(f)
             else:
                 logger.warning(f"Skipping empty/corrupted file: {os.path.basename(f)}")
@@ -77,11 +76,11 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
             logger.error("No valid chunk files found!")
             return None
 
-        # Read and combine new data chunks using Dask (lazy loading)
+        # Read and combine new data chunks using Dask
         logger.info("Reading and combining new data chunks with Dask (lazy loading)...")
 
-        # Process chunks in batches to avoid too many open files
-        batch_size = 20  # Process 20 chunks at a time
+        # Process chunks in batches
+        batch_size = 20
         merged_new_ds = None
 
         for batch_start in range(0, len(valid_chunks), batch_size):
@@ -91,16 +90,14 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
             batch_datasets = []
             for chunk_file in valid_chunks[batch_start:batch_end]:
                 try:
-                    # Open with Dask backend
                     ds_chunk = xr.open_dataset(
                         chunk_file,
                         decode_times=False,
                         chunks={'id_geohash': 10000, 'date': -1}
                     )
 
-                    # CONVERT DATES TO MATCH EXISTING FILE'S REFERENCE DATE
+                    # Convert dates
                     if 'date' in ds_chunk.variables:
-                        # Convert from days since 2025-07-01 to days since 2015-07-01
                         days_offset = 3653
                         ds_chunk['date'] = ds_chunk['date'] + days_offset
                         ds_chunk['date'].attrs['units'] = 'days since 2015-07-01'
@@ -113,19 +110,16 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                     continue
 
             if batch_datasets:
-                # Combine this batch
                 if len(batch_datasets) == 1:
                     batch_combined = batch_datasets[0]
                 else:
                     batch_combined = xr.concat(batch_datasets, dim="id_geohash")
 
-                # Merge with main dataset
                 if merged_new_ds is None:
                     merged_new_ds = batch_combined
                 else:
                     merged_new_ds = xr.concat([merged_new_ds, batch_combined], dim="id_geohash")
 
-            # Force garbage collection after each batch
             gc.collect()
 
         if merged_new_ds is None:
@@ -134,8 +128,10 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
         # Remove duplicate lake IDs
         logger.info("Removing duplicate lake IDs...")
-        # Compute unique indices (this forces computation)
-        id_geohash_values = merged_new_ds.id_geohash.values.compute()
+        # Get the Dask array and compute it
+        id_geohash_da = merged_new_ds.id_geohash.data  # This returns a Dask array
+        id_geohash_values = id_geohash_da.compute()  # Now compute it
+
         _, unique_indices = np.unique(id_geohash_values, return_index=True)
         merged_new_ds = merged_new_ds.isel(id_geohash=sorted(unique_indices))
 
@@ -144,7 +140,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
         # Get dates
         logger.info("Getting date information...")
-        dates = merged_new_ds.date.values.compute()
+        dates = merged_new_ds.date.data.compute()
         latest_date = max(dates)
 
         # Convert to actual date for filename
@@ -165,7 +161,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         )
 
         # Get existing dates
-        existing_dates = existing_ds.date.values.compute()
+        existing_dates = existing_ds.date.data.compute()
         logger.info(f"Existing dates: {len(existing_dates)} dates")
 
         existing_date_objs = [ref_date + pd.Timedelta(days=int(d)) for d in existing_dates]
@@ -178,11 +174,13 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
         if overlapping_dates:
             logger.warning(f"Removing {len(overlapping_dates)} overlapping dates: {sorted(overlapping_dates)[:5]}...")
-            # Convert to list for isin
             overlapping_list = list(overlapping_dates)
-            mask = ~merged_new_ds.date.isin(overlapping_list)
-            merged_new_ds = merged_new_ds.sel(date=mask)
-            dates = merged_new_ds.date.values.compute()
+            # Create a boolean mask for selection
+            mask = xr.zeros_like(merged_new_ds.date, dtype=bool)
+            for od in overlapping_list:
+                mask = mask | (merged_new_ds.date == od)
+            merged_new_ds = merged_new_ds.where(~mask, drop=True)
+            dates = merged_new_ds.date.data.compute()
 
         if len(dates) == 0:
             logger.warning("No new dates to add")
@@ -194,7 +192,6 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
         # Merge datasets
         logger.info("Merging datasets...")
-        # Concatenate along date dimension
         final_ds = xr.concat([existing_ds, merged_new_ds], dim="date")
         final_ds = final_ds.sortby("date")
 
@@ -238,7 +235,6 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         return None
 
     finally:
-        # Clean up
         logger.info("Cleaning up Dask client...")
         client.close()
         cluster.close()
