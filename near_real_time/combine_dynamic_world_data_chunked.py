@@ -48,15 +48,11 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     valid_chunks = []
     for chunk_file in downloaded_files:
         try:
-            # Test with decode_times=True to ensure dates can be decoded
-            with xr.open_dataset(chunk_file, decode_times=True) as test:
+            with xr.open_dataset(chunk_file, decode_times=False) as test:
                 test.close()
             valid_chunks.append(chunk_file)
         except Exception as e:
-            logger.warning(f"Skipping chunk with date decoding issue: {os.path.basename(chunk_file)}")
-            logger.warning(f"Will try manual date handling for: {os.path.basename(chunk_file)}")
-            # Still consider it valid, we'll handle dates manually
-            valid_chunks.append(chunk_file)
+            logger.warning(f"Skipping corrupted chunk: {os.path.basename(chunk_file)} - {str(e)[:50]}")
 
     logger.info(f"Valid chunks: {len(valid_chunks)} out of {len(downloaded_files)}")
 
@@ -64,50 +60,38 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         logger.error("No valid chunk files found!")
         return None
 
-    # Read and combine new data chunks with proper date handling
+    # Read and combine new data chunks
     logger.info("Reading and combining new data chunks...")
     merged_new_ds = None
 
     for chunk_file in valid_chunks:
         logger.debug(f"Loading chunk: {os.path.basename(chunk_file)}")
         try:
-            # Try to open normally first
-            try:
-                ds_chunk = xr.open_dataset(chunk_file, decode_times=True)
-            except ValueError as e:
-                if "unable to decode time units" in str(e):
-                    # Manual date decoding for proleptic_gregorian calendar
-                    logger.warning(f"Manual date decoding for: {os.path.basename(chunk_file)}")
-                    ds_chunk = xr.open_dataset(chunk_file, decode_times=False)
+            # Open without decoding times
+            ds_chunk = xr.open_dataset(chunk_file, decode_times=False)
 
-                    # Manually decode the dates
-                    if 'date' in ds_chunk.variables:
-                        date_var = ds_chunk['date']
-                        units = date_var.attrs.get('units', 'days since 2015-07-01')
-                        calendar = date_var.attrs.get('calendar', 'proleptic_gregorian')
+            # CONVERT DATES TO MATCH EXISTING FILE'S REFERENCE DATE
+            # New chunks use: days since 2025-07-01
+            # Existing uses: days since 2015-07-01
+            # Difference is 3653 days (10 years including leap years)
+            if 'date' in ds_chunk.variables:
+                # Convert the date values
+                old_date_values = ds_chunk.date.values
+                # Shift by the difference between reference dates
+                # 2025-07-01 minus 2015-07-01 = 3653 days
+                days_offset = 3653
+                new_date_values = old_date_values + days_offset
 
-                        # Use pandas for conversion (handles proleptic_gregorian)
-                        # Parse the reference date from units
-                        import re
-                        match = re.search(r'days since (\d{4}-\d{2}-\d{2})', units)
-                        if match:
-                            ref_date = pd.Timestamp(match.group(1))
-                            # Convert integer days to datetime
-                            date_values = ref_date + pd.to_timedelta(date_var.values, unit='D')
-                            ds_chunk['date'] = xr.DataArray(
-                                date_values,
-                                dims=date_var.dims,
-                                attrs={
-                                    'long_name': 'date',
-                                    'standard_name': 'time',
-                                    'units': units,
-                                    'calendar': calendar
-                                }
-                            )
-                        else:
-                            raise ValueError(f"Could not parse units: {units}")
-                else:
-                    raise e
+                # Update the date variable
+                ds_chunk['date'] = xr.DataArray(
+                    new_date_values,
+                    dims=ds_chunk.date.dims,
+                    attrs={
+                        'units': 'days since 2015-07-01',  # Match existing file
+                        'calendar': 'proleptic_gregorian'
+                    }
+                )
+                logger.debug(f"  Converted dates: {old_date_values[:3]} -> {new_date_values[:3]}")
 
             if merged_new_ds is None:
                 merged_new_ds = ds_chunk
@@ -127,55 +111,42 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     _, unique_indices = np.unique(id_geohash_values, return_index=True)
     merged_new_ds = merged_new_ds.isel(id_geohash=sorted(unique_indices))
 
-    # Get dates (now as datetime objects)
-    dates = pd.to_datetime(merged_new_ds.date.values)
+    # Get dates (now converted to match existing file)
+    dates = merged_new_ds.date.values
     latest_date = max(dates)
-    latest_date_string = latest_date.strftime('%Y_%m_%d')
 
-    logger.info(f"Latest date: {latest_date_string}")
+    # Convert to actual date for filename
+    from datetime import timedelta
+    ref_date = datetime(2015, 7, 1)
+    latest_date_obj = ref_date + timedelta(days=int(latest_date))
+    latest_date_string = latest_date_obj.strftime('%Y_%m_%d')
+
+    logger.info(f"Latest date (converted days since 2015-07-01): {latest_date}")
+    logger.info(f"Latest date (actual): {latest_date_string}")
     logger.info(f"New data: {len(merged_new_ds.id_geohash):,} lakes x {len(dates)} dates")
 
-    # Load existing dataset
+    # Load existing dataset (without decoding)
     logger.info("Loading existing dataset...")
-    try:
-        existing_ds = xr.open_dataset(most_recent_dynamic_world_file, decode_times=True)
-    except ValueError as e:
-        if "unable to decode time units" in str(e):
-            logger.warning("Manual date decoding for existing file")
-            existing_ds = xr.open_dataset(most_recent_dynamic_world_file, decode_times=False)
-            if 'date' in existing_ds.variables:
-                date_var = existing_ds['date']
-                units = date_var.attrs.get('units', 'days since 2015-07-01')
-                import re
-                match = re.search(r'days since (\d{4}-\d{2}-\d{2})', units)
-                if match:
-                    ref_date = pd.Timestamp(match.group(1))
-                    date_values = ref_date + pd.to_timedelta(date_var.values, unit='D')
-                    existing_ds['date'] = xr.DataArray(
-                        date_values,
-                        dims=date_var.dims,
-                        attrs=date_var.attrs
-                    )
-        else:
-            raise e
+    existing_ds = xr.open_dataset(most_recent_dynamic_world_file, decode_times=False)
 
-    # Get existing dates (as datetime)
-    existing_dates = pd.to_datetime(existing_ds.date.values)
+    # Get existing dates
+    existing_dates = existing_ds.date.values
     logger.info(f"Existing dates: {len(existing_dates)} dates")
-    logger.info(f"Date range: {existing_dates.min()} to {existing_dates.max()}")
 
-    # Remove overlapping dates
+    # Convert to actual dates for display
+    existing_date_objs = [ref_date + timedelta(days=int(d)) for d in existing_dates]
+    logger.info(f"Date range: {min(existing_date_objs).date()} to {max(existing_date_objs).date()}")
+
+    # Remove overlapping dates (compare integers directly now)
     new_dates_set = set(dates)
     existing_dates_set = set(existing_dates)
     overlapping_dates = existing_dates_set & new_dates_set
 
     if overlapping_dates:
         logger.warning(f"Removing {len(overlapping_dates)} overlapping dates")
-        # Convert to string comparison for safety
-        overlapping_str = [d.strftime('%Y-%m-%d') for d in overlapping_dates]
-        mask = ~merged_new_ds.date.dt.strftime('%Y-%m-%d').isin(overlapping_str)
+        mask = ~merged_new_ds.date.isin(list(overlapping_dates))
         merged_new_ds = merged_new_ds.sel(date=mask)
-        dates = pd.to_datetime(merged_new_ds.date.values)
+        dates = merged_new_ds.date.values
 
     if len(dates) == 0:
         logger.warning("No new dates to add")
@@ -184,7 +155,8 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         return None
 
     logger.info(f"Adding {len(dates)} new dates")
-    logger.info(f"New date range: {dates.min()} to {dates.max()}")
+    new_date_objs = [ref_date + timedelta(days=int(d)) for d in dates]
+    logger.info(f"New date range: {min(new_date_objs).date()} to {max(new_date_objs).date()}")
 
     # Merge datasets
     logger.info("Merging datasets...")
@@ -203,9 +175,6 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     encoding = {var_name: {'zlib': True, 'complevel': 5}
                 for var_name in final_ds.data_vars if var_name not in ['date', 'id_geohash']}
 
-    # For dates, ensure they're saved in a standard format
-    final_ds['date'].encoding = {'units': 'days since 2000-01-01', 'calendar': 'proleptic_gregorian'}
-
     final_ds.to_netcdf(new_dynamic_world_data_file, encoding=encoding)
 
     logger.info("=" * 60)
@@ -213,7 +182,6 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     logger.info(f"  Output: {new_dynamic_world_data_file}")
     logger.info(f"  Total lakes: {len(final_ds.id_geohash):,}")
     logger.info(f"  Total dates: {len(final_ds.date)}")
-    logger.info(f"  Date range: {final_ds.date.values.min()} to {final_ds.date.values.max()}")
     logger.info("=" * 60)
 
     # Clean up
