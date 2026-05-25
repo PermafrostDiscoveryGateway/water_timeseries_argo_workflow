@@ -63,12 +63,10 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
             logger.error("No valid chunk files found!")
             return None
 
-        # Read and combine new data chunks in batches
+        # Read and combine new data chunks
         logger.info("Reading and combining new data chunks...")
 
-        # Process chunks in batches
         batch_size = 20
-        all_lake_ids = []
         combined_data = None
 
         for batch_start in range(0, len(valid_chunks), batch_size):
@@ -87,8 +85,6 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                         ds_chunk['date'].attrs['units'] = 'days since 2015-07-01'
                         ds_chunk['date'].attrs['calendar'] = 'proleptic_gregorian'
 
-                    # Collect lake IDs for duplicate detection
-                    all_lake_ids.extend(ds_chunk.id_geohash.values.tolist())
                     batch_data.append(ds_chunk)
 
                 except Exception as e:
@@ -96,7 +92,6 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                     continue
 
             if batch_data:
-                # Combine this batch
                 if len(batch_data) == 1:
                     batch_combined = batch_data[0]
                 else:
@@ -105,9 +100,9 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                 if combined_data is None:
                     combined_data = batch_combined
                 else:
-                    combined_data = xr.concat([combined_data, batch_combined], dim="id_geohash")
+                    # Use combine_first instead of concat to avoid dimension mismatch
+                    combined_data = xr.combine_first(combined_data, batch_combined)
 
-            # Clear batch data from memory
             del batch_data
             gc.collect()
 
@@ -115,12 +110,10 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
             logger.error("No data to merge from chunks")
             return None
 
-        # Remove duplicate lake IDs using the collected IDs
+        # Remove duplicate lake IDs by keeping first occurrence
         logger.info("Removing duplicate lake IDs...")
-        unique_lake_ids, unique_indices = np.unique(all_lake_ids, return_index=True)
+        _, unique_indices = np.unique(combined_data.id_geohash.values, return_index=True)
         combined_data = combined_data.isel(id_geohash=sorted(unique_indices))
-
-        logger.info(f"Combined data: {len(combined_data.id_geohash):,} unique lakes")
 
         # Get dates
         logger.info("Getting date information...")
@@ -132,7 +125,6 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         latest_date_obj = ref_date + pd.Timedelta(days=int(latest_date))
         latest_date_string = latest_date_obj.strftime('%Y_%m_%d')
 
-        logger.info(f"Latest date (days since 2015-07-01): {latest_date}")
         logger.info(f"Latest date (actual): {latest_date_string}")
         logger.info(f"New data: {len(combined_data.id_geohash):,} lakes x {len(dates)} dates")
 
@@ -144,17 +136,11 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         existing_dates = existing_ds.date.values
         logger.info(f"Existing dates: {len(existing_dates)} dates")
 
-        existing_date_objs = [ref_date + pd.Timedelta(days=int(d)) for d in existing_dates]
-        logger.info(f"Date range: {min(existing_date_objs).date()} to {max(existing_date_objs).date()}")
-
-        # Remove overlapping dates
-        new_dates_set = set(dates)
-        existing_dates_set = set(existing_dates)
-        overlapping_dates = existing_dates_set & new_dates_set
+        # Remove overlapping dates from new data
+        overlapping_dates = set(existing_dates) & set(dates)
 
         if overlapping_dates:
-            logger.warning(f"Removing {len(overlapping_dates)} overlapping dates: {sorted(overlapping_dates)}")
-            # Create mask to remove overlapping dates
+            logger.warning(f"Removing {len(overlapping_dates)} overlapping dates")
             date_mask = ~np.isin(combined_data.date.values, list(overlapping_dates))
             combined_data = combined_data.isel(date=date_mask)
             dates = combined_data.date.values
@@ -165,49 +151,78 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
             combined_data.close()
             return None
 
-        logger.info(f"Adding {len(dates)} new dates")
-        new_date_objs = [ref_date + pd.Timedelta(days=int(d)) for d in dates]
-        logger.info(f"New date range: {min(new_date_objs).date()} to {max(new_date_objs).date()}")
-
-        # Merge datasets
-        logger.info("Merging datasets...")
-        final_ds = xr.concat([existing_ds, combined_data], dim="date")
-        final_ds = final_ds.sortby("date")
+        logger.info(f"Adding {len(dates)} new dates: {dates}")
 
         # Create output filename
         new_dynamic_world_filename = f'lakes_dw_V2d_{latest_date_string}.nc'
         new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
 
-        logger.info(f"Saving to: {new_dynamic_world_data_file}")
-        logger.info("Writing to disk (this may take 30-60 minutes)...")
+        # Process one date at a time to avoid memory issues
+        logger.info("Merging and writing one date at a time...")
 
-        # Setup compression encoding
+        # First, copy existing dataset to new file
+        logger.info("Copying existing data to new file...")
         encoding = {var_name: {'zlib': True, 'complevel': 5}
-                    for var_name in final_ds.data_vars if var_name not in ['date', 'id_geohash']}
+                    for var_name in existing_ds.data_vars if var_name not in ['date', 'id_geohash']}
 
-        # Write to netCDF
-        final_ds.to_netcdf(new_dynamic_world_data_file, encoding=encoding)
+        # Write existing dataset
+        existing_ds.to_netcdf(new_dynamic_world_data_file, encoding=encoding)
 
-        # Get final statistics
-        logger.info("Verifying output...")
-        result_ds = xr.open_dataset(new_dynamic_world_data_file, decode_times=False)
-        final_lake_count = len(result_ds.id_geohash)
-        final_date_count = len(result_ds.date)
-        result_ds.close()
+        # Now append each new date
+        from netCDF4 import Dataset
+
+        for date_val in dates:
+            logger.info(f"Adding date {date_val} (converted: {ref_date + pd.Timedelta(days=int(date_val))})...")
+
+            # Extract data for this date
+            date_data = combined_data.sel(date=date_val)
+
+            # Append to file
+            with Dataset(new_dynamic_world_data_file, 'a') as ncfile:
+                # Get current number of dates
+                current_date_dim = len(ncfile.dimensions['date'])
+                new_date_idx = current_date_dim
+
+                # Extend date dimension
+                ncfile.dimensions['date'] = (current_date_dim + 1,)
+
+                # Add the date value
+                if 'date' in ncfile.variables:
+                    date_var = ncfile.variables['date']
+                    # Resize the date variable
+                    date_var.resize(current_date_dim + 1, axis=0)
+                    date_var[new_date_idx] = date_val
+
+                # Add all data variables for this date
+                for var_name in existing_ds.data_vars:
+                    if var_name not in ['date', 'id_geohash']:
+                        # Get the data for this date
+                        var_data = date_data[var_name].values
+
+                        # Get or create variable
+                        if var_name in ncfile.variables:
+                            ncvar = ncfile.variables[var_name]
+                            # Resize along date dimension
+                            ncvar.resize(current_date_dim + 1, axis=1)
+                            ncvar[:, new_date_idx] = var_data
+                        else:
+                            # Create new variable (shouldn't happen)
+                            pass
+
+            # Clear date_data from memory
+            del date_data
+            gc.collect()
 
         logger.info("=" * 60)
         logger.info(f"✓ MERGE COMPLETE!")
         logger.info(f"  Output: {new_dynamic_world_data_file}")
-        logger.info(f"  Total lakes: {final_lake_count:,}")
-        logger.info(f"  Total dates: {final_date_count}")
-        logger.info(f"  New lakes: {final_lake_count - len(existing_ds.id_geohash):,}")
-        logger.info(f"  New dates: {final_date_count - len(existing_dates):,}")
+        logger.info(f"  Total lakes: {len(existing_ds.id_geohash):,}")
+        logger.info(f"  Total dates: {len(existing_dates) + len(dates)}")
         logger.info("=" * 60)
 
         # Clean up
         existing_ds.close()
         combined_data.close()
-        final_ds.close()
 
     except Exception as e:
         logger.error(f"Error during processing: {e}")
