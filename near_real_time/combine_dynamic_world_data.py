@@ -64,19 +64,70 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
         logger.info(f"Lake dimension name: {lake_dim_name}")
 
-        # Get sample time values
+        # Get sample time values - handle if it's a dimension without a variable
         if time_dim_name:
-            time_var = inspect_ds.variables[time_dim_name]
-            logger.info(f"Time variable type: {time_var.dtype}")
-            logger.info(f"Sample time values (first 3): {time_var[:3]}")
+            # Check if there's a variable with the same name as the dimension
+            if time_dim_name in inspect_ds.variables:
+                time_var = inspect_ds.variables[time_dim_name]
+                logger.info(f"Time variable type: {time_var.dtype}")
+                logger.info(f"Sample time values (first 3): {time_var[:3]}")
 
-            # Try to convert to datetime
-            if hasattr(time_var, 'units'):
-                logger.info(f"Time units: {time_var.units}")
-                # Convert first few times for inspection
-                from netCDF4 import num2date
-                sample_times = num2date(time_var[:3], time_var.units)
-                logger.info(f"Sample dates: {sample_times}")
+                # Try to convert to datetime
+                if hasattr(time_var, 'units'):
+                    logger.info(f"Time units: {time_var.units}")
+                    # Convert first few times for inspection
+                    sample_times = num2date(time_var[:3], time_var.units)
+                    logger.info(f"Sample dates: {sample_times}")
+            else:
+                # The time dimension doesn't have a separate variable, use the dimension
+                logger.info(f"Time dimension '{time_dim_name}' has no variable, using dimension values")
+                # For netCDF4, dimensions don't store values directly, we need to use xarray for this
+                logger.info("Will use xarray to read time values")
+
+    # Now use xarray to get the actual time values
+    logger.info("Loading time values with xarray...")
+    existing_ds_temp = xr.open_dataset(most_recent_dynamic_world_file)
+
+    # Find time dimension in existing data
+    time_dim_in_existing = None
+    for dim in existing_ds_temp.dims:
+        if dim in ['date', 'time', 't', 'datetime']:
+            time_dim_in_existing = dim
+            break
+
+    # If not found in dims, look for coordinate
+    if time_dim_in_existing is None:
+        for coord in existing_ds_temp.coords:
+            if coord in ['date', 'time', 't', 'datetime']:
+                time_dim_in_existing = coord
+                break
+
+    logger.info(f"Time dimension in existing data: {time_dim_in_existing}")
+
+    # Get existing dates
+    if time_dim_in_existing:
+        existing_dates = set(pd.to_datetime(existing_ds_temp[time_dim_in_existing].values))
+        logger.info(f"Found {len(existing_dates)} existing dates")
+        logger.info(f"First 3 existing dates: {sorted(existing_dates)[:3]}")
+    else:
+        logger.error("Could not find time dimension in existing file")
+        return None
+
+    # Get lake IDs
+    lake_dim_in_existing = None
+    for dim in existing_ds_temp.dims:
+        if dim in ['id_geohash', 'lake_id', 'geohash', 'id']:
+            lake_dim_in_existing = dim
+            break
+
+    if lake_dim_in_existing:
+        existing_lake_ids_set = set(existing_ds_temp[lake_dim_in_existing].values)
+        logger.info(f"Found {len(existing_lake_ids_set):,} existing lakes")
+    else:
+        logger.error("Could not find lake dimension in existing file")
+        return None
+
+    existing_ds_temp.close()
 
     # Get downloaded chunk files
     downloaded_files = glob.glob(os.path.join(split_new_dynamic_world_data_dir, "*.nc"))
@@ -113,17 +164,17 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     if original_lake_count != unique_lake_count:
         logger.warning(f"Removed {original_lake_count - unique_lake_count} duplicate lake entries from new data")
 
-    # Get dates from new data - determine what the time dimension is called
+    # Get dates from new data
     time_dim_in_new = None
     for dim in merged_new_ds.dims:
-        if dim in ['date', 'time', 't']:
+        if dim in ['date', 'time', 't', 'datetime']:
             time_dim_in_new = dim
             break
 
     if time_dim_in_new is None:
         # Try to find a coordinate that looks like time
         for coord in merged_new_ds.coords:
-            if coord in ['date', 'time', 't']:
+            if coord in ['date', 'time', 't', 'datetime']:
                 time_dim_in_new = coord
                 break
 
@@ -142,39 +193,6 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
     logger.info(f"The latest date is {latest_date_string}")
     logger.info(f"Merged new data: {len(merged_new_ds.id_geohash):,} lakes x {len(dates)} dates")
-
-    # Now inspect existing file with xarray to get dates and lake IDs
-    logger.info("Loading existing dataset metadata...")
-    existing_ds_temp = xr.open_dataset(most_recent_dynamic_world_file)
-
-    # Find time dimension in existing data
-    time_dim_in_existing = None
-    for dim in existing_ds_temp.dims:
-        if dim in ['date', 'time', 't']:
-            time_dim_in_existing = dim
-            break
-
-    if time_dim_in_existing is None:
-        # Look for coordinate
-        for coord in existing_ds_temp.coords:
-            if coord in ['date', 'time', 't']:
-                time_dim_in_existing = coord
-                break
-
-    logger.info(f"Time dimension in existing data: {time_dim_in_existing}")
-
-    # Get existing dates
-    existing_dates = set(pd.to_datetime(existing_ds_temp[time_dim_in_existing].values))
-
-    # Get lake IDs
-    lake_dim_in_existing = None
-    for dim in existing_ds_temp.dims:
-        if dim in ['id_geohash', 'lake_id', 'geohash', 'id']:
-            lake_dim_in_existing = dim
-            break
-
-    existing_lake_ids_set = set(existing_ds_temp[lake_dim_in_existing].values)
-    existing_ds_temp.close()
 
     # Check for new lakes
     logger.info("=" * 60)
@@ -251,15 +269,9 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
     # Open existing file and new data for streaming merge
     with nc.Dataset(most_recent_dynamic_world_file, 'r') as src:
-        # Get dimensions from source - use the actual dimension names
-        src_lake_dim = None
-        src_time_dim = None
-
-        for dim_name in src.dimensions.keys():
-            if dim_name in ['id_geohash', 'lake_id', 'geohash', 'id']:
-                src_lake_dim = dim_name
-            if dim_name in ['date', 'time', 't']:
-                src_time_dim = dim_name
+        # Use the dimension names we already identified
+        src_lake_dim = lake_dim_in_existing
+        src_time_dim = time_dim_in_existing
 
         src_lakes = len(src.dimensions[src_lake_dim])
         src_dates = len(src.dimensions[src_time_dim])
@@ -280,46 +292,65 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                 setattr(dst, attr_name, attr_value)
             dst.date_last_updated = str(datetime.now())
 
-            # Create mapping from lake ID to index
-            existing_lake_ids = src.variables[src_lake_dim][:]
+            # Create mapping from lake ID to index - need to get from xarray since netCDF4 might not have it as variable
+            logger.info("Building lake ID mapping...")
+            existing_lake_ids = existing_lake_ids_set  # Use the set we already have
+
+            # But we need ordered list, so reload with xarray
+            temp_ds = xr.open_dataset(most_recent_dynamic_world_file)
+            existing_lake_ids_ordered = temp_ds[src_lake_dim].values
+            temp_ds.close()
+
             lake_to_idx = {}
-            for idx, lake_id in enumerate(existing_lake_ids):
+            for idx, lake_id in enumerate(existing_lake_ids_ordered):
                 if isinstance(lake_id, bytes):
                     lake_to_idx[lake_id.decode('utf-8')] = idx
                 else:
                     lake_to_idx[str(lake_id)] = idx
 
-            # Copy all variables
-            for var_name in src.variables:
-                src_var = src.variables[var_name]
-                dims = list(src_var.dimensions)
+            # Copy all variables from source using xarray to get them
+            temp_ds = xr.open_dataset(most_recent_dynamic_world_file)
+
+            for var_name in temp_ds.data_vars:
+                logger.info(f"Processing variable: {var_name}")
+                src_var_xr = temp_ds[var_name]
+                dims = list(src_var_xr.dims)
+
+                # Get dtype and fill value
+                dtype = src_var_xr.dtype
+                fill_value = src_var_xr.encoding.get('_FillValue', np.nan)
 
                 # Create variable in destination
                 dst_var = dst.createVariable(
                     var_name,
-                    src_var.dtype,
+                    dtype,
                     dims,
                     zlib=True,
                     complevel=5,
-                    fill_value=src_var._FillValue if hasattr(src_var, '_FillValue') else None
+                    fill_value=fill_value if not np.isnan(fill_value) else None
                 )
 
                 # Copy attributes
-                for attr_name in src_var.ncattrs():
-                    if attr_name not in ['_FillValue', 'least_significant_digit']:
-                        setattr(dst_var, attr_name, getattr(src_var, attr_name))
+                for attr_name in src_var_xr.attrs:
+                    setattr(dst_var, attr_name, src_var_xr.attrs[attr_name])
 
                 # Copy data based on variable type
                 if src_time_dim in dims and src_lake_dim in dims:
                     # 2D variable (time x space)
                     logger.info(f"Copying existing {var_name} data...")
 
-                    # Copy existing data in chunks
+                    # Copy existing data in chunks using xarray values
                     chunk_size = 100000
                     for start_idx in range(0, src_lakes, chunk_size):
                         end_idx = min(start_idx + chunk_size, src_lakes)
-                        src_data = src_var[:, start_idx:end_idx]
-                        dst_var[:, start_idx:end_idx] = src_data
+                        src_data = src_var_xr.isel({src_lake_dim: slice(start_idx, end_idx)}).values
+                        # Need to transpose if dimensions order is (time, lake) or (lake, time)
+                        if src_var_xr.dims[0] == src_time_dim:
+                            # Shape is (time, lake)
+                            dst_var[:, start_idx:end_idx] = src_data
+                        else:
+                            # Shape is (lake, time)
+                            dst_var[start_idx:end_idx, :] = src_data
                         logger.debug(f"  Copied lakes {start_idx:,} to {end_idx:,}")
 
                     # Add new date data
@@ -327,38 +358,44 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                     for date_idx, date_val in enumerate(dates):
                         target_date_idx = src_dates + date_idx
 
-                        # Get data for this date
+                        # Get data for this date from merged_new_ds
                         date_data = merged_new_ds.sel({time_dim_in_new: date_val})
 
                         # Initialize array for this time slice
-                        fill_value = src_var._FillValue if hasattr(src_var, '_FillValue') else np.nan
-                        new_time_slice = np.full(src_lakes, fill_value, dtype=src_var.dtype)
+                        new_time_slice = np.full(src_lakes, fill_value, dtype=dtype)
 
                         # Fill in data for existing lakes
                         lakes_filled = 0
-                        for lake_idx, lake_id in enumerate(existing_lake_ids):
-                            lake_id_str = lake_id.decode('utf-8') if isinstance(lake_id, bytes) else str(lake_id)
-                            if lake_id_str in new_lakes_str:
-                                new_lake_idx = np.where(new_lake_ids == lake_id_str)[0]
+                        for lake_id_str in new_lakes_str:
+                            if lake_id_str in lake_to_idx:
+                                lake_idx = lake_to_idx[lake_id_str]
+                                # Find this lake in new data
+                                new_lake_idx = np.where(new_lake_ids_set == lake_id_str)[0]
                                 if len(new_lake_idx) > 0:
                                     var_data = date_data.isel(id_geohash=new_lake_idx[0])[var_name].values
                                     new_time_slice[lake_idx] = var_data
                                     lakes_filled += 1
 
-                        dst_var[target_date_idx, :] = new_time_slice
+                        # Write the time slice - handle dimension order
+                        if src_var_xr.dims[0] == src_time_dim:
+                            dst_var[target_date_idx, :] = new_time_slice
+                        else:
+                            dst_var[:, target_date_idx] = new_time_slice
 
                         if (date_idx + 1) % 10 == 0:
                             logger.info(f"  Processed {date_idx + 1}/{new_dates_count} dates")
 
                 elif src_time_dim in dims:
                     # 1D time variable
-                    dst_var[:src_dates] = src_var[:]
+                    dst_var[:src_dates] = src_var_xr.values
                     for date_idx, date_val in enumerate(dates):
                         dst_var[src_dates + date_idx] = date_val
 
                 else:
                     # Other variables (lake IDs, etc.)
-                    dst_var[:] = src_var[:]
+                    dst_var[:] = src_var_xr.values
+
+            temp_ds.close()
 
     logger.info("=" * 60)
     logger.info(f"Successfully merged datasets using netCDF4!")
