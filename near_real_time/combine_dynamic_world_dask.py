@@ -7,7 +7,6 @@ import glob
 import xarray as xr
 from dotenv import load_dotenv
 import dask
-import dask.array as da
 from dask.distributed import LocalCluster, Client
 import gc
 
@@ -80,56 +79,71 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
         # Read and combine new data chunks using Dask (lazy loading)
         logger.info("Reading and combining new data chunks with Dask (lazy loading)...")
-        chunk_datasets = []
 
-        for i, chunk_file in enumerate(valid_chunks):
-            if i % 50 == 0:
-                logger.info(f"Loading chunk {i + 1}/{len(valid_chunks)}...")
-                # Force garbage collection periodically
-                gc.collect()
+        # Process chunks in batches to avoid too many open files
+        batch_size = 20  # Process 20 chunks at a time
+        merged_new_ds = None
 
-            try:
-                # Open with Dask backend (chunks automatically)
-                ds_chunk = xr.open_dataset(
-                    chunk_file,
-                    decode_times=False,
-                    chunks={'id_geohash': 10000, 'date': -1}  # 10k lakes per chunk
-                )
+        for batch_start in range(0, len(valid_chunks), batch_size):
+            batch_end = min(batch_start + batch_size, len(valid_chunks))
+            logger.info(f"Processing chunks {batch_start + 1}-{batch_end}/{len(valid_chunks)}...")
 
-                # CONVERT DATES TO MATCH EXISTING FILE'S REFERENCE DATE
-                if 'date' in ds_chunk.variables:
-                    # Convert from days since 2025-07-01 to days since 2015-07-01
-                    days_offset = 3653
-                    ds_chunk['date'] = ds_chunk['date'] + days_offset
-                    ds_chunk['date'].attrs['units'] = 'days since 2015-07-01'
-                    ds_chunk['date'].attrs['calendar'] = 'proleptic_gregorian'
+            batch_datasets = []
+            for chunk_file in valid_chunks[batch_start:batch_end]:
+                try:
+                    # Open with Dask backend
+                    ds_chunk = xr.open_dataset(
+                        chunk_file,
+                        decode_times=False,
+                        chunks={'id_geohash': 10000, 'date': -1}
+                    )
 
-                chunk_datasets.append(ds_chunk)
+                    # CONVERT DATES TO MATCH EXISTING FILE'S REFERENCE DATE
+                    if 'date' in ds_chunk.variables:
+                        # Convert from days since 2025-07-01 to days since 2015-07-01
+                        days_offset = 3653
+                        ds_chunk['date'] = ds_chunk['date'] + days_offset
+                        ds_chunk['date'].attrs['units'] = 'days since 2015-07-01'
+                        ds_chunk['date'].attrs['calendar'] = 'proleptic_gregorian'
 
-            except Exception as e:
-                logger.error(f"Failed to load chunk {os.path.basename(chunk_file)}: {e}")
-                continue
+                    batch_datasets.append(ds_chunk)
 
-        if not chunk_datasets:
-            logger.error("No valid chunk datasets loaded!")
+                except Exception as e:
+                    logger.error(f"Failed to load chunk {os.path.basename(chunk_file)}: {e}")
+                    continue
+
+            if batch_datasets:
+                # Combine this batch
+                if len(batch_datasets) == 1:
+                    batch_combined = batch_datasets[0]
+                else:
+                    batch_combined = xr.concat(batch_datasets, dim="id_geohash")
+
+                # Merge with main dataset
+                if merged_new_ds is None:
+                    merged_new_ds = batch_combined
+                else:
+                    merged_new_ds = xr.concat([merged_new_ds, batch_combined], dim="id_geohash")
+
+            # Force garbage collection after each batch
+            gc.collect()
+
+        if merged_new_ds is None:
+            logger.error("No data to merge from chunks")
             return None
 
-        # Combine all chunks along id_geohash dimension
-        logger.info("Concatenating chunks...")
-        merged_new_ds = xr.concat(chunk_datasets, dim="id_geohash", combine='nested')
-
-        # Remove duplicate lake IDs (lazy operation)
+        # Remove duplicate lake IDs
         logger.info("Removing duplicate lake IDs...")
-        # Get unique indices using Dask
-        id_geohash_values = merged_new_ds.id_geohash.data
-        # Compute unique indices (this forces one computation)
-        _, unique_indices = np.unique(id_geohash_values.compute(), return_index=True)
+        # Compute unique indices (this forces computation)
+        id_geohash_values = merged_new_ds.id_geohash.values.compute()
+        _, unique_indices = np.unique(id_geohash_values, return_index=True)
         merged_new_ds = merged_new_ds.isel(id_geohash=sorted(unique_indices))
 
         # Re-chunk for optimal processing
         merged_new_ds = merged_new_ds.chunk({'id_geohash': 50000, 'date': -1})
 
-        # Get dates (compute just the values)
+        # Get dates
+        logger.info("Getting date information...")
         dates = merged_new_ds.date.values.compute()
         latest_date = max(dates)
 
@@ -142,12 +156,12 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         logger.info(f"Latest date (actual): {latest_date_string}")
         logger.info(f"New data: {len(merged_new_ds.id_geohash):,} lakes x {len(dates)} dates")
 
-        # Load existing dataset with Dask (lazy loading)
+        # Load existing dataset with Dask
         logger.info("Loading existing dataset with Dask...")
         existing_ds = xr.open_dataset(
             most_recent_dynamic_world_file,
             decode_times=False,
-            chunks={'id_geohash': 50000, 'date': -1}  # Match chunk size
+            chunks={'id_geohash': 50000, 'date': -1}
         )
 
         # Get existing dates
@@ -157,14 +171,16 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         existing_date_objs = [ref_date + pd.Timedelta(days=int(d)) for d in existing_dates]
         logger.info(f"Date range: {min(existing_date_objs).date()} to {max(existing_date_objs).date()}")
 
-        # Remove overlapping dates (lazy operation)
+        # Remove overlapping dates
         new_dates_set = set(dates)
         existing_dates_set = set(existing_dates)
         overlapping_dates = existing_dates_set & new_dates_set
 
         if overlapping_dates:
-            logger.warning(f"Removing {len(overlapping_dates)} overlapping dates")
-            mask = ~merged_new_ds.date.isin(list(overlapping_dates))
+            logger.warning(f"Removing {len(overlapping_dates)} overlapping dates: {sorted(overlapping_dates)[:5]}...")
+            # Convert to list for isin
+            overlapping_list = list(overlapping_dates)
+            mask = ~merged_new_ds.date.isin(overlapping_list)
             merged_new_ds = merged_new_ds.sel(date=mask)
             dates = merged_new_ds.date.values.compute()
 
@@ -176,9 +192,10 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         new_date_objs = [ref_date + pd.Timedelta(days=int(d)) for d in dates]
         logger.info(f"New date range: {min(new_date_objs).date()} to {max(new_date_objs).date()}")
 
-        # Merge datasets (lazy operation - no memory used yet)
-        logger.info("Merging datasets (lazy operation)...")
-        final_ds = xr.concat([existing_ds, merged_new_ds], dim="date", join="outer")
+        # Merge datasets
+        logger.info("Merging datasets...")
+        # Concatenate along date dimension
+        final_ds = xr.concat([existing_ds, merged_new_ds], dim="date")
         final_ds = final_ds.sortby("date")
 
         # Re-chunk for efficient writing
@@ -195,18 +212,10 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         encoding = {var_name: {'zlib': True, 'complevel': 5}
                     for var_name in final_ds.data_vars if var_name not in ['date', 'id_geohash']}
 
-        # For the date variable, preserve the units
-        encoding['date'] = {'dtype': 'int64', 'zlib': True, 'complevel': 5}
+        # Write to netCDF
+        final_ds.to_netcdf(new_dynamic_world_data_file, encoding=encoding)
 
-        # Write to netCDF - this triggers the actual computation
-        # Use compute=True to execute the Dask graph
-        write_job = final_ds.to_netcdf(
-            new_dynamic_world_data_file,
-            encoding=encoding,
-            compute=True
-        )
-
-        # Get final statistics by reading just the metadata
+        # Get final statistics
         logger.info("Verifying output...")
         result_ds = xr.open_dataset(new_dynamic_world_data_file, decode_times=False)
         final_lake_count = len(result_ds.id_geohash)
