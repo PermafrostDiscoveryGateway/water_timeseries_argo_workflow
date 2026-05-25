@@ -60,8 +60,13 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         return None
 
     # Remove duplicates in id_geohash if any
+    original_lake_count = len(merged_new_ds.id_geohash)
     _, unique_indices = np.unique(merged_new_ds.id_geohash.values, return_index=True)
     merged_new_ds = merged_new_ds.isel(id_geohash=sorted(unique_indices))
+    unique_lake_count = len(merged_new_ds.id_geohash)
+
+    if original_lake_count != unique_lake_count:
+        logger.warning(f"Removed {original_lake_count - unique_lake_count} duplicate lake entries from new data")
 
     dates = merged_new_ds.date.values
     latest_date = max(dates)
@@ -72,8 +77,61 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     # Check for date overlap
     existing_ds_temp = xr.open_dataset(most_recent_dynamic_world_file)
     existing_dates = set(pd.to_datetime(existing_ds_temp.date.values))
+    existing_lake_ids_set = set(existing_ds_temp.id_geohash.values)
     existing_ds_temp.close()
 
+    # Check for new lakes BEFORE date filtering
+    logger.info("=" * 60)
+    logger.info("CHECKING FOR NEW LAKES (should be none)...")
+    new_lake_ids_set = set(merged_new_ds.id_geohash.values)
+
+    # Convert to string for comparison if needed (handles bytes vs str)
+    existing_lakes_str = set()
+    for lake_id in existing_lake_ids_set:
+        if isinstance(lake_id, bytes):
+            existing_lakes_str.add(lake_id.decode('utf-8'))
+        else:
+            existing_lakes_str.add(str(lake_id))
+
+    new_lakes_str = set()
+    for lake_id in new_lake_ids_set:
+        if isinstance(lake_id, bytes):
+            new_lakes_str.add(lake_id.decode('utf-8'))
+        else:
+            new_lakes_str.add(str(lake_id))
+
+    # Find new lakes
+    lakes_only_in_new = new_lakes_str - existing_lakes_str
+    lakes_only_in_existing = existing_lakes_str - new_lakes_str
+    common_lakes = existing_lakes_str & new_lakes_str
+
+    logger.info(f"Lakes in existing dataset: {len(existing_lakes_str):,}")
+    logger.info(f"Lakes in new dataset: {len(new_lakes_str):,}")
+    logger.info(f"Common lakes: {len(common_lakes):,}")
+
+    if lakes_only_in_new:
+        logger.error(f"⚠️ FOUND {len(lakes_only_in_new)} NEW LAKES in new data!")
+        logger.error(f"This should NOT happen according to expectations!")
+        logger.info(f"First 10 new lake IDs: {list(lakes_only_in_new)[:10]}")
+
+        # Optional: Save to file for inspection
+        new_lakes_file = f"new_lakes_detected_{latest_date_string}.txt"
+        with open(new_lakes_file, 'w') as f:
+            for lake_id in sorted(lakes_only_in_new):
+                f.write(f"{lake_id}\n")
+        logger.info(f"Full list of new lakes saved to: {new_lakes_file}")
+    else:
+        logger.info("✓ VERIFIED: No new lakes detected! All lakes in new data exist in existing dataset.")
+
+    if lakes_only_in_existing:
+        logger.info(
+            f"Note: {len(lakes_only_in_existing):,} lakes exist only in existing dataset (expected - not all lakes have data every month)")
+    else:
+        logger.info("All existing lakes are also in new data")
+
+    logger.info("=" * 60)
+
+    # Now check for date overlap
     new_dates = set(pd.to_datetime(merged_new_ds.date.values))
     overlapping_dates = existing_dates & new_dates
 
@@ -104,8 +162,8 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         src_dates = len(src.dimensions['date'])
         new_dates_count = len(dates)
 
-        logger.info(f"Source: {src_lakes} lakes x {src_dates} dates")
-        logger.info(f"New: {len(merged_new_ds.id_geohash)} lakes x {new_dates_count} dates")
+        logger.info(f"Source: {src_lakes:,} lakes x {src_dates} dates")
+        logger.info(f"New: {len(merged_new_ds.id_geohash):,} lakes x {new_dates_count} dates")
 
         # Create output file
         with nc.Dataset(new_dynamic_world_data_file, 'w', format='NETCDF4') as dst:
@@ -123,20 +181,28 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
             existing_lake_ids = src.variables['id_geohash'][:]
 
             # Create mapping from lake ID to index in output file
-            lake_to_idx = {lake_id.decode('utf-8') if isinstance(lake_id, bytes) else lake_id: idx
-                           for idx, lake_id in enumerate(existing_lake_ids)}
+            lake_to_idx = {}
+            for idx, lake_id in enumerate(existing_lake_ids):
+                if isinstance(lake_id, bytes):
+                    lake_to_idx[lake_id.decode('utf-8')] = idx
+                else:
+                    lake_to_idx[str(lake_id)] = idx
 
             # Track which new lakes need to be added (if any)
             new_lakes_found = []
             for lake_id in new_lake_ids:
-                lake_id_str = lake_id.decode('utf-8') if isinstance(lake_id, bytes) else lake_id
+                lake_id_str = lake_id.decode('utf-8') if isinstance(lake_id, bytes) else str(lake_id)
                 if lake_id_str not in lake_to_idx:
                     new_lakes_found.append(lake_id_str)
 
             if new_lakes_found:
-                logger.warning(f"Found {len(new_lakes_found)} new lakes not in existing dataset")
-                logger.warning("These lakes will be skipped as dimension sizes are fixed")
-                logger.warning("Consider using outer join approach if you need to include new lakes")
+                logger.error(f"⚠️ FOUND {len(new_lakes_found)} NEW LAKES during netCDF4 merge!")
+                logger.error(f"This should NOT happen according to expectations!")
+                logger.info(f"First 10 new lakes: {new_lakes_found[:10]}")
+                logger.warning("These lakes will be SKIPPED as dimension sizes are fixed")
+                logger.warning("Data for these new lakes will NOT be included in output")
+            else:
+                logger.info("✓ VERIFIED: No new lakes found during netCDF4 merge. Proceeding with data copy...")
 
             # Copy variables from source
             for var_name in src.variables:
@@ -172,10 +238,11 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                         end_idx = min(start_idx + chunk_size, src_lakes)
                         src_data = src_var[:, start_idx:end_idx]
                         dst_var[:, start_idx:end_idx] = src_data
-                        logger.debug(f"  Copied lakes {start_idx} to {end_idx}")
+                        logger.debug(f"  Copied lakes {start_idx:,} to {end_idx:,}")
 
                     # Add new date data
                     logger.info(f"Adding new date data for {var_name}...")
+                    dates_processed = 0
                     for date_idx, date_val in enumerate(dates):
                         target_date_idx = src_dates + date_idx
 
@@ -186,21 +253,25 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                         new_time_slice = np.full(src_lakes, fill_value if fill_value else np.nan,
                                                  dtype=src_var.dtype)
 
-                        # Fill in data for existing lakes
+                        # Fill in data for existing lakes (skip new lakes)
+                        lakes_filled = 0
                         for lake_idx, lake_id in enumerate(existing_lake_ids):
-                            lake_id_str = lake_id.decode('utf-8') if isinstance(lake_id, bytes) else lake_id
-                            if lake_id_str in new_lake_ids:
+                            lake_id_str = lake_id.decode('utf-8') if isinstance(lake_id, bytes) else str(lake_id)
+                            if lake_id_str in new_lakes_str:  # Only process if lake exists in new data
                                 # Find this lake in new data
                                 new_lake_idx = np.where(new_lake_ids == lake_id_str)[0]
                                 if len(new_lake_idx) > 0:
                                     var_data = date_data.isel(id_geohash=new_lake_idx[0])[var_name].values
                                     new_time_slice[lake_idx] = var_data
+                                    lakes_filled += 1
 
                         # Write the time slice
                         dst_var[target_date_idx, :] = new_time_slice
+                        dates_processed += 1
 
-                        if (date_idx + 1) % 10 == 0:
-                            logger.info(f"  Processed {date_idx + 1}/{new_dates_count} dates")
+                        if (date_idx + 1) % 10 == 0 or (date_idx + 1) == new_dates_count:
+                            logger.info(
+                                f"  Processed {date_idx + 1}/{new_dates_count} dates (filling {lakes_filled:,} lakes per date)")
 
                 elif 'date' in dims:
                     # 1D variable with only date dimension
@@ -234,6 +305,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                     # Copy all data
                     dst_var[:] = src_var[:]
 
+    logger.info("=" * 60)
     logger.info(f"Successfully merged datasets using netCDF4!")
     logger.info(f"Original file: {most_recent_dynamic_world_file}")
     logger.info(f"Merged file saved as: {new_dynamic_world_data_file}")
@@ -242,12 +314,21 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     with nc.Dataset(new_dynamic_world_data_file, 'r') as verify_ds:
         final_lakes = len(verify_ds.dimensions['id_geohash'])
         final_dates = len(verify_ds.dimensions['date'])
-        logger.info(f"Final dataset: {final_lakes} lakes x {final_dates} dates")
+        logger.info(f"Final dataset: {final_lakes:,} lakes x {final_dates} dates")
+
+    # Final summary
+    if lakes_only_in_new:
+        logger.error(f"⚠️ SUMMARY: {len(lakes_only_in_new)} new lakes were detected but NOT added to the output")
+        logger.error(
+            "This matches expectations (no new lakes should appear), but if this is unexpected, please investigate the source data")
+    else:
+        logger.info("✓ SUMMARY: No new lakes detected - all lakes matched existing dataset as expected")
+
+    logger.info("=" * 60)
+    logger.info("Memory-efficient merge complete!")
 
     # Clean up
     merged_new_ds.close()
-
-    logger.info("Memory-efficient merge complete!")
 
 
 if __name__ == "__main__":
