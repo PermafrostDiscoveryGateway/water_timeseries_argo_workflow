@@ -102,7 +102,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         merged_new_ds = merged_new_ds.sel(date=mask)
 
     # Concatenate along date dimension
-    final_ds = xr.concat([existing_ds, merged_new_ds], dim="date")
+    final_ds = xr.concat([existing_ds, merged_new_ds], dim="date", join="outer")
 
     # Sort by date
     final_ds = final_ds.sortby("date")
