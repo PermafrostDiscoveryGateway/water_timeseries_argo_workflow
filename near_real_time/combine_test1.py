@@ -49,73 +49,141 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     logger.info(f"Creating working copy: {working_file}")
     shutil.copy2(most_recent_dynamic_world_file, working_file)
 
-    # Get chunk files and immediately start processing
+    # Get chunk files
     chunk_files = sorted(glob.glob(os.path.join(split_new_dynamic_world_data_dir, "*.nc")))
     logger.info(f"Found {len(chunk_files)} chunk files to process")
-
-    # Force flush
-    sys.stdout.flush()
 
     days_offset = 3653
     ref_date = datetime(2015, 7, 1)
     all_new_dates = set()
     processed = 0
     failed = 0
+    failed_files = []
 
     logger.info(f"Starting to process {len(chunk_files)} files...")
 
     for i, chunk_file in enumerate(chunk_files):
         filename = os.path.basename(chunk_file)
-
-        # Log every file to see progress
         logger.info(f"Processing {i + 1}/{len(chunk_files)}: {filename}")
-        sys.stdout.flush()
 
-        # Create temp file with adjusted dates
+        # Create temp files
         temp_adjusted = os.path.join(temp_dir, f"adjusted_{i:04d}.nc")
+        temp_debug = os.path.join(temp_dir, f"debug_{i:04d}.txt")
 
-        # Adjust dates using ncap2
-        cmd = ['ncap2', '-O', '-s', f'date=date+{days_offset}', chunk_file, temp_adjusted]
+        # Step 1: Check original file structure
+        logger.debug(f"  Checking original file...")
+        cmd = ['ncdump', '-h', chunk_file]
         result = subprocess.run(cmd, capture_output=True, text=True)
-
         if result.returncode != 0:
-            logger.warning(f"  FAILED to adjust dates: {result.stderr[:100]}")
+            logger.error(f"  File appears corrupted: {result.stderr[:200]}")
             failed += 1
+            failed_files.append((filename, "corrupted file"))
             continue
 
-        # Append to working file using ncks
-        cmd = ['ncks', '-A', temp_adjusted, working_file]
+        # Step 2: Get original dates
+        cmd = ['ncdump', '-v', 'date', chunk_file]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        original_dates = []
+        for line in result.stdout.split('\n'):
+            if 'date =' in line:
+                parts = line.split('=')[1].strip().strip(';').split(',')
+                for part in parts:
+                    try:
+                        original_dates.append(int(part.strip()))
+                    except ValueError:
+                        pass
+        logger.debug(f"  Original dates: {original_dates}")
+
+        # Step 3: Adjust dates using ncap2 with full error output
+        logger.debug(f"  Adjusting dates...")
+        cmd = ['ncap2', '-O', '-v', '-s', f'date=date+{days_offset}', chunk_file, temp_adjusted]
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
-            logger.warning(f"  FAILED to append: {result.stderr[:100]}")
+            logger.error(f"  FAILED to adjust dates:")
+            logger.error(f"    Return code: {result.returncode}")
+            logger.error(f"    Stdout: {result.stdout[:200]}")
+            logger.error(f"    Stderr: {result.stderr[:500]}")
             failed += 1
+            failed_files.append((filename, f"ncap2 failed: {result.stderr[:100]}"))
+
+            # Save debug info
+            with open(temp_debug, 'w') as f:
+                f.write(f"Command: {' '.join(cmd)}\n")
+                f.write(f"Return code: {result.returncode}\n")
+                f.write(f"Stdout:\n{result.stdout}\n")
+                f.write(f"Stderr:\n{result.stderr}\n")
+            continue
+
+        # Step 4: Check adjusted dates
+        cmd = ['ncdump', '-v', 'date', temp_adjusted]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        adjusted_dates = []
+        for line in result.stdout.split('\n'):
+            if 'date =' in line:
+                parts = line.split('=')[1].strip().strip(';').split(',')
+                for part in parts:
+                    try:
+                        adjusted_dates.append(int(part.strip()))
+                    except ValueError:
+                        pass
+        logger.debug(f"  Adjusted dates: {adjusted_dates}")
+
+        # Step 5: Append to working file with full error output
+        logger.debug(f"  Appending to working file...")
+        cmd = ['ncks', '-A', '-v', temp_adjusted, working_file]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            logger.error(f"  FAILED to append:")
+            logger.error(f"    Return code: {result.returncode}")
+            logger.error(f"    Stdout: {result.stdout[:200]}")
+            logger.error(f"    Stderr: {result.stderr[:500]}")
+            failed += 1
+            failed_files.append((filename, f"ncks append failed: {result.stderr[:100]}"))
+
+            # Save debug info
+            with open(temp_debug, 'w') as f:
+                f.write(f"Command: {' '.join(cmd)}\n")
+                f.write(f"Return code: {result.returncode}\n")
+                f.write(f"Stdout:\n{result.stdout}\n")
+                f.write(f"Stderr:\n{result.stderr}\n")
         else:
-            logger.info(f"  SUCCESS")
+            logger.info(f"  SUCCESS - added dates: {adjusted_dates}")
             processed += 1
+            for date_val in adjusted_dates:
+                all_new_dates.add(date_val)
 
-            # Extract dates from this chunk
-            result = subprocess.run(['ncdump', '-v', 'date', temp_adjusted], capture_output=True, text=True)
-            for line in result.stdout.split('\n'):
-                if 'date =' in line:
-                    parts = line.split('=')[1].strip().strip(';').split(',')
-                    for part in parts:
-                        try:
-                            all_new_dates.add(int(part.strip()))
-                        except ValueError:
-                            pass
-
-        # Clean up temp file
+        # Clean up temp files
         if os.path.exists(temp_adjusted):
             os.remove(temp_adjusted)
+        if os.path.exists(temp_debug):
+            # Keep debug files for failed ones
+            if result.returncode == 0:
+                os.remove(temp_debug)
 
-        # Force flush every iteration
         sys.stdout.flush()
 
-    logger.info(f"Processing complete. Processed: {processed}, Failed: {failed}")
+    # Report summary
+    logger.info("=" * 60)
+    logger.info(f"Processing complete!")
+    logger.info(f"  Successfully processed: {processed}")
+    logger.info(f"  Failed: {failed}")
+
+    if failed_files:
+        logger.warning(f"Failed files:")
+        for fname, reason in failed_files[:10]:  # Show first 10
+            logger.warning(f"  - {fname}: {reason}")
+
+        # Save full list to file
+        failed_log = os.path.join(temp_dir, "failed_files.txt")
+        with open(failed_log, 'w') as f:
+            for fname, reason in failed_files:
+                f.write(f"{fname}\t{reason}\n")
+        logger.info(f"Full failed list saved to: {failed_log}")
 
     if not all_new_dates:
-        logger.warning("No dates were added!")
+        logger.error("No dates were successfully added!")
         return None
 
     # Get latest date for filename
@@ -128,18 +196,21 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
 
     logger.info(f"Sorting dates in final file...")
-    sys.stdout.flush()
 
     # Sort the final file by date
     sorted_file = os.path.join(temp_dir, "sorted.nc")
     cmd = ['ncks', '-O', '--msa', working_file, sorted_file]
-    subprocess.run(cmd, capture_output=True, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        logger.error(f"Failed to sort: {result.stderr}")
+        # Try alternative sort method
+        logger.info("Trying alternative sort method...")
+        cmd = ['ncap2', '-O', '-s', 'date[$date]=date', working_file, sorted_file]
+        subprocess.run(cmd, capture_output=True, check=True)
 
     logger.info(f"Saving final file: {new_dynamic_world_data_file}")
     shutil.move(sorted_file, new_dynamic_world_data_file)
-
-    # Cleanup
-    shutil.rmtree(temp_dir)
 
     # Verify
     result = subprocess.run(['ncdump', '-v', 'date', new_dynamic_world_data_file], capture_output=True, text=True)
