@@ -63,36 +63,30 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
             logger.error("No valid chunk files found!")
             return None
 
-        # For the one-date-at-a-time approach, we don't need to combine all chunks first
-        # Instead, we'll process each date as we find it
-
-        # First, collect all unique dates from all chunks
-        logger.info("Collecting unique dates from chunks...")
-        all_dates = set()
-        chunk_info = []  # Store (chunk_file, date_value) pairs
+        # First, figure out what new dates we have
+        logger.info("Collecting new dates from chunks...")
+        all_new_dates = set()
+        days_offset = 3653
+        ref_date = datetime(2015, 7, 1)
 
         for chunk_file in valid_chunks:
             try:
                 with xr.open_dataset(chunk_file, decode_times=False) as ds:
-                    # Convert dates
-                    days_offset = 3653
                     dates_in_chunk = ds.date.values + days_offset
                     for date_val in dates_in_chunk:
-                        all_dates.add(date_val)
-                        chunk_info.append((chunk_file, date_val))
+                        all_new_dates.add(date_val)
             except Exception as e:
                 logger.warning(f"Error reading dates from {os.path.basename(chunk_file)}: {e}")
 
-        logger.info(f"Found {len(all_dates)} unique dates: {sorted(all_dates)}")
+        logger.info(f"Found {len(all_new_dates)} unique dates in new data: {sorted(all_new_dates)}")
 
-        # Load existing dataset to get its dates
-        logger.info("Loading existing dataset...")
+        # Load existing dataset to get its dates (just metadata, not data)
         existing_ds = xr.open_dataset(most_recent_dynamic_world_file, decode_times=False)
         existing_dates = set(existing_ds.date.values)
         logger.info(f"Existing dates: {len(existing_dates)}")
 
-        # Filter to only new dates (not in existing)
-        new_dates = all_dates - existing_dates
+        # Filter to only new dates
+        new_dates = all_new_dates - existing_dates
         if not new_dates:
             logger.warning("No new dates to add!")
             existing_ds.close()
@@ -100,9 +94,6 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
         logger.info(f"Adding {len(new_dates)} new dates: {sorted(new_dates)}")
         latest_date = max(new_dates)
-
-        # Convert to actual date for filename
-        ref_date = datetime(2015, 7, 1)
         latest_date_obj = ref_date + pd.Timedelta(days=int(latest_date))
         latest_date_string = latest_date_obj.strftime('%Y_%m_%d')
 
@@ -110,94 +101,147 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         new_dynamic_world_filename = f'lakes_dw_V2d_{latest_date_string}.nc'
         new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
 
-        # Copy existing dataset to new file
-        logger.info("Copying existing data to new file...")
-        encoding = {var_name: {'zlib': True, 'complevel': 5}
-                    for var_name in existing_ds.data_vars if var_name not in ['date', 'id_geohash']}
+        # Process in chunks of lakes (e.g., 100,000 lakes at a time)
+        lake_chunk_size = 100000
+        total_lakes = len(existing_ds.id_geohash)
+        num_lake_chunks = (total_lakes + lake_chunk_size - 1) // lake_chunk_size
 
-        existing_ds.to_netcdf(new_dynamic_world_data_file, encoding=encoding)
-        existing_ds.close()
+        logger.info(f"Processing {total_lakes:,} lakes in {num_lake_chunks} chunks of {lake_chunk_size:,}")
+        logger.info(f"Will add {len(new_dates)} new dates")
 
-        # Now process each new date one at a time
-        logger.info("Adding new dates one by one...")
         from netCDF4 import Dataset
+        import tempfile
 
-        for date_val in sorted(new_dates):
-            actual_date = ref_date + pd.Timedelta(days=int(date_val))
-            logger.info(f"  Processing date {date_val} ({actual_date.date()})...")
+        # Create the output file and write it chunk by chunk
+        first_chunk = True
 
-            # Collect data for this specific date from all chunks
-            date_data_combined = None
+        for lake_chunk_idx in range(num_lake_chunks):
+            lake_start = lake_chunk_idx * lake_chunk_size
+            lake_end = min(lake_start + lake_chunk_size, total_lakes)
+
+            logger.info(
+                f"Processing lake chunk {lake_chunk_idx + 1}/{num_lake_chunks} (lakes {lake_start:,}-{lake_end:,})...")
+
+            # Load chunk of existing data
+            existing_chunk = existing_ds.isel(id_geohash=slice(lake_start, lake_end))
+
+            # For this lake chunk, collect new data for all new dates
+            # Get the lake IDs in this chunk
+            lake_ids_in_chunk = set(existing_chunk.id_geohash.values)
+
+            # Collect new data for these lakes across all new dates
+            new_data_by_date = {date_val: None for date_val in new_dates}
 
             for chunk_file in valid_chunks:
                 try:
                     ds_chunk = xr.open_dataset(chunk_file, decode_times=False)
 
                     # Convert dates
-                    days_offset = 3653
                     ds_chunk['date'] = ds_chunk['date'] + days_offset
+                    ds_chunk['date'].attrs['units'] = 'days since 2015-07-01'
 
-                    # Check if this chunk has our date
-                    if date_val in ds_chunk.date.values:
-                        # Extract just this date
-                        date_slice = ds_chunk.sel(date=date_val)
+                    # Filter to lakes we care about and new dates
+                    chunk_lakes = set(ds_chunk.id_geohash.values)
+                    overlap_lakes = lake_ids_in_chunk & chunk_lakes
 
-                        if date_data_combined is None:
-                            date_data_combined = date_slice
-                        else:
-                            # Combine along id_geohash dimension
-                            date_data_combined = xr.concat([date_data_combined, date_slice], dim="id_geohash")
+                    if overlap_lakes:
+                        for date_val in new_dates:
+                            if date_val in ds_chunk.date.values:
+                                # Extract this date and these lakes
+                                date_slice = ds_chunk.sel(date=date_val)
+                                lake_slice = date_slice.sel(id_geohash=list(overlap_lakes))
+
+                                if new_data_by_date[date_val] is None:
+                                    new_data_by_date[date_val] = lake_slice
+                                else:
+                                    new_data_by_date[date_val] = xr.concat(
+                                        [new_data_by_date[date_val], lake_slice],
+                                        dim="id_geohash"
+                                    )
 
                     ds_chunk.close()
 
                 except Exception as e:
-                    logger.warning(f"Error processing chunk {os.path.basename(chunk_file)} for date {date_val}: {e}")
+                    logger.warning(f"Error in chunk {os.path.basename(chunk_file)}: {e}")
 
-            if date_data_combined is not None:
-                # Remove duplicate lake IDs for this date
-                _, unique_idx = np.unique(date_data_combined.id_geohash.values, return_index=True)
-                date_data_combined = date_data_combined.isel(id_geohash=sorted(unique_idx))
+            # Now combine existing chunk with new data for all dates
+            # First, create a list of all date-sorted data for this lake chunk
+            all_dates_combined = []
 
-                # Append to netCDF file
-                with Dataset(new_dynamic_world_data_file, 'a') as ncfile:
-                    # Get current number of dates
-                    current_date_dim = len(ncfile.dimensions['date'])
-                    new_date_idx = current_date_dim
+            # Add existing data (for existing dates)
+            all_dates_combined.append(existing_chunk)
 
-                    # Extend date dimension
-                    ncfile.dimensions['date'] = (current_date_dim + 1,)
+            # Add new data for each new date
+            for date_val in sorted(new_dates):
+                if new_data_by_date[date_val] is not None:
+                    # Ensure the date coordinate is set correctly
+                    new_data_by_date[date_val]['date'] = date_val
+                    all_dates_combined.append(new_data_by_date[date_val])
 
-                    # Add the date value
-                    if 'date' in ncfile.variables:
-                        date_var = ncfile.variables['date']
-                        date_var.resize(current_date_dim + 1, axis=0)
-                        date_var[new_date_idx] = date_val
-
-                    # Add all data variables for this date
-                    for var_name in existing_ds.data_vars:
-                        if var_name not in ['date', 'id_geohash'] and var_name in date_data_combined.data_vars:
-                            var_data = date_data_combined[var_name].values
-
-                            if var_name in ncfile.variables:
-                                ncvar = ncfile.variables[var_name]
-                                # Resize along date dimension (usually axis 1 for date)
-                                current_shape = ncvar.shape
-                                if len(current_shape) == 2:  # (lake, date)
-                                    ncvar.resize(current_shape[0], current_date_dim + 1)
-                                    ncvar[:, new_date_idx] = var_data
-                                else:
-                                    logger.warning(f"Unexpected shape for {var_name}: {current_shape}")
-
-                # Clean up
-                del date_data_combined
-                gc.collect()
+            # Combine along date dimension
+            if len(all_dates_combined) > 1:
+                chunk_final = xr.concat(all_dates_combined, dim="date")
+                chunk_final = chunk_final.sortby("date")
             else:
-                logger.warning(f"No data found for date {date_val}")
+                chunk_final = all_dates_combined[0]
+
+            # Write this chunk to the output file
+            encoding = {var_name: {'zlib': True, 'complevel': 5}
+                        for var_name in chunk_final.data_vars if var_name not in ['date', 'id_geohash']}
+
+            if first_chunk:
+                # Write first chunk (creates the file)
+                chunk_final.to_netcdf(new_dynamic_world_data_file, encoding=encoding, mode='w')
+                first_chunk = False
+            else:
+                # Append this chunk to the existing file
+                with Dataset(new_dynamic_world_data_file, 'a') as main_f:
+                    # Get current number of lakes in the main file
+                    current_lake_count = len(main_f.dimensions['id_geohash'])
+                    new_lake_count = len(chunk_final.id_geohash)
+
+                    # Extend the id_geohash dimension
+                    main_f.dimensions['id_geohash'] = current_lake_count + new_lake_count
+
+                    # Append data for each variable
+                    for var_name in chunk_final.data_vars:
+                        if var_name not in ['date', 'id_geohash']:
+                            var_data = chunk_final[var_name].values
+
+                            if var_name in main_f.variables:
+                                main_var = main_f.variables[var_name]
+                                # Resize along lake dimension (first dimension)
+                                current_shape = main_var.shape
+                                if len(current_shape) == 2:  # (lakes, dates)
+                                    main_var.resize(current_lake_count + new_lake_count, current_shape[1])
+                                    main_var[current_lake_count:, :] = var_data
+
+                    # Also append id_geohash values
+                    if 'id_geohash' in main_f.variables:
+                        id_var = main_f.variables['id_geohash']
+                        id_var.resize(current_lake_count + new_lake_count)
+                        id_var[current_lake_count:] = chunk_final.id_geohash.values
+
+            # Clean up
+            del existing_chunk, chunk_final, all_dates_combined, new_data_by_date
+            gc.collect()
+
+        # Close existing dataset
+        existing_ds.close()
+
+        # Verify the output
+        logger.info("Verifying output...")
+        result_ds = xr.open_dataset(new_dynamic_world_data_file, decode_times=False)
+        final_lake_count = len(result_ds.id_geohash)
+        final_date_count = len(result_ds.date)
+        result_ds.close()
 
         logger.info("=" * 60)
         logger.info(f"✓ MERGE COMPLETE!")
         logger.info(f"  Output: {new_dynamic_world_data_file}")
-        logger.info(f"  Added {len(new_dates)} new dates")
+        logger.info(f"  Total lakes: {final_lake_count:,}")
+        logger.info(f"  Total dates: {final_date_count}")
+        logger.info(f"  New dates added: {len(new_dates)}")
         logger.info("=" * 60)
 
     except Exception as e:
