@@ -7,7 +7,13 @@ import os
 import numpy as np
 import glob
 import xarray as xr
+import dask
+import dask.array as da
+from dask.diagnostics import ProgressBar
 from dotenv import load_dotenv
+
+# Configure Dask for better performance
+from dask.distributed import Client, LocalCluster
 
 
 def combine_new_dynamic_world_data_with_latest(env_path=None):
@@ -28,6 +34,13 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     split_new_dynamic_world_data_dir = os.environ['split_new_dynamic_world_data_dir']
     logger.debug(f"split_new_dynamic_world_data_dir: {split_new_dynamic_world_data_dir}")
 
+    # Setup Dask client for parallel processing
+    logger.info("Setting up Dask client for parallel processing...")
+    # Adjust memory limit based on your system (e.g., 32GB)
+    cluster = LocalCluster(n_workers=4, threads_per_worker=2, memory_limit='8GB')
+    client = Client(cluster)
+    logger.info(f"Dask dashboard available at: {client.dashboard_link}")
+
     # Find the latest valid dynamic world file
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
     valid_files = []
@@ -39,6 +52,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
     if not valid_files:
         logger.error("No valid existing dynamic world files found!")
+        client.close()
         return None
 
     most_recent_dynamic_world_file = max(valid_files, key=os.path.getctime)
@@ -48,28 +62,32 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     downloaded_files = glob.glob(os.path.join(split_new_dynamic_world_data_dir, "*.nc"))
     logger.info(f"Found {len(downloaded_files)} chunk files")
 
-    # Use xarray to read and combine chunks
-    logger.info("Reading and combining new data chunks with xarray...")
-    merged_new_ds = None
+    # Use xarray with Dask to read and combine chunks
+    logger.info("Reading and combining new data chunks with Dask...")
 
+    # Open all chunks as Dask-backed datasets
+    chunks = []
     for chunk_file in downloaded_files:
-        logger.debug(f"Loading chunk: {chunk_file}")
         try:
-            ds_chunk = xr.open_dataset(chunk_file)
-            if merged_new_ds is None:
-                merged_new_ds = ds_chunk
-            else:
-                merged_new_ds = xr.concat([merged_new_ds, ds_chunk], dim="id_geohash")
+            # Open with chunks for parallel processing
+            ds_chunk = xr.open_dataset(chunk_file, chunks={'id_geohash': 100000})
+            chunks.append(ds_chunk)
         except Exception as e:
             logger.error(f"Failed to load chunk {chunk_file}: {e}")
             continue
 
-    if merged_new_ds is None:
+    if not chunks:
         logger.error("No data to merge from chunks")
+        client.close()
         return None
 
-    # Remove duplicates
-    _, unique_indices = np.unique(merged_new_ds.id_geohash.values, return_index=True)
+    # Concatenate all chunks along id_geohash
+    logger.info("Concatenating chunks with Dask...")
+    merged_new_ds = xr.concat(chunks, dim="id_geohash")
+
+    # Remove duplicates if any
+    logger.info("Removing duplicate lake IDs...")
+    _, unique_indices = np.unique(merged_new_ds.id_geohash.values.compute(), return_index=True)
     merged_new_ds = merged_new_ds.isel(id_geohash=sorted(unique_indices))
 
     # Get dates
@@ -83,17 +101,17 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     logger.info(f"The latest date is {latest_date_string}")
     logger.info(f"Merged new data: {len(merged_new_ds.id_geohash):,} lakes x {len(dates)} dates")
 
-    # Load existing dataset
-    logger.info("Loading existing dataset...")
-    existing_ds = xr.open_dataset(most_recent_dynamic_world_file)
+    # Load existing dataset with Dask
+    logger.info("Loading existing dataset with Dask...")
+    existing_ds = xr.open_dataset(most_recent_dynamic_world_file, chunks={'id_geohash': 100000, 'date': -1})
 
-    # Get existing dates and lakes
-    existing_dates = existing_ds.date.values
-    existing_lake_ids = existing_ds.id_geohash.values
+    # Get existing dates and lakes (compute only the necessary metadata)
+    existing_dates = existing_ds.date.values.compute()
+    existing_lake_ids = existing_ds.id_geohash.values.compute()
     existing_lake_ids_set = set(str(lake_id) for lake_id in existing_lake_ids)
 
     # Get new lake IDs
-    new_lake_ids = merged_new_ds.id_geohash.values
+    new_lake_ids = merged_new_ds.id_geohash.values.compute()
     new_lake_ids_set = set(str(lake_id) for lake_id in new_lake_ids)
 
     # Find new lakes
@@ -110,7 +128,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
     # Check for date overlap
     new_dates_set = set(pd.to_datetime(merged_new_ds.date.values))
-    existing_dates_set = set(pd.to_datetime(existing_ds.date.values))
+    existing_dates_set = set(pd.to_datetime(existing_dates))
     overlapping_dates = existing_dates_set & new_dates_set
 
     if overlapping_dates:
@@ -121,120 +139,78 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
     if len(dates) == 0:
         logger.warning("No new dates to add")
+        client.close()
         return None
 
     logger.info(f"Adding {len(dates)} new dates: {dates}")
 
-    # FAST MERGE using xarray's built-in concatenation
+    # FAST MERGE using Dask
     logger.info("=" * 60)
-    logger.info("MERGING DATASETS (using xarray)...")
-
-    # Reindex the new dataset to match existing lake IDs
-    logger.info("Reindexing new data to match existing lake structure...")
+    logger.info("MERGING DATASETS WITH DASK...")
 
     # Create a mapping for common lakes
-    # Convert to pandas Series for faster mapping
     existing_ids_series = pd.Series(range(len(existing_lake_ids)), index=[str(x) for x in existing_lake_ids])
-
-    # Find indices of common lakes in existing dataset
     common_lakes_list = list(common_lakes)
     common_existing_indices = [existing_ids_series[lake_id] for lake_id in common_lakes_list]
 
-    # For new data, we need to align with existing lake order
-    # Create a new dataset aligned with existing lake order
-    aligned_new_data = []
+    # Reindex new data to match existing lake order using Dask
+    logger.info("Reindexing new data with Dask...")
 
-    for var_name in existing_ds.data_vars:
-        if var_name not in ['date', 'id_geohash']:
-            logger.info(f"  Aligning {var_name}...")
-            # Create array of NaN for all existing lakes
-            aligned_array = np.full((len(existing_lake_ids), len(dates)), np.nan, dtype=np.float64)
+    # Create aligned dataset using xarray's reindex
+    # First, create a Dataset with the new data but indexed by lake ID
+    temp_ds = merged_new_ds.assign_coords(id_geohash=[str(x) for x in merged_new_ds.id_geohash.values])
 
-            # Fill in data for common lakes
-            for i, lake_id in enumerate(common_lakes_list):
-                # Find this lake in new data
-                new_lake_idx = np.where([str(x) == lake_id for x in new_lake_ids])[0]
-                if len(new_lake_idx) > 0:
-                    # Get data for this lake from new dataset
-                    lake_data = merged_new_ds[var_name].isel(id_geohash=new_lake_idx[0]).values
-                    if len(lake_data.shape) == 1:  # 1D array (time)
-                        aligned_array[common_existing_indices[i], :] = lake_data
-                    else:
-                        aligned_array[common_existing_indices[i], :] = lake_data.flatten()
-
-            aligned_new_data.append(aligned_array)
-
-    # Create new dataset for the aligned data
-    aligned_new_ds = xr.Dataset(
-        data_vars={
-            var_name: (['id_geohash', 'date'], aligned_new_data[i])
-            for i, var_name in enumerate([v for v in existing_ds.data_vars if v not in ['date', 'id_geohash']])
-        },
-        coords={
-            'id_geohash': existing_lake_ids,
-            'date': dates
-        }
+    # Reindex to match existing lake order
+    aligned_new_ds = temp_ds.reindex(
+        id_geohash=[str(x) for x in existing_lake_ids],
+        method=None
     )
 
     # Now concatenate along date dimension
-    logger.info("Concatenating along date dimension...")
+    logger.info("Concatenating along date dimension with Dask...")
+
+    # Combine existing and new data
     final_ds = xr.concat([existing_ds, aligned_new_ds], dim="date")
 
     # Sort by date
     final_ds = final_ds.sortby("date")
 
-    logger.info(f"Final dataset: {len(final_ds.id_geohash):,} lakes x {len(final_ds.date)} dates")
-
-    # If there are new lakes, we need to add them
+    # If there are new lakes, add them
     if lakes_only_in_new:
         logger.info(f"Adding {len(lakes_only_in_new):,} new lakes to the dataset...")
 
         # Create dataset for new lakes
-        new_lakes_data = {}
+        new_lake_indices = []
         new_lake_ids_list = list(lakes_only_in_new)
 
-        # Find indices of new lakes in the new dataset
-        new_lake_indices = []
         for lake_id in new_lake_ids_list:
             idx = np.where([str(x) == lake_id for x in new_lake_ids])[0]
             if len(idx) > 0:
                 new_lake_indices.append(idx[0])
 
-        for var_name in existing_ds.data_vars:
-            if var_name not in ['date', 'id_geohash']:
-                # Extract data for new lakes from merged_new_ds
-                new_lake_data = merged_new_ds[var_name].isel(id_geohash=new_lake_indices).values
-                if len(new_lake_data.shape) == 1:
-                    new_lake_data = new_lake_data.reshape(-1, 1)
-                new_lakes_data[var_name] = (['id_geohash', 'date'], new_lake_data)
-
-        # Create dataset for new lakes
-        new_lakes_ds = xr.Dataset(
-            data_vars=new_lakes_data,
-            coords={
-                'id_geohash': new_lake_ids_list,
-                'date': dates
-            }
-        )
+        # Extract new lake data
+        new_lakes_ds = merged_new_ds.isel(id_geohash=new_lake_indices)
 
         # Concatenate along id_geohash dimension
         final_ds = xr.concat([final_ds, new_lakes_ds], dim="id_geohash")
-        logger.info(f"Final dataset with new lakes: {len(final_ds.id_geohash):,} lakes x {len(final_ds.date)} dates")
+        logger.info(f"Final dataset size: {len(final_ds.id_geohash):,} lakes x {len(final_ds.date)} dates")
 
-    # Save the final dataset
+    # Save with Dask
     new_dynamic_world_filename = f'lakes_dw_V2d_{latest_date_string}.nc'
     new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
 
     logger.info(f"Saving merged dataset to: {new_dynamic_world_data_file}")
 
-    # Use compression for efficient storage
-    encoding = {var_name: {'zlib': True, 'complevel': 5}
+    # Use encoding for compression
+    encoding = {var_name: {'zlib': True, 'complevel': 5, 'chunksizes': (100000, len(final_ds.date))}
                 for var_name in final_ds.data_vars if var_name not in ['date', 'id_geohash']}
 
-    final_ds.to_netcdf(new_dynamic_world_data_file, encoding=encoding)
+    # Save with Dask's parallel write capability
+    with ProgressBar():
+        final_ds.to_netcdf(new_dynamic_world_data_file, encoding=encoding, compute=True)
 
     logger.info("=" * 60)
-    logger.info(f"✓ SUCCESSFULLY MERGED DATASETS!")
+    logger.info(f"✓ SUCCESSFULLY MERGED DATASETS WITH DASK!")
     logger.info(f"  Original: {most_recent_dynamic_world_file}")
     logger.info(f"  New file: {new_dynamic_world_data_file}")
     logger.info(f"  Total lakes: {len(final_ds.id_geohash):,}")
@@ -244,6 +220,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     logger.info("=" * 60)
 
     # Clean up
+    client.close()
     existing_ds.close()
     merged_new_ds.close()
     final_ds.close()
