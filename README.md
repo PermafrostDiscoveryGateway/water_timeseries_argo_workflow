@@ -270,3 +270,5 @@ Checks it exists
   -n argo`
 
 `secret/earth-engine-creds created
+
+## NOTE ON CHUNKED PROCESSING
