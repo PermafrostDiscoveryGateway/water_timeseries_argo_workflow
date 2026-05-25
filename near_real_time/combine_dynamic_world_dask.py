@@ -101,7 +101,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         new_dynamic_world_filename = f'lakes_dw_V2d_{latest_date_string}.nc'
         new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
 
-        # Process in chunks of lakes (e.g., 100,000 lakes at a time)
+        # Process in chunks of lakes
         lake_chunk_size = 100000
         total_lakes = len(existing_ds.id_geohash)
         num_lake_chunks = (total_lakes + lake_chunk_size - 1) // lake_chunk_size
@@ -110,7 +110,6 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
         logger.info(f"Will add {len(new_dates)} new dates")
 
         from netCDF4 import Dataset
-        import tempfile
 
         # Create the output file and write it chunk by chunk
         first_chunk = True
@@ -125,7 +124,6 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
             # Load chunk of existing data
             existing_chunk = existing_ds.isel(id_geohash=slice(lake_start, lake_end))
 
-            # For this lake chunk, collect new data for all new dates
             # Get the lake IDs in this chunk
             lake_ids_in_chunk = set(existing_chunk.id_geohash.values)
 
@@ -164,14 +162,9 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                 except Exception as e:
                     logger.warning(f"Error in chunk {os.path.basename(chunk_file)}: {e}")
 
-            # Now combine existing chunk with new data for all dates
-            # First, create a list of all date-sorted data for this lake chunk
-            all_dates_combined = []
+            # Combine existing chunk with new data for all dates
+            all_dates_combined = [existing_chunk]
 
-            # Add existing data (for existing dates)
-            all_dates_combined.append(existing_chunk)
-
-            # Add new data for each new date
             for date_val in sorted(new_dates):
                 if new_data_by_date[date_val] is not None:
                     # Ensure the date coordinate is set correctly
@@ -196,31 +189,43 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
             else:
                 # Append this chunk to the existing file
                 with Dataset(new_dynamic_world_data_file, 'a') as main_f:
-                    # Get current number of lakes in the main file
+                    # Get current number of lakes
                     current_lake_count = len(main_f.dimensions['id_geohash'])
                     new_lake_count = len(chunk_final.id_geohash)
+
+                    # Get number of dates (should be same across chunks)
+                    num_dates = len(main_f.dimensions['date'])
 
                     # Extend the id_geohash dimension
                     main_f.dimensions['id_geohash'] = current_lake_count + new_lake_count
 
-                    # Append data for each variable
-                    for var_name in chunk_final.data_vars:
-                        if var_name not in ['date', 'id_geohash']:
-                            var_data = chunk_final[var_name].values
-
-                            if var_name in main_f.variables:
-                                main_var = main_f.variables[var_name]
-                                # Resize along lake dimension (first dimension)
-                                current_shape = main_var.shape
-                                if len(current_shape) == 2:  # (lakes, dates)
-                                    main_var.resize(current_lake_count + new_lake_count, current_shape[1])
-                                    main_var[current_lake_count:, :] = var_data
-
-                    # Also append id_geohash values
+                    # Append id_geohash values
                     if 'id_geohash' in main_f.variables:
                         id_var = main_f.variables['id_geohash']
                         id_var.resize(current_lake_count + new_lake_count)
                         id_var[current_lake_count:] = chunk_final.id_geohash.values
+
+                    # Append data for each variable
+                    for var_name in chunk_final.data_vars:
+                        if var_name == 'date':
+                            continue
+
+                        var_data = chunk_final[var_name].values
+
+                        if var_name in main_f.variables:
+                            main_var = main_f.variables[var_name]
+
+                            # Check the number of dimensions
+                            if len(main_var.dimensions) == 2:  # (lakes, dates)
+                                # Resize along lake dimension
+                                main_var.resize(current_lake_count + new_lake_count, num_dates)
+                                # Write data
+                                main_var[current_lake_count:, :] = var_data
+                            elif len(main_var.dimensions) == 1:  # Just lakes (id_geohash)
+                                main_var.resize(current_lake_count + new_lake_count)
+                                main_var[current_lake_count:] = var_data
+                            else:
+                                logger.warning(f"Unexpected dimensions for {var_name}: {main_var.dimensions}")
 
             # Clean up
             del existing_chunk, chunk_final, all_dates_combined, new_data_by_date
