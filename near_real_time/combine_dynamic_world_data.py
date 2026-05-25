@@ -86,7 +86,63 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     logger.info(f"Merged new data: {len(merged_new_ds.id_geohash)} lakes x {len(merged_new_ds.date)} dates")
 
     # save the file
+    logger.info("Merging existing data with new data...")
+    existing_ds = xr.open_dataset(most_recent_dynamic_world_file)
 
+    # Verify no date overlap (should be true based on missing dates logic)
+    existing_dates = set(pd.to_datetime(existing_ds.date.values))
+    new_dates = set(pd.to_datetime(merged_new_ds.date.values))
+    overlapping_dates = existing_dates & new_dates
+
+    if overlapping_dates:
+        logger.warning(f"Found {len(overlapping_dates)} overlapping dates: {sorted(overlapping_dates)}")
+        logger.warning("Removing overlapping dates from new dataset...")
+        # Remove overlapping dates from new dataset
+        mask = ~merged_new_ds.date.isin(list(overlapping_dates))
+        merged_new_ds = merged_new_ds.sel(date=mask)
+
+    # Concatenate along date dimension
+    final_ds = xr.concat([existing_ds, merged_new_ds], dim="date")
+
+    # Sort by date
+    final_ds = final_ds.sortby("date")
+
+    # Verify the merge was successful
+    final_dates = pd.to_datetime(final_ds.date.values)
+    logger.info(f"Original dates: {len(existing_dates)}")
+    logger.info(f"New dates added: {len(new_dates) - len(overlapping_dates)}")
+    logger.info(f"Total dates after merge: {len(final_dates)}")
+    logger.info(f"Date range after merge: {final_dates.min()} to {final_dates.max()}")
+
+    # Create the final filename with the latest missing date
+    new_dynamic_world_filename = f'lakes_dw_V2d_{latest_date_string}.nc'
+    new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
+
+    final_ds.to_netcdf(new_dynamic_world_data_file)
+
+    logger.info(f"Successfully merged datasets!")
+    logger.info(f"Original file: {most_recent_dynamic_world_file}")
+    logger.info(f"New data chunks: {len(downloaded_files)} files in {current_split_dir}")
+    logger.info(f"Merged file saved as: {new_dynamic_world_data_file}")
+
+    # Print summary statistics about lake coverage
+    existing_lakes = set(existing_ds.id_geohash.values)
+    new_lakes = set(merged_new_ds.id_geohash.values)
+    common_lakes = existing_lakes & new_lakes
+    only_in_existing = existing_lakes - new_lakes
+    only_in_new = new_lakes - existing_lakes
+
+    logger.info(f"Lake coverage summary:")
+    logger.info(f"  - Lakes in existing dataset: {len(existing_lakes)}")
+    logger.info(f"  - Lakes in new dataset: {len(new_lakes)}")
+    logger.info(f"  - Common lakes: {len(common_lakes)}")
+    logger.info(f"  - Lakes only in existing: {len(only_in_existing)}")
+    logger.info(f"  - Lakes only in new: {len(only_in_new)}")
+
+    # Close datasets to free memory
+    existing_ds.close()
+    merged_new_ds.close()
+    final_ds.close()
 
 if __name__ == "__main__":
     combine_new_dynamic_world_data_with_latest()
