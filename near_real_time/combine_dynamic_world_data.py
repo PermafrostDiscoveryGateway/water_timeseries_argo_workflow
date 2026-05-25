@@ -33,105 +33,157 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     logger.info(f"Most recent dynamic world file: {most_recent_dynamic_world_file}")
 
-    # First, inspect the existing file to understand its structure
-    logger.info("Inspecting existing NetCDF file structure...")
+    # COMPREHENSIVE INSPECTION of existing file
+    logger.info("=" * 80)
+    logger.info("COMPREHENSIVE INSPECTION OF EXISTING FILE")
+    logger.info("=" * 80)
+
+    # Inspect with netCDF4
     with nc.Dataset(most_recent_dynamic_world_file, 'r') as inspect_ds:
+        logger.info("\n--- NetCDF4 Inspection ---")
         logger.info(f"Dimensions: {list(inspect_ds.dimensions.keys())}")
-        logger.info(f"Variables: {list(inspect_ds.variables.keys())}")
+        for dim_name, dim_obj in inspect_ds.dimensions.items():
+            logger.info(f"  Dimension '{dim_name}': size = {len(dim_obj)}")
 
-        # Find the time/date dimension name
-        time_dim_name = None
-        for dim_name in inspect_ds.dimensions.keys():
-            if dim_name in ['date', 'time', 't', 'datetime']:
-                time_dim_name = dim_name
-                break
+        logger.info(f"\nVariables: {list(inspect_ds.variables.keys())}")
+        for var_name in inspect_ds.variables:
+            var = inspect_ds.variables[var_name]
+            logger.info(f"  Variable '{var_name}': dimensions={var.dimensions}, dtype={var.dtype}")
+            if hasattr(var, 'units'):
+                logger.info(f"    units: {var.units}")
+            if hasattr(var, '_FillValue'):
+                logger.info(f"    fill_value: {var._FillValue}")
 
-        # If not found, look for a variable that seems to be time
-        if time_dim_name is None:
-            for var_name in inspect_ds.variables.keys():
-                if var_name in ['date', 'time', 't', 'datetime']:
-                    time_dim_name = var_name
-                    break
+        logger.info(f"\nGlobal attributes: {list(inspect_ds.ncattrs())}")
+        for attr in inspect_ds.ncattrs():
+            logger.info(f"  {attr}: {getattr(inspect_ds, attr)}")
 
-        logger.info(f"Time dimension/variable name: {time_dim_name}")
-
-        # Also check what the lake ID dimension is called
-        lake_dim_name = None
-        for dim_name in inspect_ds.dimensions.keys():
-            if dim_name in ['id_geohash', 'lake_id', 'geohash', 'id']:
-                lake_dim_name = dim_name
-                break
-
-        logger.info(f"Lake dimension name: {lake_dim_name}")
-
-        # Get sample time values - handle if it's a dimension without a variable
-        if time_dim_name:
-            # Check if there's a variable with the same name as the dimension
-            if time_dim_name in inspect_ds.variables:
-                time_var = inspect_ds.variables[time_dim_name]
-                logger.info(f"Time variable type: {time_var.dtype}")
-                logger.info(f"Sample time values (first 3): {time_var[:3]}")
-
-                # Try to convert to datetime
-                if hasattr(time_var, 'units'):
-                    logger.info(f"Time units: {time_var.units}")
-                    # Convert first few times for inspection
-                    sample_times = num2date(time_var[:3], time_var.units)
-                    logger.info(f"Sample dates: {sample_times}")
-            else:
-                # The time dimension doesn't have a separate variable, use the dimension
-                logger.info(f"Time dimension '{time_dim_name}' has no variable, using dimension values")
-                # For netCDF4, dimensions don't store values directly, we need to use xarray for this
-                logger.info("Will use xarray to read time values")
-
-    # Now use xarray to get the actual time values
-    logger.info("Loading time values with xarray...")
+    # Inspect with xarray
+    logger.info("\n--- Xarray Inspection ---")
     existing_ds_temp = xr.open_dataset(most_recent_dynamic_world_file)
 
-    # Find time dimension in existing data
+    logger.info(f"Dataset dimensions: {dict(existing_ds_temp.dims)}")
+    logger.info(f"Dataset coordinates: {list(existing_ds_temp.coords)}")
+    logger.info(f"Dataset data variables: {list(existing_ds_temp.data_vars)}")
+    logger.info(f"Dataset attributes: {existing_ds_temp.attrs}")
+
+    # Print detailed info about each coordinate
+    for coord_name in existing_ds_temp.coords:
+        coord = existing_ds_temp[coord_name]
+        logger.info(f"\nCoordinate '{coord_name}':")
+        logger.info(f"  dimensions: {coord.dims}")
+        logger.info(f"  shape: {coord.shape}")
+        logger.info(f"  dtype: {coord.dtype}")
+        logger.info(f"  first 3 values: {coord.values[:3] if len(coord) > 0 else 'empty'}")
+
+    # Print detailed info about each data variable
+    for var_name in existing_ds_temp.data_vars:
+        var = existing_ds_temp[var_name]
+        logger.info(f"\nData variable '{var_name}':")
+        logger.info(f"  dimensions: {var.dims}")
+        logger.info(f"  shape: {var.shape}")
+        logger.info(f"  dtype: {var.dtype}")
+        if var.size > 0:
+            logger.info(f"  sample values (first 3x3): {var.values[:3, :3] if len(var.shape) > 1 else var.values[:3]}")
+        logger.info(f"  attributes: {var.attrs}")
+
+    logger.info("=" * 80)
+
+    # Now find the time dimension - look in coordinates first
     time_dim_in_existing = None
-    for dim in existing_ds_temp.dims:
-        if dim in ['date', 'time', 't', 'datetime']:
-            time_dim_in_existing = dim
+
+    # Check coordinates (these are typically the dimension variables)
+    for coord in existing_ds_temp.coords:
+        if coord in ['date', 'time', 't', 'datetime', 'time_coordinate']:
+            time_dim_in_existing = coord
+            logger.info(f"Found time coordinate: {coord}")
             break
 
-    # If not found in dims, look for coordinate
+    # If not found in coordinates, check data variables
     if time_dim_in_existing is None:
-        for coord in existing_ds_temp.coords:
-            if coord in ['date', 'time', 't', 'datetime']:
-                time_dim_in_existing = coord
+        for var in existing_ds_temp.data_vars:
+            if var in ['date', 'time', 't', 'datetime']:
+                time_dim_in_existing = var
+                logger.info(f"Found time variable: {var}")
                 break
 
-    logger.info(f"Time dimension in existing data: {time_dim_in_existing}")
+    # If still not found, try to identify by dimension
+    if time_dim_in_existing is None:
+        for dim_name, dim_size in existing_ds_temp.dims.items():
+            if dim_name in ['date', 'time', 't', 'datetime']:
+                time_dim_in_existing = dim_name
+                logger.info(f"Found time dimension: {dim_name}")
+                break
 
-    # Get existing dates
+    # Last resort: find a dimension with size > 1 that might be time
+    if time_dim_in_existing is None:
+        for dim_name, dim_size in existing_ds_temp.dims.items():
+            if dim_size > 1 and dim_size < 1000:  # Time dimension likely small
+                logger.warning(f"Possible time dimension: {dim_name} (size={dim_size})")
+                time_dim_in_existing = dim_name
+                break
+
+    logger.info(f"Identified time dimension/coordinate: {time_dim_in_existing}")
+
+    # Get existing dates if we found a time dimension
     if time_dim_in_existing:
-        existing_dates = set(pd.to_datetime(existing_ds_temp[time_dim_in_existing].values))
-        logger.info(f"Found {len(existing_dates)} existing dates")
-        logger.info(f"First 3 existing dates: {sorted(existing_dates)[:3]}")
+        try:
+            time_values = existing_ds_temp[time_dim_in_existing].values
+            logger.info(f"Time values type: {type(time_values)}")
+            logger.info(f"Time values shape: {time_values.shape if hasattr(time_values, 'shape') else 'scalar'}")
+            logger.info(f"Raw time values (first 3): {time_values[:3] if len(time_values) > 0 else time_values}")
+
+            # Try to convert to datetime
+            existing_dates = set(pd.to_datetime(time_values))
+            logger.info(f"Successfully converted {len(existing_dates)} dates")
+            logger.info(f"First 3 existing dates: {sorted(existing_dates)[:3]}")
+            logger.info(f"Last 3 existing dates: {sorted(existing_dates)[-3:]}")
+        except Exception as e:
+            logger.error(f"Failed to convert time values to datetime: {e}")
+            logger.info("Attempting alternative conversion...")
+            # Try using netCDF4 num2date if available
+            with nc.Dataset(most_recent_dynamic_world_file, 'r') as src:
+                if time_dim_in_existing in src.variables:
+                    time_var = src.variables[time_dim_in_existing]
+                    if hasattr(time_var, 'units'):
+                        time_values = src.variables[time_dim_in_existing][:]
+                        existing_dates = set(num2date(time_values, time_var.units))
+                        logger.info(f"Converted using num2date: {len(existing_dates)} dates")
+                    else:
+                        raise ValueError("No units attribute")
+                else:
+                    raise ValueError(f"{time_dim_in_existing} not in variables")
     else:
         logger.error("Could not find time dimension in existing file")
+        logger.info("Available coordinates and variables:")
+        logger.info(f"  Coordinates: {list(existing_ds_temp.coords)}")
+        logger.info(f"  Data variables: {list(existing_ds_temp.data_vars)}")
+        logger.info(f"  Dimensions: {list(existing_ds_temp.dims)}")
+        existing_ds_temp.close()
         return None
 
     # Get lake IDs
     lake_dim_in_existing = None
     for dim in existing_ds_temp.dims:
-        if dim in ['id_geohash', 'lake_id', 'geohash', 'id']:
+        if dim in ['id_geohash', 'lake_id', 'geohash', 'id', 'lake_index']:
             lake_dim_in_existing = dim
             break
 
     if lake_dim_in_existing:
         existing_lake_ids_set = set(existing_ds_temp[lake_dim_in_existing].values)
         logger.info(f"Found {len(existing_lake_ids_set):,} existing lakes")
+        logger.info(f"First 5 lake IDs: {list(existing_lake_ids_set)[:5]}")
     else:
         logger.error("Could not find lake dimension in existing file")
+        logger.info(f"Available dimensions: {list(existing_ds_temp.dims)}")
+        existing_ds_temp.close()
         return None
 
     existing_ds_temp.close()
 
     # Get downloaded chunk files
     downloaded_files = glob.glob(os.path.join(split_new_dynamic_world_data_dir, "*.nc"))
-    logger.info(f"Found {len(downloaded_files)} chunk files")
+    logger.info(f"\nFound {len(downloaded_files)} chunk files")
 
     # Use xarray to read and combine chunks
     logger.info("Reading and combining new data chunks with xarray...")
@@ -260,159 +312,10 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
     logger.info(f"Adding {len(dates)} new dates: {dates}")
 
-    # Now use netCDF4 for memory-efficient merging
-    logger.info("Merging datasets using netCDF4 (memory efficient)...")
+    # TODO: Continue with netCDF4 merge if we get past this point
+    logger.info("Proceeding with merge... (continue from here)")
 
-    # Create output filename
-    new_dynamic_world_filename = f'lakes_dw_V2d_{latest_date_string}.nc'
-    new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
-
-    # Open existing file and new data for streaming merge
-    with nc.Dataset(most_recent_dynamic_world_file, 'r') as src:
-        # Use the dimension names we already identified
-        src_lake_dim = lake_dim_in_existing
-        src_time_dim = time_dim_in_existing
-
-        src_lakes = len(src.dimensions[src_lake_dim])
-        src_dates = len(src.dimensions[src_time_dim])
-        new_dates_count = len(dates)
-
-        logger.info(f"Source lake dimension: {src_lake_dim} ({src_lakes:,} lakes)")
-        logger.info(f"Source time dimension: {src_time_dim} ({src_dates} dates)")
-        logger.info(f"New: {len(merged_new_ds.id_geohash):,} lakes x {new_dates_count} dates")
-
-        # Create output file
-        with nc.Dataset(new_dynamic_world_data_file, 'w', format='NETCDF4') as dst:
-            # Create dimensions (using same names as source)
-            dst.createDimension(src_lake_dim, src_lakes)
-            dst.createDimension(src_time_dim, src_dates + new_dates_count)
-
-            # Copy global attributes
-            for attr_name, attr_value in src.ncattrs():
-                setattr(dst, attr_name, attr_value)
-            dst.date_last_updated = str(datetime.now())
-
-            # Create mapping from lake ID to index - need to get from xarray since netCDF4 might not have it as variable
-            logger.info("Building lake ID mapping...")
-            existing_lake_ids = existing_lake_ids_set  # Use the set we already have
-
-            # But we need ordered list, so reload with xarray
-            temp_ds = xr.open_dataset(most_recent_dynamic_world_file)
-            existing_lake_ids_ordered = temp_ds[src_lake_dim].values
-            temp_ds.close()
-
-            lake_to_idx = {}
-            for idx, lake_id in enumerate(existing_lake_ids_ordered):
-                if isinstance(lake_id, bytes):
-                    lake_to_idx[lake_id.decode('utf-8')] = idx
-                else:
-                    lake_to_idx[str(lake_id)] = idx
-
-            # Copy all variables from source using xarray to get them
-            temp_ds = xr.open_dataset(most_recent_dynamic_world_file)
-
-            for var_name in temp_ds.data_vars:
-                logger.info(f"Processing variable: {var_name}")
-                src_var_xr = temp_ds[var_name]
-                dims = list(src_var_xr.dims)
-
-                # Get dtype and fill value
-                dtype = src_var_xr.dtype
-                fill_value = src_var_xr.encoding.get('_FillValue', np.nan)
-
-                # Create variable in destination
-                dst_var = dst.createVariable(
-                    var_name,
-                    dtype,
-                    dims,
-                    zlib=True,
-                    complevel=5,
-                    fill_value=fill_value if not np.isnan(fill_value) else None
-                )
-
-                # Copy attributes
-                for attr_name in src_var_xr.attrs:
-                    setattr(dst_var, attr_name, src_var_xr.attrs[attr_name])
-
-                # Copy data based on variable type
-                if src_time_dim in dims and src_lake_dim in dims:
-                    # 2D variable (time x space)
-                    logger.info(f"Copying existing {var_name} data...")
-
-                    # Copy existing data in chunks using xarray values
-                    chunk_size = 100000
-                    for start_idx in range(0, src_lakes, chunk_size):
-                        end_idx = min(start_idx + chunk_size, src_lakes)
-                        src_data = src_var_xr.isel({src_lake_dim: slice(start_idx, end_idx)}).values
-                        # Need to transpose if dimensions order is (time, lake) or (lake, time)
-                        if src_var_xr.dims[0] == src_time_dim:
-                            # Shape is (time, lake)
-                            dst_var[:, start_idx:end_idx] = src_data
-                        else:
-                            # Shape is (lake, time)
-                            dst_var[start_idx:end_idx, :] = src_data
-                        logger.debug(f"  Copied lakes {start_idx:,} to {end_idx:,}")
-
-                    # Add new date data
-                    logger.info(f"Adding new date data for {var_name}...")
-                    for date_idx, date_val in enumerate(dates):
-                        target_date_idx = src_dates + date_idx
-
-                        # Get data for this date from merged_new_ds
-                        date_data = merged_new_ds.sel({time_dim_in_new: date_val})
-
-                        # Initialize array for this time slice
-                        new_time_slice = np.full(src_lakes, fill_value, dtype=dtype)
-
-                        # Fill in data for existing lakes
-                        lakes_filled = 0
-                        for lake_id_str in new_lakes_str:
-                            if lake_id_str in lake_to_idx:
-                                lake_idx = lake_to_idx[lake_id_str]
-                                # Find this lake in new data
-                                new_lake_idx = np.where(new_lake_ids_set == lake_id_str)[0]
-                                if len(new_lake_idx) > 0:
-                                    var_data = date_data.isel(id_geohash=new_lake_idx[0])[var_name].values
-                                    new_time_slice[lake_idx] = var_data
-                                    lakes_filled += 1
-
-                        # Write the time slice - handle dimension order
-                        if src_var_xr.dims[0] == src_time_dim:
-                            dst_var[target_date_idx, :] = new_time_slice
-                        else:
-                            dst_var[:, target_date_idx] = new_time_slice
-
-                        if (date_idx + 1) % 10 == 0:
-                            logger.info(f"  Processed {date_idx + 1}/{new_dates_count} dates")
-
-                elif src_time_dim in dims:
-                    # 1D time variable
-                    dst_var[:src_dates] = src_var_xr.values
-                    for date_idx, date_val in enumerate(dates):
-                        dst_var[src_dates + date_idx] = date_val
-
-                else:
-                    # Other variables (lake IDs, etc.)
-                    dst_var[:] = src_var_xr.values
-
-            temp_ds.close()
-
-    logger.info("=" * 60)
-    logger.info(f"Successfully merged datasets using netCDF4!")
-    logger.info(f"Merged file saved as: {new_dynamic_world_data_file}")
-
-    # Verification
-    with nc.Dataset(new_dynamic_world_data_file, 'r') as verify_ds:
-        final_lakes = len(verify_ds.dimensions[src_lake_dim])
-        final_dates = len(verify_ds.dimensions[src_time_dim])
-        logger.info(f"Final dataset: {final_lakes:,} lakes x {final_dates} dates")
-
-    if lakes_only_in_new:
-        logger.warning(f"SUMMARY: {len(lakes_only_in_new)} new lakes were detected but NOT added")
-    else:
-        logger.info("✓ SUMMARY: No new lakes detected - all good!")
-
-    logger.info("Memory-efficient merge complete!")
+    # Clean up
     merged_new_ds.close()
 
 
