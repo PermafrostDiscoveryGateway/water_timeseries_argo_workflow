@@ -2,7 +2,7 @@ import xarray as xr
 import os
 import glob
 from dotenv import load_dotenv
-
+import numpy as np
 load_dotenv()
 
 dynamic_world_dir = os.environ.get('dynamic_world_dir')
