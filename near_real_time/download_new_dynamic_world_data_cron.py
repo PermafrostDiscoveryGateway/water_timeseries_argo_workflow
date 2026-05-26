@@ -5,6 +5,7 @@ from datetime import datetime
 from loguru import logger
 import os
 import numpy as np
+import geemap
 import glob
 import xarray as xr
 from combine_chunks_with_previous import combine_new_dynamic_world_data_with_latest
