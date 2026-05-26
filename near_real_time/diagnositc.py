@@ -21,6 +21,16 @@ print("=" * 60)
 print("FILE COMPARISON")
 print("=" * 60)
 
+import xarray as xr
+import os
+
+# Check the compression settings on both files
+old = xr.open_dataset("lakes_dw_V2d.nc", decode_times=False)
+new = xr.open_dataset("lakes_dw_V2d_2025_09_01.nc", decode_times=False)
+
+print("Old file encoding:", old.bare.encoding)
+print("New file encoding:", new.bare.encoding)
+
 if existing_file:
     print(f"\nExisting file: {os.path.basename(existing_file)}")
     print(f"  Size: {os.path.getsize(existing_file) / (1024 ** 3):.2f} GB")
