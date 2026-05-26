@@ -156,10 +156,9 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     # Create a temporary file for the new combined dataset
     temp_file = tempfile.mktemp(suffix='.nc')
 
-    # First, write the existing data with the full lake set
+    # Create new file with dimensions
     logger.info("  Creating new file structure...")
 
-    # Create new file with dimensions
     with Dataset(temp_file, 'w', format='NETCDF4') as ncfile:
         # Create dimensions
         ncfile.createDimension('id_geohash', len(all_lake_ids))
@@ -185,9 +184,11 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
                                   zlib=True, complevel=5, fill_value=np.nan)
             ncfile.variables[var_name].units = 'ha'
 
-        # Fill existing dates
+        # Fill existing dates - need to pad with NaN for new lakes
         logger.info("  Filling existing dates...")
         existing_dates_sorted = sorted(existing_dates)
+        total_existing_lakes = len(existing_lake_ids)
+
         for date_idx, date_val in enumerate(existing_dates_sorted):
             if date_idx % 5 == 0:
                 actual_date = ref_date + pd.Timedelta(days=int(date_val))
@@ -198,10 +199,19 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
             # Get data for this date from existing dataset
             existing_date_data = existing_ds.sel(date=date_val)
+
+            # For each variable, create a full column with NaN for new lakes
             for var_name in existing_ds.data_vars:
-                var_data = existing_date_data[var_name].values
-                # Write directly - no mapping needed as order is same
-                ncfile.variables[var_name][:, date_idx] = var_data
+                var_data_existing = existing_date_data[var_name].values  # Shape: (total_existing_lakes,)
+
+                # Create full column with NaNs
+                full_column = np.full(len(all_lake_ids), np.nan, dtype=np.float64)
+
+                # Fill in existing lake values (first total_existing_lakes positions)
+                full_column[:total_existing_lakes] = var_data_existing
+
+                # Write to file
+                ncfile.variables[var_name][:, date_idx] = full_column
 
             # Force flush every few dates
             if date_idx % 10 == 0:
