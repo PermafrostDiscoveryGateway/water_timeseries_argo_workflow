@@ -4,6 +4,7 @@ from netCDF4 import num2date
 from datetime import datetime
 from loguru import logger
 import os
+import gc
 import numpy as np
 import glob
 import xarray as xr
@@ -174,8 +175,11 @@ if __name__ == "__main__":
                 logger.info(f"✓ Successfully downloaded chunk {chunk_num} for {year}-{month}")
 
                 # Clear Earth Engine memory if needed
+                # Force cleanup
                 if ds is not None:
                     del ds
+                del dl
+                gc.collect()
 
             except Exception as e:
                 logger.error(f"✗ Error downloading chunk {chunk_num} for {year}-{month}: {e}")
