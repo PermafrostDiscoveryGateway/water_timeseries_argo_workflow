@@ -85,6 +85,10 @@ if __name__ == "__main__":
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     earliest_dynamic_world_file = min(all_dynamic_world_files, key=os.path.getctime)
 
+    missing_historical_data_dir = os.environ['missing_historical_data_dir']
+    logger.debug(f"Missing historical data directory: {missing_historical_data_dir}")
+    if not os.path.isdir(missing_historical_data_dir):
+        os.makedirs(missing_historical_data_dir, exist_ok=True)
     logger.debug(f"Most recent dynamic world file: {most_recent_dynamic_world_file}")
     logger.debug(f"First dynamic world file: {earliest_dynamic_world_file}")
 
