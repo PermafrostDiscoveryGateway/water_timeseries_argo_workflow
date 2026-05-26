@@ -11,6 +11,162 @@ from combine_chunks_with_previous import combine_new_dynamic_world_data_with_lat
 from dotenv import load_dotenv
 from water_timeseries.downloader import EarthEngineDownloader
 
+
+def check_dynamic_world_data_availability(date_list):
+    """
+    Check if Dynamic World data is available for specific dates.
+
+    Dynamic World data has some limitations:
+    - Starts from June 2015
+    - Some months may be missing due to processing issues
+    - Data availability can vary by region
+
+    Parameters:
+    -----------
+    date_list : list of datetime or str
+        List of dates to check (should be first of month dates)
+
+    Returns:
+    --------
+    dict: {
+        'available_dates': list of dates that have data,
+        'unavailable_dates': list of dates that don't have data,
+        'availability_summary': dict with year-month as keys and bool as values
+    }
+    """
+    import ee
+    import pandas as pd
+    from datetime import datetime
+
+    # Convert all dates to datetime if strings
+    dates = []
+    for date in date_list:
+        if isinstance(date, str):
+            dates.append(pd.to_datetime(date))
+        else:
+            dates.append(date)
+
+    # Initialize Earth Engine if not already
+    try:
+        # Check if ee is initialized
+        ee.data.getInfo('https://earthengine.googleapis.com/')
+    except Exception:
+        # Initialize with a default project or raise error
+        try:
+            geemap.ee_initialize()
+        except Exception as e:
+            raise RuntimeError(f"Could not initialize Earth Engine: {e}")
+
+    available_dates = []
+    unavailable_dates = []
+    availability_summary = {}
+
+    for date in dates:
+        year = date.year
+        month = date.month
+        date_str = date.strftime('%Y-%m')
+
+        # Dynamic World data starts June 2015
+        if year < 2015 or (year == 2015 and month < 6):
+            availability_summary[date_str] = False
+            unavailable_dates.append(date)
+            continue
+
+        try:
+            # Define the date range for the month
+            start_date = date.strftime('%Y-%m-01')
+            if month == 12:
+                end_date = f"{year + 1}-01-01"
+            else:
+                end_date = f"{year}-{month + 1:02d}-01"
+
+            # Query Dynamic World collection for this month
+            dw_collection = (ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
+                             .filterDate(start_date, end_date)
+                             .limit(1))  # Just need to check if any image exists
+
+            # Check if collection has any images
+            count = dw_collection.size().getInfo()
+
+            if count > 0:
+                availability_summary[date_str] = True
+                available_dates.append(date)
+            else:
+                availability_summary[date_str] = False
+                unavailable_dates.append(date)
+
+        except Exception as e:
+            print(f"Error checking availability for {date_str}: {e}")
+            availability_summary[date_str] = False
+            unavailable_dates.append(date)
+
+    return {
+        'available_dates': available_dates,
+        'unavailable_dates': unavailable_dates,
+        'availability_summary': availability_summary
+    }
+
+
+def filter_available_dates(missing_dates, verbose=True):
+    """
+    Filter a list of missing dates to only those that actually have Dynamic World data available.
+
+    Parameters:
+    -----------
+    missing_dates : list of datetime
+        List of dates that are missing from the NetCDF file
+    verbose : bool
+        If True, print availability summary
+
+    Returns:
+    --------
+    tuple: (dates_with_data, dates_without_data)
+    """
+    if not missing_dates:
+        return [], []
+
+    availability = check_dynamic_world_data_availability(missing_dates)
+
+    if verbose:
+        print(f"\n📊 Dynamic World Data Availability Check:")
+        print(f"  Total dates checked: {len(missing_dates)}")
+        print(f"  ✅ Available: {len(availability['available_dates'])}")
+        print(f"  ❌ Unavailable: {len(availability['unavailable_dates'])}")
+
+        if availability['unavailable_dates']:
+            print(f"\n  Unavailable dates:")
+            for date in availability['unavailable_dates'][:10]:
+                print(f"    - {date.strftime('%Y-%m')}")
+            if len(availability['unavailable_dates']) > 10:
+                print(f"    ... and {len(availability['unavailable_dates']) - 10} more")
+
+    return availability['available_dates'], availability['unavailable_dates']
+
+
+def get_downloadable_dates(missing_dates, verbose=True):
+    """
+    Get the subset of missing dates that can actually be downloaded from Dynamic World.
+
+    This is a convenience wrapper around filter_available_dates.
+
+    Parameters:
+    -----------
+    missing_dates : list of datetime
+        Dates that are missing from the NetCDF file
+    verbose : bool
+        If True, print summary
+
+    Returns:
+    --------
+    list: Dates that can be downloaded (available in Dynamic World)
+    """
+    available, unavailable = filter_available_dates(missing_dates, verbose)
+
+    if verbose and unavailable:
+        print(f"\n⚠️ Note: {len(unavailable)} dates are not available in Dynamic World (pre-2015 or missing data)")
+
+    return available
+
 def get_date_label(current_date):
     return str(current_date).split(' ')[0].replace('-', '_')
 
@@ -202,131 +358,131 @@ def check_missing_data_in_netcdf(netcdf_path):
         return []
 
 
-def download_new_dynamic_world_data(env_path=None):
-    if env_path is None:
-        load_dotenv()
-        logger.info("Loading environment from default .env file")
-    else:
-        load_dotenv(dotenv_path=env_path)
-        logger.info(f"Loading environment from: {env_path}")
-
-    project = os.environ['project']
-    EE_PROJECT_ID = project
-    os.environ["EE_PROJECT"] = EE_PROJECT_ID
-    dynamic_world_dir = os.environ['dynamic_world_dir']
-    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
-    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
-    dynamic_world_data_file = os.environ['dynamic_world_data_file']
-    vector_lake_file = os.environ['vector_lake_file']
-    new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
-
-    logger.debug(f"Dynamic world data file: {dynamic_world_data_file}")
-    logger.debug(f"Vector lake file: {vector_lake_file}")
-    logger.debug(f"New dynamic world data dir: {new_dynamic_world_data_dir}")
-
-    missing_dates = check_missing_data_in_netcdf(most_recent_dynamic_world_file)
-
-    if not missing_dates or len(missing_dates) == 0:
-        logger.debug(f"No missing dates found in {dynamic_world_data_file}")
-        return most_recent_dynamic_world_file
-    logger.debug(f"Missing dates found are {missing_dates}")
-    missing_years = []
-    missing_months = []
-    for date in missing_dates:
-        if date.year not in missing_years:
-            missing_years.append(date.year)
-        if date.month not in missing_months:
-            missing_months.append(date.month)
-
-    logger.debug(f"Missing years: {missing_years}")
-    logger.debug(f"Missing months: {missing_months}")
-
-    logger.debug(f"Downloading new dynamic world data")
-
-    current_date = str(datetime.now())
-    current_date_stamp = current_date.split(' ')[0]
-    current_date_stamp = current_date_stamp.replace('-', '_')
-    download_filename = 'dynamic_world_download_' + current_date_stamp + '.nc'
-    download_filepath = os.path.join(new_dynamic_world_data_dir, download_filename)
-    # DOWNLOAD INDIVIDUAL NETCDF FILES FROM THE SPLIT FILES
-    dl = EarthEngineDownloader(ee_auth=True, logger=logger)
-    ds = dl.download_dw_monthly(
-        vector_dataset=vector_lake_file,
-        name_attribute="id_geohash",
-        years=missing_years,
-        months=missing_months,
-        save_to_file=download_filepath,
-        max_total_requests=500,
-        n_parallel=1,
-    )
-
-    logger.debug(f"Finished downloading to {download_filepath}")
-
-    # Merge the existing and new data
-    logger.debug("Merging existing data with new data...")
-
-    # Open both datasets using xarray
-    existing_ds = xr.open_dataset(most_recent_dynamic_world_file)
-    new_ds = xr.open_dataset(download_filepath)
-
-    # Verify no date overlap (should be true based on missing dates logic)
-    existing_dates = set(pd.to_datetime(existing_ds.date.values))
-    new_dates = set(pd.to_datetime(new_ds.date.values))
-    overlapping_dates = existing_dates & new_dates
-
-    if overlapping_dates:
-        logger.warning(f"Found {len(overlapping_dates)} overlapping dates: {sorted(overlapping_dates)}")
-        logger.warning("Removing overlapping dates from new dataset...")
-        # Remove overlapping dates from new dataset
-        mask = ~new_ds.date.isin(list(overlapping_dates))
-        new_ds = new_ds.sel(date=mask)
-
-    # Simple concatenation along date dimension
-    # This doesn't require matching id_geohash values
-    merged_ds = xr.concat([existing_ds, new_ds], dim="date")
-
-    # Sort by date
-    merged_ds = merged_ds.sortby("date")
-
-    # Verify the merge was successful
-    final_dates = pd.to_datetime(merged_ds.date.values)
-    logger.info(f"Original dates: {len(existing_dates)}")
-    logger.info(f"New dates added: {len(new_dates)}")
-    logger.info(f"Total dates after merge: {len(final_dates)}")
-    logger.info(f"Date range after merge: {final_dates.min()} to {final_dates.max()}")
-
-    # Create the final filename with timestamp
-    new_dynamic_world_filename = 'lakes_dw_V2d_' + current_date_stamp + '.nc'
-    new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
-
-    # Save the merged dataset
-    merged_ds.to_netcdf(new_dynamic_world_data_file)
-
-    logger.debug(f"Successfully merged datasets!")
-    logger.debug(f"Original file: {most_recent_dynamic_world_file}")
-    logger.debug(f"New data file: {download_filepath}")
-    logger.debug(f"Merged file saved as: {new_dynamic_world_data_file}")
-
-    # Optional: Print summary statistics about lake coverage
-    existing_lakes = set(existing_ds.id_geohash.values)
-    new_lakes = set(new_ds.id_geohash.values)
-    common_lakes = existing_lakes & new_lakes
-    only_in_existing = existing_lakes - new_lakes
-    only_in_new = new_lakes - existing_lakes
-
-    logger.info(f"Lake coverage summary:")
-    logger.info(f"  - Lakes in existing dataset: {len(existing_lakes)}")
-    logger.info(f"  - Lakes in new dataset: {len(new_lakes)}")
-    logger.info(f"  - Common lakes: {len(common_lakes)}")
-    logger.info(f"  - Lakes only in existing: {len(only_in_existing)}")
-    logger.info(f"  - Lakes only in new: {len(only_in_new)}")
-
-    # Close datasets to free memory
-    existing_ds.close()
-    new_ds.close()
-    merged_ds.close()
-
-    return new_dynamic_world_data_file
+# def download_new_dynamic_world_data(env_path=None):
+#     if env_path is None:
+#         load_dotenv()
+#         logger.info("Loading environment from default .env file")
+#     else:
+#         load_dotenv(dotenv_path=env_path)
+#         logger.info(f"Loading environment from: {env_path}")
+#
+#     project = os.environ['project']
+#     EE_PROJECT_ID = project
+#     os.environ["EE_PROJECT"] = EE_PROJECT_ID
+#     dynamic_world_dir = os.environ['dynamic_world_dir']
+#     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
+#     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+#     dynamic_world_data_file = os.environ['dynamic_world_data_file']
+#     vector_lake_file = os.environ['vector_lake_file']
+#     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
+#
+#     logger.debug(f"Dynamic world data file: {dynamic_world_data_file}")
+#     logger.debug(f"Vector lake file: {vector_lake_file}")
+#     logger.debug(f"New dynamic world data dir: {new_dynamic_world_data_dir}")
+#
+#     missing_dates = check_missing_data_in_netcdf(most_recent_dynamic_world_file)
+#
+#     if not missing_dates or len(missing_dates) == 0:
+#         logger.debug(f"No missing dates found in {dynamic_world_data_file}")
+#         return most_recent_dynamic_world_file
+#     logger.debug(f"Missing dates found are {missing_dates}")
+#     missing_years = []
+#     missing_months = []
+#     for date in missing_dates:
+#         if date.year not in missing_years:
+#             missing_years.append(date.year)
+#         if date.month not in missing_months:
+#             missing_months.append(date.month)
+#
+#     logger.debug(f"Missing years: {missing_years}")
+#     logger.debug(f"Missing months: {missing_months}")
+#
+#     logger.debug(f"Downloading new dynamic world data")
+#
+#     current_date = str(datetime.now())
+#     current_date_stamp = current_date.split(' ')[0]
+#     current_date_stamp = current_date_stamp.replace('-', '_')
+#     download_filename = 'dynamic_world_download_' + current_date_stamp + '.nc'
+#     download_filepath = os.path.join(new_dynamic_world_data_dir, download_filename)
+#     # DOWNLOAD INDIVIDUAL NETCDF FILES FROM THE SPLIT FILES
+#     dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+#     ds = dl.download_dw_monthly(
+#         vector_dataset=vector_lake_file,
+#         name_attribute="id_geohash",
+#         years=missing_years,
+#         months=missing_months,
+#         save_to_file=download_filepath,
+#         max_total_requests=500,
+#         n_parallel=1,
+#     )
+#
+#     logger.debug(f"Finished downloading to {download_filepath}")
+#
+#     # Merge the existing and new data
+#     logger.debug("Merging existing data with new data...")
+#
+#     # Open both datasets using xarray
+#     existing_ds = xr.open_dataset(most_recent_dynamic_world_file)
+#     new_ds = xr.open_dataset(download_filepath)
+#
+#     # Verify no date overlap (should be true based on missing dates logic)
+#     existing_dates = set(pd.to_datetime(existing_ds.date.values))
+#     new_dates = set(pd.to_datetime(new_ds.date.values))
+#     overlapping_dates = existing_dates & new_dates
+#
+#     if overlapping_dates:
+#         logger.warning(f"Found {len(overlapping_dates)} overlapping dates: {sorted(overlapping_dates)}")
+#         logger.warning("Removing overlapping dates from new dataset...")
+#         # Remove overlapping dates from new dataset
+#         mask = ~new_ds.date.isin(list(overlapping_dates))
+#         new_ds = new_ds.sel(date=mask)
+#
+#     # Simple concatenation along date dimension
+#     # This doesn't require matching id_geohash values
+#     merged_ds = xr.concat([existing_ds, new_ds], dim="date")
+#
+#     # Sort by date
+#     merged_ds = merged_ds.sortby("date")
+#
+#     # Verify the merge was successful
+#     final_dates = pd.to_datetime(merged_ds.date.values)
+#     logger.info(f"Original dates: {len(existing_dates)}")
+#     logger.info(f"New dates added: {len(new_dates)}")
+#     logger.info(f"Total dates after merge: {len(final_dates)}")
+#     logger.info(f"Date range after merge: {final_dates.min()} to {final_dates.max()}")
+#
+#     # Create the final filename with timestamp
+#     new_dynamic_world_filename = 'lakes_dw_V2d_' + current_date_stamp + '.nc'
+#     new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
+#
+#     # Save the merged dataset
+#     merged_ds.to_netcdf(new_dynamic_world_data_file)
+#
+#     logger.debug(f"Successfully merged datasets!")
+#     logger.debug(f"Original file: {most_recent_dynamic_world_file}")
+#     logger.debug(f"New data file: {download_filepath}")
+#     logger.debug(f"Merged file saved as: {new_dynamic_world_data_file}")
+#
+#     # Optional: Print summary statistics about lake coverage
+#     existing_lakes = set(existing_ds.id_geohash.values)
+#     new_lakes = set(new_ds.id_geohash.values)
+#     common_lakes = existing_lakes & new_lakes
+#     only_in_existing = existing_lakes - new_lakes
+#     only_in_new = new_lakes - existing_lakes
+#
+#     logger.info(f"Lake coverage summary:")
+#     logger.info(f"  - Lakes in existing dataset: {len(existing_lakes)}")
+#     logger.info(f"  - Lakes in new dataset: {len(new_lakes)}")
+#     logger.info(f"  - Common lakes: {len(common_lakes)}")
+#     logger.info(f"  - Lakes only in existing: {len(only_in_existing)}")
+#     logger.info(f"  - Lakes only in new: {len(only_in_new)}")
+#
+#     # Close datasets to free memory
+#     existing_ds.close()
+#     new_ds.close()
+#     merged_ds.close()
+#
+#     return new_dynamic_world_data_file
 
 def download_new_dynamic_world_data_split_files_v1(env_path=None):
     """
@@ -389,6 +545,16 @@ def download_new_dynamic_world_data_split_files_v1(env_path=None):
     logger.debug(f"Missing dates found: {missing_dates}")
     missing_years = []
     missing_months = []
+    # Filter to only dates that actually have Dynamic World data available
+    downloadable_dates = get_downloadable_dates(missing_dates, verbose=True)
+
+    if not downloadable_dates:
+        logger.warning("None of the missing dates have Dynamic World data available!")
+        logger.warning("This could be because:")
+        logger.warning("  - Dates are before June 2015 (when Dynamic World started)")
+        logger.warning("  - Dynamic World processing was incomplete for those months")
+        return most_recent_dynamic_world_file
+
 
     for date in missing_dates:
         if date.year not in missing_years:
@@ -723,7 +889,8 @@ def download_new_dynamic_world_data_split_files(env_path=None):
     logger.info(f"New data is {new_dynamic_world_data}")
 
 
-
+if __name__ == "__main__":
+    download_new_dynamic_world_data_split_files_v1()
 
 
 
