@@ -409,19 +409,85 @@ def main():
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
 
     # TODO get most recent dates from most_recent_dynamic_world file
+    logger.info(f"Most recent file: {most_recent_dynamic_world_file}")
+    try:
+        with xr.open_dataset(most_recent_dynamic_world_file, decode_times=False) as ds_temp:
+            # Get the date values and convert to datetime
+            date_values = ds_temp.date.values
+            # Convert using the reference date logic (days since 2015-07-01)
+            ref_date = datetime.datetime(2015, 7, 1)
+            most_recent_date_value = max(date_values)
+            most_recent_date = ref_date + datetime.timedelta(days=int(most_recent_date_value))
+            most_recent_date_str = most_recent_date.strftime('%Y-%m-%d')
+
+            # Also get the oldest date
+            oldest_date_value = min(date_values)
+            oldest_date = ref_date + datetime.timedelta(days=int(oldest_date_value))
+            oldest_date_str = oldest_date.strftime('%Y-%m-%d')
+
+            logger.info(f"  Date range in file: {oldest_date_str} to {most_recent_date_str}")
+            logger.info(f"  Most recent date: {most_recent_date_str}")
+            logger.info(f"  Total dates in file: {len(date_values)}")
+    except Exception as e:
+        logger.warning(f"Could not read dates from file: {e}")
+        most_recent_date_str = "unknown"
 
     # TODO get the output dir contents, check the date of the most recent file
+    output_dir_path = Path(output_dir)
+    nrt_output_files = list(output_dir_path.glob("nrt_breakpoints_all_lakes_from_parquet_*.parquet"))
+
+    if nrt_output_files:
+        # Extract dates from filenames
+        most_recent_nrt_file = max(nrt_output_files, key=os.path.getctime)
+        logger.info(f"Most recent NRT output file: {most_recent_nrt_file}")
+
+        # Try to extract the date from the filename
+        import re
+        date_pattern = r'nrt_breakpoints_all_lakes_from_parquet_(\d{4}_\d{2}_\d{2})\.parquet'
+        match = re.search(date_pattern, str(most_recent_nrt_file))
+        if match:
+            last_analysis_date_str = match.group(1).replace('_', '-')
+            last_analysis_date = pd.to_datetime(last_analysis_date_str)
+            logger.info(f"  Last analysis date: {last_analysis_date.strftime('%Y-%m-%d')}")
+
+            # Compare with most recent date in the dynamic world file
+            if most_recent_date_str != "unknown":
+                most_recent_date_dt = pd.to_datetime(most_recent_date_str)
+                if last_analysis_date >= most_recent_date_dt:
+                    logger.info(
+                        f"  NRT analysis is up to date (last: {last_analysis_date.strftime('%Y-%m-%d')}, file: {most_recent_date_str})")
+                else:
+                    logger.info(f"  NRT analysis is behind by {(most_recent_date_dt - last_analysis_date).days} days")
+        else:
+            logger.warning(f"  Could not extract date from filename: {most_recent_nrt_file}")
+            last_analysis_date = None
+    else:
+        logger.info("No existing NRT output files found in output directory")
+        last_analysis_date = None
 
     dynamic_world_data_file = os.environ['dynamic_world_data_file']
     download_recent_data = os.environ.get('download_recent_data', 'false').lower() == 'true'
     vector_lake_file = os.environ['vector_lake_file']
     new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
 
-
-    missing_dates = download_new_dynamic_world_data.check_missing_data_in_netcdf(most_recent_dynamic_world_file, )
+    # Check for missing dates
+    missing_dates = download_new_dynamic_world_data.check_missing_data_in_netcdf(most_recent_dynamic_world_file)
     if missing_dates and len(missing_dates) > 0:
-        logger.debug(f"We are missing dates, the download has not completed yet")
+        logger.warning(f"We are missing {len(missing_dates)} dates. Download may not have completed yet.")
+        logger.debug(f"Missing dates: {missing_dates[:10]}{'...' if len(missing_dates) > 10 else ''}")
+    else:
+        logger.info("No missing dates found in the current file")
+
     analysis_date = os.environ.get('analysis_date', None)
+    # If analysis_date is not specified, use the most recent date from the file
+    if analysis_date is None and most_recent_date_str != "unknown":
+        analysis_date = most_recent_date_str
+        logger.info(f"No analysis_date specified in env, using most recent date from file: {analysis_date}")
+    elif analysis_date is None:
+        # Fallback to current date if we couldn't read from file
+        analysis_date = datetime.datetime.now().strftime('%Y-%m-%d')
+        logger.info(f"No analysis_date specified and couldn't read from file, using current date: {analysis_date}")
+
     data_aggregation_period = os.environ.get('data_aggregation_period', 'monthly')
     lake_chunk_size = int(os.environ.get('lake_chunk_size', '200'))  # Reduced default from 500 to 200
     print(f"🔧 LAKE_CHUNK_SIZE from environment: {lake_chunk_size}")
@@ -440,33 +506,63 @@ def main():
         logger.warning(f"Could not get file size: {e}")
         file_size_gb = None
 
+    # Determine if we need to download new data
+    # Download if either:
+    # 1. download_recent_data is explicitly True, OR
+    # 2. There are missing dates in the current file
+    should_download = download_recent_data or (missing_dates and len(missing_dates) > 0)
 
-    if download_recent_data:
+    if should_download:
         logger.info("Downloading new dynamic world data...")
+        if missing_dates and len(missing_dates) > 0:
+            logger.info(f"Reason: Missing {len(missing_dates)} dates in current file")
+        if download_recent_data:
+            logger.info("Reason: download_recent_data flag is True")
+
         new_dynamic_world_dataset_file = download_new_dynamic_world_data.download_new_dynamic_world_data_split_files_v1(
             env_path=env_path)
-        logger.debug(f"New dynamic world dataset file is: {new_dynamic_world_dataset_file}")
+        logger.info(f"New dynamic world dataset file is: {new_dynamic_world_dataset_file}")
 
-        results = precompute_nrt_breakpoints(
-            input_nc_file=new_dynamic_world_dataset_file,
-            output_dir=output_dir,
-            lake_chunk_size=lake_chunk_size,
-            analysis_date=analysis_date,
-            data_aggregation_period=data_aggregation_period,
-        )
+        # Update the file to use for analysis
+        input_file_for_analysis = new_dynamic_world_dataset_file
     else:
-        logger.debug(f"Using {most_recent_dynamic_world_file} as input data.")
+        logger.info(f"Using existing file: {most_recent_dynamic_world_file}")
+        input_file_for_analysis = most_recent_dynamic_world_file
 
-        results = precompute_nrt_breakpoints(
-            input_nc_file=most_recent_dynamic_world_file,
-            output_dir=output_dir,
-            lake_chunk_size=lake_chunk_size,
-            analysis_date=analysis_date,
-            data_aggregation_period=data_aggregation_period,
-        )
+    # Run the breakpoint analysis
+    logger.info(f"Starting NRT breakpoint analysis with input: {input_file_for_analysis}")
+    results = precompute_nrt_breakpoints(
+        input_nc_file=input_file_for_analysis,
+        output_dir=output_dir,
+        lake_chunk_size=lake_chunk_size,
+        analysis_date=analysis_date,
+        data_aggregation_period=data_aggregation_period,
+    )
 
     log_memory_usage("Main end")
-    print("\n✅ Near real-time breakpoint analysis completed successfully!")
+
+    # Print summary of results
+    if results is not None and len(results) > 0:
+        print(f"\n📊 Results Summary:")
+        print(f"   Total lakes analyzed: {len(results)}")
+        print(f"   Columns: {list(results.columns)}")
+
+        # If there's a breakpoint column, show some stats
+        if 'breakpoint_date' in results.columns:
+            n_breakpoints = results['breakpoint_date'].notna().sum()
+            print(f"   Lakes with breakpoints: {n_breakpoints} ({n_breakpoints / len(results) * 100:.1f}%)")
+
+        print(f"\n✅ Near real-time breakpoint analysis completed successfully!")
+    else:
+        print("\n⚠️ Warning: No results were generated from the breakpoint analysis")
+        print("   This could be due to:")
+        print("   - No valid lakes in the analysis date range")
+        print("   - Missing data for the specified analysis date")
+        print("   - Issues with the input NetCDF file")
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
