@@ -269,6 +269,7 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
 
 
 # this method combines the historical data that we were missing
+# TODO use historical data
 def combine_missing_historical_dynamic_world_data_with_latest(env_path=None):
     # Load environment
     if env_path is None:
@@ -283,7 +284,7 @@ def combine_missing_historical_dynamic_world_data_with_latest(env_path=None):
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
     dynamic_world_dir = os.environ['dynamic_world_dir']
-    split_new_dynamic_world_data_dir = os.environ['split_new_dynamic_world_data_dir']
+    missing_historical_data_dir = os.environ['missing_historical_data_dir']
 
     # Find latest valid file
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
@@ -309,106 +310,108 @@ def combine_missing_historical_dynamic_world_data_with_latest(env_path=None):
     existing_lake_set = set(existing_lake_ids)
     logger.info(f"Existing: {len(existing_lake_ids):,} lakes, {len(existing_dates)} dates")
 
-    # Process chunk files to collect all new lakes and dates
-    chunk_files = sorted(glob.glob(os.path.join(split_new_dynamic_world_data_dir, "*.nc")))
-    logger.info(f"Found {len(chunk_files)} chunk files")
+    # Process historical files instead of new chunk files
+    historical_files = sorted(glob.glob(os.path.join(missing_historical_data_dir, "*.nc")))
+    logger.info(f"Found {len(historical_files)} historical files in {missing_historical_data_dir}")
 
     days_offset = 3653
     ref_date = datetime(2015, 7, 1)
 
-    # Collect all unique lake IDs from chunks
-    logger.info("Step 1: Collecting all lake IDs from chunks...")
-    all_chunk_lake_ids = set()
-    for i, chunk_file in enumerate(chunk_files):
+    # Collect all unique lake IDs from historical files
+    logger.info("Step 1: Collecting all lake IDs from historical files...")
+    all_historical_lake_ids = set()
+    for i, hist_file in enumerate(historical_files):
         if (i + 1) % 50 == 0:
             logger.info(
-                f"  Scanned {i + 1}/{len(chunk_files)} chunks, total unique lakes so far: {len(all_chunk_lake_ids):,}")
+                f"  Scanned {i + 1}/{len(historical_files)} files, total unique lakes so far: {len(all_historical_lake_ids):,}")
         try:
-            with xr.open_dataset(chunk_file, decode_times=False) as ds:
+            with xr.open_dataset(hist_file, decode_times=False) as ds:
                 for lake_id in ds.id_geohash.values:
-                    all_chunk_lake_ids.add(lake_id)
+                    all_historical_lake_ids.add(lake_id)
         except Exception as e:
-            logger.warning(f"Error reading {os.path.basename(chunk_file)}: {e}")
+            logger.warning(f"Error reading {os.path.basename(hist_file)}: {e}")
 
-    # Find new lakes
-    new_lake_ids = all_chunk_lake_ids - existing_lake_set
-    logger.info(f"Found {len(new_lake_ids):,} new lakes (not in existing file)")
+    # Find new lakes from historical data
+    new_lake_ids = all_historical_lake_ids - existing_lake_set
+    logger.info(f"Found {len(new_lake_ids):,} new lakes from historical data (not in existing file)")
 
     # Create combined lake list (existing + new)
     all_lake_ids = list(existing_lake_ids) + list(new_lake_ids)
     lake_id_to_index = {lake_id: idx for idx, lake_id in enumerate(all_lake_ids)}
     logger.info(f"Total lakes in output: {len(all_lake_ids):,}")
 
-    # Collect new dates and data
-    logger.info("Step 2: Collecting new dates and data from chunks...")
-    new_dates_found = set()
-    new_data_by_date = {}
+    # Collect historical dates and data
+    logger.info("Step 2: Collecting historical dates and data...")
+    historical_dates_found = set()
+    historical_data_by_date = {}
 
-    for i, chunk_file in enumerate(chunk_files):
+    for i, hist_file in enumerate(historical_files):
         if (i + 1) % 20 == 0:
-            logger.info(f"  Processed {i + 1}/{len(chunk_files)} chunks, found {len(new_dates_found)} new dates so far")
+            logger.info(f"  Processed {i + 1}/{len(historical_files)} files, found {len(historical_dates_found)} historical dates so far")
 
         try:
-            ds_chunk = xr.open_dataset(chunk_file, decode_times=False)
+            ds_hist = xr.open_dataset(hist_file, decode_times=False)
 
-            # Get chunk lake IDs and map to indices
-            chunk_lake_ids = ds_chunk.id_geohash.values
-            chunk_indices = [lake_id_to_index[lake_id] for lake_id in chunk_lake_ids]
+            # Get historical lake IDs and map to indices
+            hist_lake_ids = ds_hist.id_geohash.values
+            hist_indices = [lake_id_to_index[lake_id] for lake_id in hist_lake_ids]
 
-            # For each date in this chunk
-            for date_idx, orig_date_val in enumerate(ds_chunk.date.values):
+            # For each date in this historical file
+            for date_idx, orig_date_val in enumerate(ds_hist.date.values):
                 date_val = orig_date_val + days_offset
 
                 # Skip if date already exists in existing file
                 if date_val in existing_dates:
                     continue
 
-                new_dates_found.add(date_val)
+                historical_dates_found.add(date_val)
 
                 # Initialize storage for this date if needed
-                if date_val not in new_data_by_date:
-                    new_data_by_date[date_val] = {
+                if date_val not in historical_data_by_date:
+                    historical_data_by_date[date_val] = {
                         'indices': [],
                         'data': {var: [] for var in existing_ds.data_vars}
                     }
 
                 # Get data for this date
-                date_data = ds_chunk.isel(date=date_idx)
+                date_data = ds_hist.isel(date=date_idx)
 
                 # Add data for each variable
                 for var_name in existing_ds.data_vars:
                     if var_name in date_data.data_vars:
                         var_values = date_data[var_name].values
                         for idx, val in enumerate(var_values):
-                            new_data_by_date[date_val]['data'][var_name].append(val)
+                            historical_data_by_date[date_val]['data'][var_name].append(val)
 
                 # Add lake indices (once per date)
-                if not new_data_by_date[date_val]['indices']:
-                    new_data_by_date[date_val]['indices'].extend(chunk_indices)
+                if not historical_data_by_date[date_val]['indices']:
+                    historical_data_by_date[date_val]['indices'].extend(hist_indices)
 
-            ds_chunk.close()
+            ds_hist.close()
             gc.collect()
 
         except Exception as e:
-            logger.warning(f"Error processing {os.path.basename(chunk_file)}: {e}")
+            logger.warning(f"Error processing {os.path.basename(hist_file)}: {e}")
             continue
 
-    if not new_dates_found:
-        logger.warning("No new dates found!")
+    if not historical_dates_found:
+        logger.warning("No historical dates found to add!")
         existing_ds.close()
         return None
 
-    logger.info(f"Found {len(new_dates_found)} new dates: {sorted(new_dates_found)}")
+    logger.info(f"Found {len(historical_dates_found)} historical dates: {sorted(historical_dates_found)}")
 
-    # Create output filename
-    latest_date = max(new_dates_found)
-    latest_date_obj = ref_date + pd.Timedelta(days=int(latest_date))
+    # Create output filename with timestamp
+    from datetime import datetime as dt
+    current_timestamp = dt.now().strftime('%Y%m%d_%H%M%S')
+    latest_historical_date = max(historical_dates_found)
+    latest_date_obj = ref_date + pd.Timedelta(days=int(latest_historical_date))
     latest_date_string = latest_date_obj.strftime('%Y_%m_%d')
-    new_dynamic_world_filename = f'lakes_dw_V2d_{latest_date_string}.nc'
+    new_dynamic_world_filename = f'lakes_dw_V2d_{latest_date_string}_historical_{current_timestamp}.nc'
     new_dynamic_world_data_file = os.path.join(dynamic_world_dir, new_dynamic_world_filename)
 
     # Write output file
-    logger.info("Step 3: Writing output file...")
+    logger.info("Step 3: Writing output file with historical data...")
 
     from netCDF4 import Dataset
     import tempfile
@@ -422,7 +425,7 @@ def combine_missing_historical_dynamic_world_data_with_latest(env_path=None):
     with Dataset(temp_file, 'w', format='NETCDF4') as ncfile:
         # Create dimensions
         ncfile.createDimension('id_geohash', len(all_lake_ids))
-        ncfile.createDimension('date', len(existing_dates) + len(new_dates_found))
+        ncfile.createDimension('date', len(existing_dates) + len(historical_dates_found))
 
         # Create id_geohash variable (string)
         id_var = ncfile.createVariable('id_geohash', 'S12', ('id_geohash',))
@@ -477,15 +480,15 @@ def combine_missing_historical_dynamic_world_data_with_latest(env_path=None):
             if date_idx % 10 == 0:
                 ncfile.sync()
 
-        # Fill new dates
-        logger.info("  Filling new dates...")
+        # Fill historical dates
+        logger.info("  Filling historical dates...")
         current_date_idx = len(existing_dates)
 
-        for new_idx, (date_val, date_data) in enumerate(sorted(new_data_by_date.items())):
+        for hist_idx, (date_val, date_data) in enumerate(sorted(historical_data_by_date.items())):
             actual_date = ref_date + pd.Timedelta(days=int(date_val))
-            logger.info(f"    Adding new date {new_idx + 1}/{len(new_data_by_date)}: {date_val} ({actual_date.date()})")
+            logger.info(f"    Adding historical date {hist_idx + 1}/{len(historical_data_by_date)}: {date_val} ({actual_date.date()})")
 
-            date_var[current_date_idx + new_idx] = date_val
+            date_var[current_date_idx + hist_idx] = date_val
 
             # Fill data for this date
             for var_name in existing_ds.data_vars:
@@ -501,7 +504,7 @@ def combine_missing_historical_dynamic_world_data_with_latest(env_path=None):
                     full_column[lake_idx] = var_values[pos]
 
                 # Write to file
-                ncfile.variables[var_name][:, current_date_idx + new_idx] = full_column
+                ncfile.variables[var_name][:, current_date_idx + hist_idx] = full_column
 
             # Force flush after each new date
             ncfile.sync()
@@ -515,19 +518,18 @@ def combine_missing_historical_dynamic_world_data_with_latest(env_path=None):
     # Verify
     result_ds = xr.open_dataset(new_dynamic_world_data_file, decode_times=False)
     logger.info("=" * 60)
-    logger.info(f"✓ MERGE COMPLETE!")
+    logger.info(f"✓ HISTORICAL DATA MERGE COMPLETE!")
     logger.info(f"  Output: {new_dynamic_world_data_file}")
     logger.info(f"  Total lakes: {len(result_ds.id_geohash):,}")
     logger.info(f"    - Existing lakes: {len(existing_lake_ids):,}")
-    logger.info(f"    - New lakes: {len(new_lake_ids):,}")
+    logger.info(f"    - New lakes from historical data: {len(new_lake_ids):,}")
     logger.info(f"  Total dates: {len(result_ds.date)}")
     logger.info(f"    - Existing dates: {len(existing_dates)}")
-    logger.info(f"    - New dates: {len(new_dates_found)}")
+    logger.info(f"    - Historical dates added: {len(historical_dates_found)}")
     logger.info("=" * 60)
     result_ds.close()
 
     return new_dynamic_world_data_file
-
 
 if __name__ == "__main__":
     combine_new_dynamic_world_data_with_latest()
