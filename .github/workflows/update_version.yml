@@ -6,6 +6,7 @@ on:
       - main
       - 8-chunk-lakes-for-near-real-time-argo-workflow
       - 10-for-chunk-progress-save-intermediate-results-allow-resume
+      - 11-fix-download-download-from-split-vector-files
   workflow_dispatch:
     inputs:
       tag:

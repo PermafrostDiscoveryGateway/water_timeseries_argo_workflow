@@ -299,8 +299,8 @@ spec:
           # Set Dask scheduler to use threads (local cluster)
           export DASK_SCHEDULER=threads
           
-          echo "Starting near_real_time.py with Dask support..."
-          python /app/near_real_time/near_real_time.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
+          echo "Starting near_real_time_cron.py with Dask support..."
+          python /app/near_real_time/near_real_time_cron.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
           
           SCRIPT_EXIT_CODE=${PIPESTATUS[0]}
 
