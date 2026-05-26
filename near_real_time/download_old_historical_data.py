@@ -77,6 +77,11 @@ if __name__ == "__main__":
 
     load_dotenv()
 
+    split_vector_dataset_dir = os.environ['split_vector_dataset_dir']
+
+    all_split_vector_dataset_files = glob.glob(os.path.join(split_vector_dataset_dir, "*.parquet"))
+    split_vector_file = max(all_split_vector_dataset_files, key=os.path.getsize)
+
     project = os.environ['project']
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
@@ -98,6 +103,40 @@ if __name__ == "__main__":
     earlier_years = list(range(2016, 2025))
     months = [6,7,8,9]
 
+    current_time = str(datetime.now()).split(' ')[0].replace('-', '_')
+    current_split_data_dir = os.path.join(missing_historical_data_dir, current_time)
+    if not os.path.isdir(current_split_data_dir):
+        os.makedirs(current_split_data_dir, exist_ok=True)
     print(earlier_years)
     print(months)
+
+    for year in earlier_years:
+        for month in months:
+            current_year = str(year)
+            current_month = str(month)
+            current_filename = f'historical_{current_year}_{current_month}.nc'
+            current_filepath = os.path.join(missing_historical_data_dir, current_filename)
+            logger.debug(f"Downloading data for year {current_year} and {current_month} to path {current_filepath}")
+            if not os.path.isfile(current_filepath):
+                try:
+                    dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+
+                    # Download using the split vector file
+                    ds = dl.download_dw_monthly(
+                        vector_dataset=split_vector_file,  # Use the split file directly
+                        name_attribute="id_geohash",
+                        years=[year],
+                        months=[month],
+                        save_to_file=current_filepath,
+                        max_total_requests=500,
+                        n_parallel=1,
+                    )
+                except Exception as e:
+                    logger.debug(f"Error downloading {current_filename}: {e}")
+
+            else:
+                logger.debug(f"Skipping downloading data for year {current_year} as ")
+
+
+
 
