@@ -8,7 +8,7 @@ import xarray as xr
 from dotenv import load_dotenv
 import gc
 
-def combine_new_dynamic_world_data_with_latest(env_path=None):
+def combine_new_dynamic_world_data_with_latest(path_to_new_data=None, env_path=None):
     # Load environment
     if env_path is None:
         load_dotenv()
@@ -23,7 +23,8 @@ def combine_new_dynamic_world_data_with_latest(env_path=None):
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
     dynamic_world_dir = os.environ['dynamic_world_dir']
     split_new_dynamic_world_data_dir = os.environ['split_new_dynamic_world_data_dir']
-
+    if path_to_new_data is None:
+        split_new_dynamic_world_data_dir = path_to_new_data
     # Find latest valid file
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
     valid_files = []
@@ -531,5 +532,5 @@ def combine_missing_historical_dynamic_world_data_with_latest(env_path=None):
 
     return new_dynamic_world_data_file
 
-if __name__ == "__main__":
-    combine_new_dynamic_world_data_with_latest()
+# if __name__ == "__main__":
+#     combine_new_dynamic_world_data_with_latest()
