@@ -77,10 +77,7 @@ if __name__ == "__main__":
 
     load_dotenv()
 
-    split_vector_dataset_dir = os.environ['split_vector_dataset_dir']
-
-    all_split_vector_dataset_files = glob.glob(os.path.join(split_vector_dataset_dir, "*.parquet"))
-    split_vector_file = max(all_split_vector_dataset_files, key=os.path.getsize)
+    vector_file = os.environ['vector_lake_file']
 
     project = os.environ['project']
     EE_PROJECT_ID = project
@@ -123,14 +120,16 @@ if __name__ == "__main__":
 
                     # Download using the split vector file
                     ds = dl.download_dw_monthly(
-                        vector_dataset=split_vector_file,  # Use the split file directly
+                        vector_dataset=vector_file,  # Use the split file directly
                         name_attribute="id_geohash",
+                        id_list=list(new_lake_ids),
                         years=[year],
                         months=[month],
                         save_to_file=current_filepath,
                         max_total_requests=500,
                         n_parallel=1,
                     )
+                    logger.info(f"Downloaded records")
                 except Exception as e:
                     logger.debug(f"Error downloading {current_filename}: {e}")
 
