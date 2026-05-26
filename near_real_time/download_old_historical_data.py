@@ -122,7 +122,7 @@ if __name__ == "__main__":
     logger.debug(f"First dynamic world file: {earliest_dynamic_world_file}")
 
     # Configuration
-    CHUNK_SIZE = 50000  # Adjust based on available RAM
+    CHUNK_SIZE = 5000  # Adjust based on available RAM
     earlier_years = list(range(2016, 2025))
     months = [6, 7, 8, 9]
 
