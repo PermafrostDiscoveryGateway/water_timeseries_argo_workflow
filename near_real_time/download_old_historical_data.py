@@ -112,7 +112,7 @@ if __name__ == "__main__":
     full_gdf = load_vector_dataset(vector_file, logger=logger)
     print(f"Loaded {len(full_gdf):,} total geometries")
 
-    CHUNK_SIZE = 50000  # Adjust based on available RAM
+    CHUNK_SIZE = 5000  # Adjust based on available RAM
     earlier_years = list(range(2016, 2025))
     months = [6, 7, 8, 9]
 
