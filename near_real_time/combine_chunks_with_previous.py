@@ -23,7 +23,7 @@ def combine_new_dynamic_world_data_with_latest(path_to_new_data=None, env_path=N
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
     dynamic_world_dir = os.environ['dynamic_world_dir']
     split_new_dynamic_world_data_dir = os.environ['split_new_dynamic_world_data_dir']
-    if path_to_new_data is None:
+    if path_to_new_data is not None:
         split_new_dynamic_world_data_dir = path_to_new_data
     # Find latest valid file
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
