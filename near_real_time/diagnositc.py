@@ -24,9 +24,11 @@ print("=" * 60)
 import xarray as xr
 import os
 
+old_file = os.path.join(dynamic_world_dir, "lakes_dw_V2d.nc")
+new_file = os.path.join(dynamic_world_dir, "lakes_dw_V2d_2025_09_01.nc")
 # Check the compression settings on both files
-old = xr.open_dataset("lakes_dw_V2d.nc", decode_times=False)
-new = xr.open_dataset("lakes_dw_V2d_2025_09_01.nc", decode_times=False)
+old = xr.open_dataset(old_file, decode_times=False)
+new = xr.open_dataset(new_file, decode_times=False)
 
 print("Old file encoding:", old.bare.encoding)
 print("New file encoding:", new.bare.encoding)
