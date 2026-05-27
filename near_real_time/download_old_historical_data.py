@@ -90,7 +90,7 @@ if __name__ == "__main__":
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
 
-    dynamic_world_dir = os.environ['dynamic_world_dir']
+    dynamic_world_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     earliest_dynamic_world_file = min(all_dynamic_world_files, key=os.path.getctime)
@@ -206,7 +206,7 @@ if __name__ == "__main__":
                 continue
 
             try:
-                print(f"  Downloading {filename}...")
+                print(f"  Downloading {filename}...to path {filepath}")
                 ds = dl.download_dw_monthly(
                     gdf=target_gdf,  # Use the filtered GeoDataFrame
                     name_attribute="id_geohash",
