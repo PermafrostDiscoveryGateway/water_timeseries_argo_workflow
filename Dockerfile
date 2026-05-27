@@ -7,8 +7,14 @@ RUN uv pip install --system \
     google-api-core \
     toml \
     dask[dataframe] \
-    pyarrow
+    pyarrow \
+    pandas
 
+# Install sudo (needed for the final installation attempt in Argo)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    sudo \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy your application code
 COPY google_cloud_utils/ /app/google_cloud_utils/
