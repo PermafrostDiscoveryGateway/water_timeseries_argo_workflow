@@ -233,7 +233,6 @@ def main():
     if gcs_path == '.':
         gcs_path = ''
 
-    # TODO iterate over the blobs in the source bucket and print names
     print(f"\n📋 Listing all blobs in bucket: {args.source_bucket}")
     if gcs_path:
         print(f"   Filtering by prefix: {gcs_path}")
@@ -256,8 +255,17 @@ def main():
                     print(f"{i}. 📄 {blob.name} ({size_str})")
                 if blob.name == 'lakes_dw_V2d_2016-2025.nc':
                     print(f"This is the file to download {blob.name}: {blob.url}")
-                    blob_target = os.path.join(args.local_path, blob.name)
-                    download_blob(blob, blob_target)
+                    local_file_path = os.path.join(args.local_path, blob.name)
+
+                    # Download the file
+                    print(f"📥 Downloading {blob.name} to {local_file_path}...")
+                    try:
+                        blob.download_to_filename(local_file_path)
+                        size_str = format_file_size(blob.size) if blob.size else "0 B"
+                        print(f"✓ Successfully downloaded: {blob.name} ({size_str})")
+                        print(f"📂 Saved to: {local_file_path}")
+                    except Exception as e:
+                        print(f"✗ Failed to download {blob.name}: {e}")
             print("-" * 50)
     except Exception as e:
         print(f"✗ Error listing blobs: {e}")
