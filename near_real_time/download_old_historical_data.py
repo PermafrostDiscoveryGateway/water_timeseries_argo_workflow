@@ -100,14 +100,6 @@ if __name__ == "__main__":
     if not os.path.isdir(missing_historical_data_dir):
         os.makedirs(missing_historical_data_dir, exist_ok=True)
 
-    current_time = str(datetime.now()).split(' ')[0].replace('-', '_')
-    current_split_data_dir = os.path.join(missing_historical_data_dir, current_time)
-    if not os.path.isdir(current_split_data_dir):
-        os.makedirs(current_split_data_dir, exist_ok=True)
-
-    logger.debug(f"Most recent dynamic world file: {most_recent_dynamic_world_file}")
-    logger.debug(f"First dynamic world file: {earliest_dynamic_world_file}")
-
     # ===== CRITICAL: Load vector file ONCE with geometries =====
     print("Loading full vector file with geometries...")
     full_gdf = load_vector_dataset(vector_file, logger=logger)
@@ -121,94 +113,16 @@ if __name__ == "__main__":
     print(f"Years to process: {earlier_years}")
     print(f"Months to process: {months}")
 
-    # Process new lake_ids in chunks
-    for chunk_num, new_lake_ids_chunk in enumerate(
-            get_new_lake_ids_streaming(earliest_dynamic_world_file, dynamic_world_dir, chunk_size=CHUNK_SIZE),
-            start=1
-    ):
-        print(f"\n{'=' * 70}")
-        print(f"CHUNK {chunk_num} - Processing {len(new_lake_ids_chunk):,} lake_ids")
-        print(f"{'=' * 70}")
+    # TODO get new lake ids here
 
-        # Filter the GeoDataFrame to only include this chunk's lake_ids
-        chunk_gdf = full_gdf[full_gdf['id_geohash'].isin(new_lake_ids_chunk)].copy()
-        print(f"Found geometries for {len(chunk_gdf)}/{len(new_lake_ids_chunk)} lake_ids in this chunk")
+    # Filter to new lakes
+    print("Filtering to target lakes...")
+    target_gdf = full_gdf[full_gdf['id_geohash'].isin(new_lake_ids)].copy()
 
-        if len(chunk_gdf) == 0:
-            print(f"Warning: No geometries found for this chunk's lake_ids. Skipping...")
-            continue
+    # Optional: Clear full_gdf from memory to save space
+    del full_gdf
+    import gc
 
-        # Check existing files
-        print("\nChecking existing files...")
-        files_to_download = check_existing_files(
-            current_split_data_dir,
-            chunk_num,
-            earlier_years,
-            months
-        )
+    gc.collect()
 
-        if not files_to_download:
-            print(f"\n✓ All files for chunk {chunk_num} already exist. Skipping...")
-            continue
-
-        print(
-            f"\nNeed to download {len(files_to_download)}/{len(earlier_years) * len(months)} files for chunk {chunk_num}")
-
-        # Download missing files for this chunk
-        for year, month, filepath in files_to_download:
-            print(f"\nDownloading: historical_{year}_{month}_chunk_{chunk_num}.nc")
-
-            try:
-                dl = EarthEngineDownloader(ee_auth=True, logger=logger)
-
-                # CRITICAL: Use gdf parameter instead of vector_dataset
-                ds = dl.download_dw_monthly(
-                    gdf=chunk_gdf,  # Pass the filtered GeoDataFrame directly
-                    name_attribute="id_geohash",
-                    id_list=list(new_lake_ids_chunk),  # Redundant but kept for safety
-                    years=[year],
-                    months=[month],
-                    save_to_file=filepath,
-                    max_total_requests=500,
-                    n_parallel=1,
-                )
-                logger.info(f"✓ Successfully downloaded chunk {chunk_num} for {year}-{month}")
-
-                # Clear Earth Engine memory if needed
-                # Force cleanup
-                if ds is not None:
-                    del ds
-                del dl
-                gc.collect()
-
-            except Exception as e:
-                logger.error(f"✗ Error downloading chunk {chunk_num} for {year}-{month}: {e}")
-                # Remove empty/corrupt file
-                if os.path.exists(filepath) and os.path.getsize(filepath) == 0:
-                    os.remove(filepath)
-
-        # Create summary file
-        summary_file = os.path.join(current_split_data_dir, f'chunk_{chunk_num}_summary.txt')
-        with open(summary_file, 'w') as f:
-            f.write(f"Chunk {chunk_num} completed at {datetime.now()}\n")
-            f.write(f"Lake IDs in this chunk: {len(new_lake_ids_chunk):,}\n")
-            f.write(f"Geometries found: {len(chunk_gdf)}\n")
-            f.write(f"Years processed: {earlier_years}\n")
-            f.write(f"Months processed: {months}\n")
-            f.write(f"Files downloaded: {len(files_to_download)}\n")
-
-        # Monitor memory
-        try:
-            import psutil
-
-            process = psutil.Process()
-            memory_mb = process.memory_info().rss / 1024 / 1024
-            print(f"\nCurrent memory usage: {memory_mb:.1f} MB")
-        except ImportError:
-            pass
-
-        print(f"\n✓ Chunk {chunk_num} complete!")
-
-    print(f"\n{'=' * 70}")
-    print("ALL CHUNKS COMPLETED")
-    print(f"{'=' * 70}")
+    print(f"Ready to download for {len(target_gdf)} lakes")
