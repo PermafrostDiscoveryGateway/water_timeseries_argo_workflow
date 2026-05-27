@@ -114,15 +114,125 @@ if __name__ == "__main__":
     print(f"Months to process: {months}")
 
     # TODO get new lake ids here
+    # ===== GET NEW LAKE IDS =====
+    print("\n" + "=" * 70)
+    print("STEP 1: Finding new lake_ids (in new data but not in old data)")
+    print("=" * 70)
+
+    # Collect all new lake_ids from streaming generator
+    all_new_lake_ids = []
+    for batch in get_new_lake_ids_streaming(
+            earliest_dynamic_world_file,
+            dynamic_world_dir,
+            chunk_size=CHUNK_SIZE
+    ):
+        all_new_lake_ids.extend(batch)
+        print(f"  Accumulated {len(all_new_lake_ids):,} new lake_ids so far...")
+
+    print(f"\n✓ Total new lake_ids found: {len(all_new_lake_ids):,}")
+
+    # Optional: Save to file for reference
+    new_lakes_file = os.path.join(missing_historical_data_dir, 'new_lake_ids.txt')
+    with open(new_lakes_file, 'w') as f:
+        for lake_id in all_new_lake_ids:
+            f.write(f"{lake_id}\n")
+    print(f"✓ Saved new lake_ids to {new_lakes_file}")
+
+    # Verify all new lake_ids exist in vector file
+    vector_ids = set(full_gdf['id_geohash'].values)
+    new_ids_set = set(all_new_lake_ids)
+    missing_from_vector = new_ids_set - vector_ids
+
+    if missing_from_vector:
+        print(f"\n⚠️ WARNING: {len(missing_from_vector)} lake_ids missing from vector file!")
+        print(f"   Sample missing: {list(missing_from_vector)[:10]}")
+        print(f"   These lakes cannot be downloaded - filtering them out.")
+
+        # Filter to only IDs that exist in vector file
+        all_new_lake_ids = [lid for lid in all_new_lake_ids if lid in vector_ids]
+        print(f"   Remaining valid lake_ids: {len(all_new_lake_ids):,}")
+    else:
+        print(f"\n✓ All {len(all_new_lake_ids):,} new lake_ids found in vector file!")
 
     # Filter to new lakes
+    print("\n" + "=" * 70)
+    print("STEP 2: Filtering GeoDataFrame to target lakes")
+    print("=" * 70)
     print("Filtering to target lakes...")
-    target_gdf = full_gdf[full_gdf['id_geohash'].isin(new_lake_ids)].copy()
+    target_gdf = full_gdf[full_gdf['id_geohash'].isin(all_new_lake_ids)].copy()
+    print(f"✓ Filtered GeoDataFrame has {len(target_gdf):,} lakes")
 
     # Optional: Clear full_gdf from memory to save space
     del full_gdf
     import gc
 
     gc.collect()
+    print("✓ Cleared full vector file from memory")
 
-    print(f"Ready to download for {len(target_gdf)} lakes")
+    print(f"\nReady to download historical data for {len(target_gdf)} lakes")
+    print(f"Total downloads needed: {len(earlier_years) * len(months)} files")
+
+    # TODO do not use below, wrong naming scheme
+
+    # ===== DOWNLOAD HISTORICAL DATA =====
+    print("\n" + "=" * 70)
+    print("STEP 3: Downloading historical data")
+    print("=" * 70)
+
+    # Create a timestamped directory for this run
+    current_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    run_dir = os.path.join(missing_historical_data_dir, f"download_run_{current_time}")
+    os.makedirs(run_dir, exist_ok=True)
+    print(f"✓ Created run directory: {run_dir}")
+
+    # Create a single downloader instance (reuse it)
+    dl = EarthEngineDownloader(ee_auth=True, logger=logger)
+
+    # Track progress
+    total_downloads = len(earlier_years) * len(months)
+    completed_downloads = 0
+
+    for year in earlier_years:
+        for month in months:
+            completed_downloads += 1
+            filename = f"historical_{year}_{month:02d}.nc"
+            filepath = os.path.join(run_dir, filename)
+
+            print(f"\n[{completed_downloads}/{total_downloads}] Processing: {year}-{month:02d}")
+
+            # Check if file already exists
+            if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                print(f"  ✓ File already exists, skipping: {filename}")
+                continue
+
+            try:
+                print(f"  Downloading {filename}...")
+                ds = dl.download_dw_monthly(
+                    gdf=target_gdf,  # Use the filtered GeoDataFrame
+                    name_attribute="id_geohash",
+                    id_list=all_new_lake_ids,
+                    years=[year],
+                    months=[month],
+                    save_to_file=filepath,
+                    max_total_requests=500,
+                    n_parallel=1,
+                )
+
+                print(f"  ✓ Successfully downloaded {filename}")
+
+                # Clear memory after each download
+                if ds is not None:
+                    del ds
+                gc.collect()
+
+            except Exception as e:
+                logger.error(f"  ✗ Error downloading {year}-{month}: {e}")
+                # Remove partial/corrupt file
+                if os.path.exists(filepath) and os.path.getsize(filepath) == 0:
+                    os.remove(filepath)
+                continue
+
+    print("\n" + "=" * 70)
+    print("✓ ALL DOWNLOADS COMPLETE!")
+    print(f"✓ Data saved to: {run_dir}")
+    print("=" * 70)
