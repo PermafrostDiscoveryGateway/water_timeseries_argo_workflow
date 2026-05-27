@@ -5,7 +5,10 @@ RUN uv pip install --system \
     python-dotenv \
     google-cloud-storage \
     google-api-core \
-    toml
+    toml \
+    dask[dataframe] \
+    pyarrow \
+
 
 # Copy your application code
 COPY google_cloud_utils/ /app/google_cloud_utils/
