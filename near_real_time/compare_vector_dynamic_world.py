@@ -246,7 +246,9 @@ if __name__ == "__main__":
     load_dotenv()
 
     vector_file = os.environ['vector_lake_file']
+    print(f"\nVector lake file: {vector_file}")
     dynamic_world_dir = os.environ['dynamic_world_dir']
+
 
     # Run analysis
     gdf = analyze_vector_file(vector_file)
