@@ -238,32 +238,32 @@ def main():
         print(f"   Filtering by prefix: {gcs_path}")
     print("-" * 50)
 
+    # The full path to your file in the bucket
+    target_file_path = f"{gcs_path}/lakes_dw_V2d_2016-2025.nc" if gcs_path else "lakes_dw_V2d_2016-2025.nc"
+
     try:
-        # List all blobs (with optional prefix filter)
-        blobs = list(bucket.list_blobs(prefix=gcs_path if gcs_path else None))
+        # Instead of listing all blobs, directly get the specific file
+        blob = bucket.blob(target_file_path)
 
-        if not blobs:
-            print("⚠ No blobs found in the specified location")
+        if blob.exists():
+            print(f"\n🎯 Found target file: {blob.name}")
+            print(f"   File size: {format_file_size(blob.size)}")
+
+            # Download the file
+            local_file_path = os.path.join(args.local_path, "lakes_dw_V2d_2016-2025.nc")
+
+            print(f"📥 Downloading to: {local_file_path}...")
+            try:
+                blob.download_to_filename(local_file_path)
+                print(f"✓ Successfully downloaded: lakes_dw_V2d_2016-2025.nc ({format_file_size(blob.size)})")
+                print(f"📂 Saved to: {local_file_path}")
+            except Exception as e:
+                print(f"✗ Failed to download: {e}")
         else:
-            print(f"Found {len(blobs)} blob(s):\n")
-            for i, blob in enumerate(blobs, 1):
-                # Skip folder placeholders if desired (optional)
-                if blob.name == 'lakes_dw_V2d_2016-2025.nc':
-                    print(f"This is the file to download {blob.name}: {blob.url}")
-                    local_file_path = os.path.join(args.local_path, blob.name)
+            print(f"⚠ File not found: {target_file_path}")
 
-                    # Download the file
-                    print(f"📥 Downloading {blob.name} to {local_file_path}...")
-                    try:
-                        blob.download_to_filename(local_file_path)
-                        size_str = format_file_size(blob.size) if blob.size else "0 B"
-                        print(f"✓ Successfully downloaded: {blob.name} ({size_str})")
-                        print(f"📂 Saved to: {local_file_path}")
-                    except Exception as e:
-                        print(f"✗ Failed to download {blob.name}: {e}")
-            print("-" * 50)
     except Exception as e:
-        print(f"✗ Error listing blobs: {e}")
+        print(f"✗ Error accessing file: {e}")
 
     print("\n" + "=" * 50 + "\n")
 
