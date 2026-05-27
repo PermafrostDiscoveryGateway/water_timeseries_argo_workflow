@@ -248,11 +248,6 @@ def main():
             print(f"Found {len(blobs)} blob(s):\n")
             for i, blob in enumerate(blobs, 1):
                 # Skip folder placeholders if desired (optional)
-                if blob.name.endswith('/') and blob.size == 0:
-                    print(f"{i}. 📁 {blob.name} (folder placeholder)")
-                else:
-                    size_str = format_file_size(blob.size) if blob.size else "0 B"
-                    print(f"{i}. 📄 {blob.name} ({size_str})")
                 if blob.name == 'lakes_dw_V2d_2016-2025.nc':
                     print(f"This is the file to download {blob.name}: {blob.url}")
                     local_file_path = os.path.join(args.local_path, blob.name)
