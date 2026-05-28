@@ -1,19 +1,52 @@
 import geopandas as gpd
 import xarray as xr
 import pandas as pd
-
 from tqdm import tqdm
 from pathlib import Path
-
+from dotenv import load_dotenv
+from loguru import logger
+import sys
+import glob
+import os
+import download_new_dynamic_world_data
 from water_timeseries.downloader import EarthEngineDownloader
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
 from water_timeseries.dataset import DWDataset
 from water_timeseries.breakpoint import NRTBreakpoint
 
+if len(sys.argv) > 1:
+    env_path = sys.argv[1]
+    load_dotenv(dotenv_path=env_path)
+    logger.info(f"Loading environment from: {env_path}")
+else:
+    load_dotenv()
+    logger.info("Loading environment from default .env file")
+
+output_dir = os.environ['output_dir']
+project = os.environ['project']
+EE_PROJECT_ID = project
+os.environ["EE_PROJECT"] = EE_PROJECT_ID
+
+dynamic_world_dir = os.environ['dynamic_world_data']
+all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
+if not all_dynamic_world_files:
+    logger.error(f"No .nc files found in {dynamic_world_dir}")
+    sys.exit(1)
+
+most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+
+missing_dates = download_new_dynamic_world_data.check_missing_data_in_netcdf(most_recent_dynamic_world_file, )
+missing_analysis_dates = []
+for date in missing_dates:
+    missing_date_string = date.strftime("%Y-%m")
+    logger.debug(f"We are missing {missing_date_string}")
+    missing_analysis_dates.append(missing_date_string)
+vector_lake_file = os.environ['vector_lake_file']
+
 # lake vector path
-path_historical_dw = '<PATH_TO_HISTORICAL_TIME_SERIES>.nc'
+path_historical_dw = most_recent_dynamic_world_file
 # historical DW data path
-path_lake_vector= '<PATH_TO_PANARCTIC_LAKE_DATSET>.parquet'
+path_lake_vector= vector_lake_file
 
 ANALYSIS_DATE = "2026-05"
 
@@ -26,7 +59,7 @@ ds_raw = xr.open_dataset(path_historical_dw)
 bbox_size_lon = 1
 bbox_size_lat = 1
 grid = create_longitude_latitude_grid(lon_range=(-158, -155), lat_range=(63,66), bbox_size_lon=bbox_size_lon, bbox_size_lat=bbox_size_lat)
-grid
+print('created grid')
 
 bp = NRTBreakpoint()
 
