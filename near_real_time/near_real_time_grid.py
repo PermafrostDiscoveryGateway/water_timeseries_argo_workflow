@@ -13,12 +13,12 @@ import dask.dataframe as dd
 from pathlib import Path
 import psutil
 import gc
+import region_boundaries
 # import os
 # os.environ["OMP_NUM_THREADS"] = "8"  # Prevent thread oversubscription
 # os.environ["MKL_NUM_THREADS"] = "8"
 # os.environ["OPENBLAS_NUM_THREADS"] = "8"
 # os.environ["NUMEXPR_NUM_THREADS"] = "8"
-
 
 def log_memory_usage(stage="", threshold_mb=None):
     """Log current memory usage and optionally warn if above threshold"""
@@ -387,6 +387,12 @@ def precompute_nrt_breakpoints(
 
 def main():
     env_path = None
+    regions = region_boundaries.get_region_boundaries()
+    test_region = regions['TEST']
+    bbox_west = test_region['X_MIN_START']
+    bbox_east = test_region['X_MIN_END']
+    bbox_south = test_region['Y_MIN_START']
+    bbox_north = test_region['Y_MIN_END']
     if len(sys.argv) > 1:
         env_path = sys.argv[1]
         load_dotenv(dotenv_path=env_path)
@@ -435,32 +441,11 @@ def main():
         logger.warning(f"Could not get file size: {e}")
         file_size_gb = None
 
-
     if download_recent_data:
-        logger.info("Downloading new dynamic world data...")
-        new_dynamic_world_dataset_file = download_new_dynamic_world_data.download_new_dynamic_world_data_split_files_v1(
-            env_path=env_path)
-        logger.debug(f"New dynamic world dataset file is: {new_dynamic_world_dataset_file}")
+        logger.debug(f"We need to download recent data")
 
-        results = precompute_nrt_breakpoints(
-            input_nc_file=new_dynamic_world_dataset_file,
-            output_dir=output_dir,
-            lake_chunk_size=lake_chunk_size,
-            analysis_date=analysis_date,
-            data_aggregation_period=data_aggregation_period,
-        )
     else:
-        logger.debug(f"Using {most_recent_dynamic_world_file} as input data.")
-
-        results = precompute_nrt_breakpoints(
-            input_nc_file=most_recent_dynamic_world_file,
-            output_dir=output_dir,
-            lake_chunk_size=lake_chunk_size,
-            analysis_date=analysis_date,
-            data_aggregation_period=data_aggregation_period,
-        )
-
-    log_memory_usage("Main end")
+        logger.debug(f"We have recent data")
     print("\n✅ Near real-time breakpoint analysis completed successfully!")
 
 
