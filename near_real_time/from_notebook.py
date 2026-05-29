@@ -13,6 +13,10 @@ from water_timeseries.downloader import EarthEngineDownloader
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
 from water_timeseries.dataset import DWDataset
 from water_timeseries.breakpoint import NRTBreakpoint
+import datetime
+
+start = datetime.datetime.now()
+logger.debug(f"Current time: {datetime.datetime.now()}")
 
 if len(sys.argv) > 1:
     env_path = sys.argv[1]
@@ -28,7 +32,7 @@ EE_PROJECT_ID = project
 os.environ["EE_PROJECT"] = EE_PROJECT_ID
 
 dynamic_world_data_dir = os.environ['dynamic_world_data']
-dynamic_world_download_dir = Path(os.environ['dynamic_world_download_dir'])
+dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
 dynamic_world_download_dir.mkdir(exist_ok=True, parents=True)
 all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
 
@@ -144,7 +148,12 @@ for lon, lat in tqdm(grid[:]):
     breaks_merged = pd.concat(breaks_list)
 
     joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
-
-    joined.to_parquet(f'drain_{ANALYSIS_DATE}.parquet')
+    path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+    joined.to_parquet(path_to_joined_file)
     breaks_merged.sort_values('drainage_confidence', ascending=False)
+
+    end = datetime.datetime.now()
+    logger.debug(f"Finished processing {ANALYSIS_DATE} at time {end}")
+
+logger.debug(f"Finished fll script")
 
