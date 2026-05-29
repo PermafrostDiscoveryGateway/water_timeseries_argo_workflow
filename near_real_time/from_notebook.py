@@ -27,10 +27,13 @@ project = os.environ['project']
 EE_PROJECT_ID = project
 os.environ["EE_PROJECT"] = EE_PROJECT_ID
 
-dynamic_world_dir = os.environ['dynamic_world_data']
-all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
+dynamic_world_data_dir = os.environ['dynamic_world_data']
+dynamic_world_download_dir = Path(os.environ['dynamic_world_download_dir'])
+dynamic_world_download_dir.mkdir(exist_ok=True, parents=True)
+all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+
 if not all_dynamic_world_files:
-    logger.error(f"No .nc files found in {dynamic_world_dir}")
+    logger.error(f"No .nc files found in {dynamic_world_data_dir}")
     sys.exit(1)
 
 most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
@@ -63,10 +66,12 @@ print('created grid')
 
 bp = NRTBreakpoint()
 
-outdir = Path(f'download_{ANALYSIS_DATE}')
+output_dir = os.environ['output_dir']
+
+outdir = Path(os.path.join(output_dir, f'download_{ANALYSIS_DATE}'))
 outdir.mkdir(exist_ok=True, parents=True)
 # setup downloader
-downloader = EarthEngineDownloader(ee_project='YOUR_EE_PROJECT')
+downloader = EarthEngineDownloader(ee_project=EE_PROJECT_ID)
 
 breaks_list = []
 
