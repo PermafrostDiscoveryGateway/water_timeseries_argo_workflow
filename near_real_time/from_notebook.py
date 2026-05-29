@@ -66,10 +66,13 @@ print('created grid')
 
 bp = NRTBreakpoint()
 
-output_dir = os.environ['output_dir']
+# create directory for current data run
+current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
+current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
 
-outdir = Path(os.path.join(output_dir, f'download_{ANALYSIS_DATE}'))
-outdir.mkdir(exist_ok=True, parents=True)
+# create directory for partial dynamic world downloads
+current_download_dir = Path(str(dynamic_world_download_dir), f'download_{ANALYSIS_DATE}')
+current_download_dir.mkdir(exist_ok=True, parents=True)
 # setup downloader
 downloader = EarthEngineDownloader(ee_project=EE_PROJECT_ID)
 
@@ -86,8 +89,8 @@ for lon, lat in tqdm(grid[:]):
     print(f"Run processing for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
 
     # setup outfile_download and check if already processed
-    outfile_download = outdir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}.nc'
-    outfile_breaks = outdir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
+    outfile_download = current_download_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}.nc'
+    outfile_breaks = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
 
     # check if breakpoint file already exists
     if outfile_breaks.exists():
