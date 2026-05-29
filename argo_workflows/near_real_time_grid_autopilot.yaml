@@ -77,7 +77,7 @@ spec:
     inputs: {}
     outputs: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:10-for-chunk-progress-save-intermediate-results-allow-resume
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:19-download-and-process-over-grid-tiles
       imagePullPolicy: Always
       resources:
         requests:
@@ -221,9 +221,8 @@ spec:
           bucket_path=pdg-storage-default/water_timeseries_v2/data/input
           base_dir=/data/water_timeseries
           dynamic_world_dir=/data/water_timeseries/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
-          new_dynamic_world_data_dir=/data/water_timeseries/new_dynamic_world
-          split_new_dynamic_world_data_dir=/data/water_timeseries/split_new_dynamic_world
           output_dir=/data/water_timeseries/output
           EOF
           
