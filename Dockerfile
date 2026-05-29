@@ -1,13 +1,13 @@
 FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:main
 
 # Install additional Python dependencies using uv
-RUN uv pip install --system \
+RUN uv pip install \
     python-dotenv \
     google-cloud-storage \
     google-api-core \
     toml \
     dask[dataframe] \
-    pyarrow \
+    pyarrow
 
 
 # Copy your application code
