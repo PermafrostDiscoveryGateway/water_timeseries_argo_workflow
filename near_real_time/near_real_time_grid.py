@@ -96,9 +96,10 @@ def main():
     downloader = EarthEngineDownloader(ee_project=EE_PROJECT_ID)
 
     breaks_list = []
+    total = len(grid[:])
 
     # run loop
-    for lon, lat in tqdm(grid[:]):
+    for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
         # setup box
         bbox_west = int(lon)
         bbox_east = int(lon + bbox_size_lon)
