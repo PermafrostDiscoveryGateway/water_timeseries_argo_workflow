@@ -1,398 +1,28 @@
-from loguru import logger
-import os
-import glob
-import sys
-from dotenv import load_dotenv
-import datetime
-import download_new_dynamic_world_data
-from water_timeseries.breakpoint import NRTBreakpoint
-from water_timeseries.dataset import DWDataset
+import geopandas as gpd
 import xarray as xr
 import pandas as pd
-import dask.dataframe as dd
+from tqdm import tqdm
 from pathlib import Path
-import psutil
-import gc
-import region_boundaries
-# import os
-# os.environ["OMP_NUM_THREADS"] = "8"  # Prevent thread oversubscription
-# os.environ["MKL_NUM_THREADS"] = "8"
-# os.environ["OPENBLAS_NUM_THREADS"] = "8"
-# os.environ["NUMEXPR_NUM_THREADS"] = "8"
-
-def log_memory_usage(stage="", threshold_mb=None):
-    """Log current memory usage and optionally warn if above threshold"""
-    process = psutil.Process(os.getpid())
-    memory_mb = process.memory_info().rss / 1024 / 1024
-    memory_gb = memory_mb / 1024
-
-    log_msg = f"[MEMORY] {stage}: {memory_mb:.1f} MB ({memory_gb:.2f} GB)"
-    print(log_msg)
-
-    if threshold_mb and memory_mb > threshold_mb:
-        print(f"⚠️ MEMORY WARNING: Exceeded threshold of {threshold_mb:.0f} MB")
-
-    return memory_mb
-
-
-def robust_dataframe_comparison(df1, df2, name1="Old", name2="Parquet"):
-    """Robust comparison handling index and column ordering"""
-    print(f"\n{'=' * 70}")
-    print(f"ROBUST DATAFRAME COMPARISON: {name1} vs {name2}")
-    print(f"{'=' * 70}")
-
-    # 1. Compare shapes
-    print(f"\n1. Shape comparison:")
-    print(f"   {name1}: {df1.shape}")
-    print(f"   {name2}: {df2.shape}")
-    if df1.shape != df2.shape:
-        print(f"   ❌ Shapes differ!")
-        return False
-
-    # 2. Compare columns (ignoring order)
-    print(f"\n2. Column comparison:")
-    cols1 = set(df1.columns)
-    cols2 = set(df2.columns)
-    if cols1 == cols2:
-        print(f"   ✅ Column sets match")
-        if list(df1.columns) != list(df2.columns):
-            print(f"   ℹ️  Column order differs but content is the same")
-            # Reorder df2 to match df1's column order for comparison
-            df2 = df2[df1.columns]
-    else:
-        print(f"   ❌ Column sets differ")
-        print(f"   Only in {name1}: {cols1 - cols2}")
-        print(f"   Only in {name2}: {cols2 - cols1}")
-        return False
-
-    # 3. Handle index comparison properly
-    print(f"\n3. Index comparison:")
-    print(f"   {name1} index type: {type(df1.index)}")
-    print(f"   {name2} index type: {type(df2.index)}")
-
-    # Convert indexes to lists for comparison
-    idx1_list = list(df1.index)
-    idx2_list = list(df2.index)
-
-    if idx1_list == idx2_list:
-        print(f"   ✅ Indexes match exactly (same order)")
-        sort_needed = False
-    else:
-        print(f"   ⚠️ Indexes differ in order or content")
-        # Check if they have same values but different order
-        if set(idx1_list) == set(idx2_list):
-            print(f"   ℹ️  Index values are the same but in different order")
-            print(f"   Will sort both DataFrames by index for comparison")
-            sort_needed = True
-        else:
-            print(f"   ❌ Index values differ")
-            print(f"   Only in {name1}: {set(idx1_list) - set(idx2_list)}")
-            print(f"   Only in {name2}: {set(idx2_list) - set(idx1_list)}")
-            return False
-
-    # 4. Sort if needed and compare values
-    print(f"\n4. Value comparison:")
-    df1_comp = df1.sort_index() if sort_needed else df1
-    df2_comp = df2.sort_index() if sort_needed else df2
-
-    # Check if indexes now match after sorting
-    if not df1_comp.index.equals(df2_comp.index):
-        print(f"   ❌ Indexes still don't match after sorting")
-        return False
-
-    # Compare each column with tolerance for floats
-    all_match = True
-    tolerance = 1e-6
-
-    for col in df1_comp.columns:
-        col1 = df1_comp[col]
-        col2 = df2_comp[col]
-
-        # Check dtype
-        if col1.dtype != col2.dtype:
-            print(f"   ⚠️ Column '{col}' dtype mismatch: {col1.dtype} vs {col2.dtype}")
-
-        # Compare values
-        if col1.dtype == 'datetime64[ns]':
-            match = col1.equals(col2)
-        elif col1.dtype in ['float64', 'float32']:
-            # Use tolerance for floats
-            diff = abs(col1 - col2)
-            max_diff = diff.max()
-            match = max_diff < tolerance if not pd.isna(max_diff) else col1.isna().all() and col2.isna().all()
-            if not match and max_diff >= tolerance:
-                print(f"   ❌ Column '{col}' differs (max diff: {max_diff:.2e})")
-                # Show sample differences
-                diff_mask = diff > tolerance
-                if diff_mask.any():
-                    sample_indices = diff_mask[diff_mask].index[:3]
-                    for idx in sample_indices:
-                        print(f"      {idx}: {name1}={col1.loc[idx]:.6f}, {name2}={col2.loc[idx]:.6f}")
-        else:
-            match = col1.equals(col2)
-
-        if not match:
-            all_match = False
-            if 'max_diff' not in locals() or max_diff >= tolerance:
-                print(f"   ❌ Column '{col}' values differ")
-
-    # 5. Memory analysis
-    print(f"\n5. Memory analysis:")
-    mem1 = df1.memory_usage(deep=True)
-    mem2 = df2.memory_usage(deep=True)
-
-    print(f"   Total memory:")
-    print(f"     {name1}: {mem1.sum() / 1024 ** 2:.2f} MB")
-    print(f"     {name2}: {mem2.sum() / 1024 ** 2:.2f} MB")
-
-    # Check index memory specifically
-    idx_mem1 = df1.index.memory_usage(deep=True)
-    idx_mem2 = df2.index.memory_usage(deep=True)
-    print(f"\n   Index memory:")
-    print(f"     {name1}: {idx_mem1 / 1024 ** 2:.3f} MB")
-    print(f"     {name2}: {idx_mem2 / 1024 ** 2:.3f} MB")
-
-    # 6. Final verdict
-    print(f"\n{'=' * 70}")
-    if all_match:
-        print(f"✅ VERDICT: DataFrames are IDENTICAL in content")
-        print(f"   Memory difference of {abs(mem1.sum() - mem2.sum()) / 1024 ** 2:.2f} MB is due to:")
-        if idx_mem1 != idx_mem2:
-            print(f"     - Index memory optimization (saved {abs(idx_mem1 - idx_mem2) / 1024 ** 2:.3f} MB)")
-        print(f"     - Internal pandas vs pyarrow storage optimizations")
-        print(f"   ✅ This is NORMAL and EXPECTED - parquet method is more memory efficient")
-        return True
-    else:
-        print(f"❌ VERDICT: DataFrames have DIFFERENT content")
-        print(f"   Investigate the differences shown above")
-        return False
-
-
-def precompute_nrt_breakpoints(
-        input_nc_file: str | Path,
-        output_dir: str | Path,
-        lake_chunk_size: int = 500,
-        analysis_date: str | pd.Timestamp | None = None,
-        data_aggregation_period: str = "monthly"
-) -> pd.DataFrame:
-    log_memory_usage("Start of function", threshold_mb=25000)  # Warn at 25GB
-
-    input_nc_file = Path(input_nc_file)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # FIRST: Get lake IDs without loading full dataset
-    print("Reading lake IDs from file...")
-    with xr.open_dataset(input_nc_file, engine='netcdf4') as ds_meta:
-        all_lake_ids = ds_meta.id_geohash.values
-        total_lakes = len(all_lake_ids)
-        print(f"Total lakes: {total_lakes}")
-
-        log_memory_usage("After reading lake IDs")
-
-        # Convert analysis_date to datetime if needed
-        if analysis_date is None:
-            dates = ds_meta.date.values
-            analysis_date = pd.to_datetime(dates[-3])
-            print(f"Using most recent date: {analysis_date}")
-        else:
-            # Convert string to datetime if necessary
-            if isinstance(analysis_date, str):
-                analysis_date = pd.to_datetime(analysis_date)
-                print(f"Using specified analysis date: {analysis_date}")
-
-            # Verify the date exists in the dataset
-            if analysis_date not in ds_meta.date.values:
-                print(f"Warning: {analysis_date} not in dataset dates")
-                dates = ds_meta.date.values
-                print(f"Available date range: {dates[0]} to {dates[-1]}")
-                # Use the most recent date instead
-                analysis_date = pd.to_datetime(dates[-1])
-                print(f"Using most recent date instead: {analysis_date}")
-
-    analysis_date_string = str(analysis_date)
-    analysis_date_string = analysis_date_string.split(" ")[0].replace('-', '_')
-    chunk_output_subdir_name = f"chunk_output_{analysis_date_string}"
-    chunk_output_dir = os.path.join(output_dir, chunk_output_subdir_name)
-    chunk_output_dir = Path(chunk_output_dir)
-    chunk_output_dir.mkdir(parents=True, exist_ok=True)
-
-    results = []  # Keep this for comparison - COMMENTED OUT TO SAVE MEMORY
-    # Commenting out results list to save memory since we're not using old method
-    # results = []
-
-    # Process each chunk
-    total_chunks = (total_lakes + lake_chunk_size - 1) // lake_chunk_size
-
-    for chunk_idx, i in enumerate(range(0, total_lakes, lake_chunk_size)):
-        chunk_num = chunk_idx + 1
-        chunk_ids = all_lake_ids[i:i + lake_chunk_size]
-        print(f"\nProcessing chunk {chunk_num}/{total_chunks}")
-
-        log_memory_usage(f"Before chunk {chunk_num} loading", threshold_mb=28000)
-
-        # Force garbage collection before loading new chunk
-        gc.collect()
-
-        # Load chunk with smaller chunk size for memory efficiency
-        load_chunk_size = lake_chunk_size  # Don't load more than 100 lakes at once
-        ds = xr.open_dataset(
-            input_nc_file,
-            engine='netcdf4',
-            chunks={'id_geohash': load_chunk_size, 'date': -1}
-        )
-        ds_chunk = ds.sel(id_geohash=chunk_ids).load()
-        ds.close()
-
-        log_memory_usage(f"After loading chunk {chunk_num}")
-
-        # Verify the chunk has data for analysis_date
-        if analysis_date not in ds_chunk.date.values:
-            print(f"  Warning: analysis_date {analysis_date} not in this chunk's dates")
-            print(f"  Chunk date range: {ds_chunk.date.values[0]} to {ds_chunk.date.values[-1]}")
-            # Use the most recent date from this chunk
-            chunk_analysis_date = pd.to_datetime(ds_chunk.date.values[-1])
-            print(f"  Using chunk's most recent date: {chunk_analysis_date}")
-        else:
-            chunk_analysis_date = analysis_date
-
-        if 'date' in ds_chunk.coords:
-            # Convert to pandas datetime if needed
-            dates = pd.to_datetime(ds_chunk.date.values)
-            # Reassign the date coordinate with proper datetime
-            ds_chunk = ds_chunk.assign_coords(date=dates)
-            print(f"  Fixed date coordinate for chunk {chunk_num}")
-
-        # Check if chunk has valid lakes for this date
-        ds_analysis_test = ds_chunk.sel(date=chunk_analysis_date)
-        valid_lakes = ds_analysis_test.dropna(dim="id_geohash", how="all").id_geohash.values
-
-        if len(valid_lakes) == 0:
-            print(f"  No valid lakes for date {chunk_analysis_date}, skipping chunk")
-            ds_chunk.close()
-            del ds_chunk
-            gc.collect()
-            continue
-
-        print(f"  Found {len(valid_lakes)} valid lakes for date {chunk_analysis_date}")
-
-        # Create dataset wrapper for just this chunk
-        dw_dataset_chunk = DWDataset(ds_chunk)
-
-        # Initialize NRT breakpoint detector
-        nrt_breakpoint = NRTBreakpoint(kwargs_break={})
-
-        # Calculate breakpoints for this chunk
-        chunk_output_file = chunk_output_dir / f"nrt_results_chunk_{chunk_num}_{total_chunks}.parquet"
-        chunk_output_file_exists = os.path.exists(chunk_output_file)
-        logger.debug(f"  Chunk output file {chunk_output_file} exists: {chunk_output_file_exists}")
-
-        if not chunk_output_file_exists:
-            try:
-                log_memory_usage(f"Before calculate_break for chunk {chunk_num}")
-
-                chunk_result = nrt_breakpoint.calculate_break(
-                    dataset=dw_dataset_chunk,
-                    analysis_date=chunk_analysis_date,
-                    data_aggregation_period=data_aggregation_period,
-                    object_id=chunk_ids,
-                )
-
-                log_memory_usage(f"After calculate_break for chunk {chunk_num}")
-
-                if chunk_result is not None and len(chunk_result) > 0:
-                    # Save chunk results
-                    chunk_result.to_parquet(chunk_output_file, index=True)
-                    print(f"  Saved chunk results to {chunk_output_file} ({len(chunk_result)} rows)")
-
-                    # Optional: Keep for comparison (commented out to save memory)
-                    # results.append(chunk_result)
-
-                    # Clear chunk_result immediately
-                    del chunk_result
-                else:
-                    print(f"  No results generated for chunk")
-
-            except ValueError as e:
-                if "n_jobs == 0" in str(e):
-                    print(f"  No valid lakes for analysis in this chunk")
-                else:
-                    print(f"  Error processing chunk: {e}")
-                continue
-            except MemoryError as e:
-                print(f"  MEMORY ERROR in chunk {chunk_num}: {e}")
-                print(f"  Consider reducing lake_chunk_size further")
-                raise
-
-        # Aggressive memory cleanup
-        ds_chunk.close()
-        del ds_chunk
-        del dw_dataset_chunk
-        if 'ds_analysis_test' in locals():
-            del ds_analysis_test
-        if 'nrt_breakpoint' in locals():
-            del nrt_breakpoint
-
-        # Force garbage collection
-        gc.collect()
-
-        log_memory_usage(f"After cleanup for chunk {chunk_num}", threshold_mb=28000)
-
-    # Combine results from parquet files using Dask (memory-efficient)
-    final_output_file_name_from_parquet = "nrt_breakpoints_all_lakes_from_parquet_" + analysis_date_string + ".parquet"
-    final_output_file_from_parquet = output_dir / final_output_file_name_from_parquet
-
-    parquet_files = sorted(chunk_output_dir.glob("nrt_results_chunk_*.parquet"))
-
-    if parquet_files:
-        print(f"\n📂 Found {len(parquet_files)} chunk parquet files to combine")
-        log_memory_usage("Before Dask read")
-
-        # Use Dask to read all parquet files lazily
-        print("  Using Dask for out-of-core processing...")
-        ddf = dd.read_parquet(
-            str(chunk_output_dir / "nrt_results_chunk_*.parquet"),
-            engine='pyarrow'
-        )
-
-        print(f"  Dask DataFrame partitions: {ddf.npartitions}")
-        print(f"  Dask DataFrame columns: {list(ddf.columns)}")
-
-        # Compute the result
-        print("  Computing combined DataFrame (this may take a moment)...")
-        final_results_from_parquet = ddf.compute()
-
-        log_memory_usage("After Dask compute")
-
-        # Save combined results
-        final_results_from_parquet.to_parquet(final_output_file_from_parquet, index=True)
-        print(f"\n✅ Combined results from parquet files saved to {final_output_file_from_parquet}")
-        print(f"   Total rows: {len(final_results_from_parquet):,}")
-        print(f"   Memory usage: {final_results_from_parquet.memory_usage(deep=True).sum() / 1024 ** 2:.2f} MB")
-
-    else:
-        print("⚠ No parquet files found to combine")
-        final_results_from_parquet = pd.DataFrame()
-
-    # OLD METHOD IS DISABLED TO SAVE MEMORY
-    # We're not keeping results in memory anymore, so just return the parquet results
-    print("\n✅ Using Dask/parquet method (memory-optimized)")
-
-    # Final cleanup
-    gc.collect()
-    log_memory_usage("End of function")
-
-    return final_results_from_parquet
+from dotenv import load_dotenv
+from loguru import logger
+import sys
+import glob
+import os
+import download_new_dynamic_world_data
+from water_timeseries.downloader import EarthEngineDownloader
+from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
+from water_timeseries.dataset import DWDataset
+from water_timeseries.breakpoint import NRTBreakpoint
+import datetime
+from region_boundaries import get_region_boundaries
 
 
 def main():
-    env_path = None
-    regions = region_boundaries.get_region_boundaries()
-    test_region = regions['TEST']
-    bbox_west = test_region['X_MIN_START']
-    bbox_east = test_region['X_MIN_END']
-    bbox_south = test_region['Y_MIN_START']
-    bbox_north = test_region['Y_MIN_END']
+    region_boundaries = get_region_boundaries()
+
+    start = datetime.datetime.now()
+    logger.debug(f"Current time: {datetime.datetime.now()}")
+
     if len(sys.argv) > 1:
         env_path = sys.argv[1]
         load_dotenv(dotenv_path=env_path)
@@ -405,49 +35,239 @@ def main():
     project = os.environ['project']
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
-    dynamic_world_dir = os.environ['dynamic_world_dir']
-    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_dir, "*.nc"))
+    current_region = os.getenv('CURRENT_REGION', 'TEST')
+
+    dynamic_world_data_dir = os.environ['dynamic_world_data']
+    dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
+    dynamic_world_download_dir.mkdir(exist_ok=True, parents=True)
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
 
     if not all_dynamic_world_files:
-        logger.error(f"No .nc files found in {dynamic_world_dir}")
+        logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         sys.exit(1)
 
-    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
-    dynamic_world_data_file = os.environ['dynamic_world_data_file']
-    download_recent_data = os.environ.get('download_recent_data', 'false').lower() == 'true'
-    vector_lake_file = os.environ['vector_lake_file']
-    new_dynamic_world_data_dir = os.environ['new_dynamic_world_data_dir']
+    bounding_box_coords = region_boundaries['TEST']
 
+    X_MIN_START = bounding_box_coords['X_MIN_START']
+    X_MIN_END = bounding_box_coords['X_MIN_END']
+    Y_MIN_START = bounding_box_coords['Y_MIN_START']
+    Y_MIN_END = bounding_box_coords['Y_MIN_END']
+
+    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
 
     missing_dates = download_new_dynamic_world_data.check_missing_data_in_netcdf(most_recent_dynamic_world_file, )
-    if missing_dates and len(missing_dates) > 0:
-        logger.debug(f"We are missing dates, the download has not completed yet")
-    analysis_date = os.environ.get('analysis_date', None)
-    data_aggregation_period = os.environ.get('data_aggregation_period', 'monthly')
-    lake_chunk_size = int(os.environ.get('lake_chunk_size', '200'))  # Reduced default from 500 to 200
-    print(f"🔧 LAKE_CHUNK_SIZE from environment: {lake_chunk_size}")
-    print(f"🔧 All relevant env vars:")
-    for var in ['lake_chunk_size', 'data_aggregation_period', 'analysis_date']:
-        print(f"   {var} = {os.environ.get(var, 'NOT SET')}")
-    print(f"Using lake chunk size: {lake_chunk_size}")
-    log_memory_usage("Main start")
+    missing_analysis_dates = []
+    for date in missing_dates:
+        missing_date_string = date.strftime("%Y-%m")
+        logger.debug(f"We are missing {missing_date_string}")
+        missing_analysis_dates.append(missing_date_string)
+    vector_lake_file = os.environ['vector_lake_file']
 
-    # Safely get file size without causing memory issues
-    try:
-        file_size_bytes = os.path.getsize(most_recent_dynamic_world_file)
-        file_size_gb = file_size_bytes / (1024 ** 3)
-        logger.info(f"Input file size: {file_size_gb:.2f} GB")
-    except (OSError, IOError) as e:
-        logger.warning(f"Could not get file size: {e}")
-        file_size_gb = None
+    # lake vector path
+    path_historical_dw = most_recent_dynamic_world_file
+    # historical DW data path
+    path_lake_vector = vector_lake_file
 
-    if download_recent_data:
-        logger.debug(f"We need to download recent data")
+    ANALYSIS_DATE = "2026-05"
 
+    # read lake vectors
+    gdf = gpd.read_parquet(path_lake_vector)
+
+    # read historical DW data
+    ds_raw = xr.open_dataset(path_historical_dw)
+
+    bbox_size_lon = 1
+    bbox_size_lat = 1
+    grid = create_longitude_latitude_grid(lon_range=(X_MIN_START, X_MIN_END), lat_range=(Y_MIN_START, Y_MIN_END),
+                                          bbox_size_lon=bbox_size_lon, bbox_size_lat=bbox_size_lat)
+    print('created grid')
+
+    bp = NRTBreakpoint()
+
+    # create directory for current data run
+    current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
+    current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
+
+    # create directory for partial dynamic world downloads
+    current_download_dir = Path(str(dynamic_world_download_dir), f'download_{ANALYSIS_DATE}')
+    current_download_dir.mkdir(exist_ok=True, parents=True)
+
+    # setup downloader
+    downloader = EarthEngineDownloader(ee_project=EE_PROJECT_ID)
+
+    breaks_list = []
+
+    # run loop
+    for lon, lat in tqdm(grid[:]):
+        # setup box
+        bbox_west = int(lon)
+        bbox_east = int(lon + bbox_size_lon)
+        bbox_south = int(lat)
+        bbox_north = int(lat + bbox_size_lat)
+
+        print(f"Run processing for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
+
+        # setup outfile_download and check if already processed
+        outfile_download = current_download_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}.nc'
+        outfile_breaks = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
+
+        # check if breakpoint file already exists
+        if outfile_breaks.exists():
+            print(f'Breakpoints have been already calculated!: Skip processing for  {bbox_west} {bbox_south} \n')
+            print('Data is loaded and appended \n')
+            breaks_list.append(pd.read_parquet(outfile_breaks))
+            continue
+
+        # subset lakes to grid cell
+        gdf_subset = filter_gdf_by_bbox(gdf=gdf, bbox_west=lon, bbox_east=lon + bbox_size_lon, bbox_south=lat,
+                                        bbox_north=lat + bbox_size_lat)
+        n_lakes = len(gdf_subset)
+        print('Number of lakes: ', n_lakes)
+
+        # extract lake ids
+        id_list = gdf_subset['id_geohash'].values.tolist()
+        if n_lakes == 0:
+            print(f'No lakes available for grid {bbox_west} {bbox_south}. Skipping this grid cell! \n')
+            continue
+
+        # download
+        if not outfile_download.exists():
+            # start download for specified date, run up to 2 parallel runs, max_total_requests can be tuned, setting too high might crash the download (rejection by GEE)
+            try:
+                ds_dl = downloader.download_dw_monthly(gdf=gdf_subset, max_total_requests=2000, n_parallel=2,
+                                                       date_list=[ANALYSIS_DATE], save_to_file=outfile_download)
+            except ValueError as e:
+                expected_msg = "No data was extracted from any chunk. Check GEE request parameters."
+                if str(e) == expected_msg:
+                    print(f"Expected error caught: {e}")
+                    continue
+                else:
+                    raise
+        else:
+            print(f'Outfile already exists: Skipping download for {bbox_west} {bbox_south} \n')
+
+        # subset historical data to grid cell
+        ds_historical_subset = ds_raw.sel(id_geohash=id_list)
+
+        # merge historical and recent and convert to DWDataset object (required to run breakpoint)
+        ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
+        dwds = DWDataset(ds_merged)
+
+        # run breakpoint analysis
+        breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
+        breaks.to_parquet(outfile_breaks)
+
+        # add to merge list
+        breaks_list.append(breaks)
+
+        breaks_merged = pd.concat(breaks_list)
+
+        joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+        path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+        joined.to_parquet(path_to_joined_file)
+        breaks_merged.sort_values('drainage_confidence', ascending=False)
+
+    end = datetime.datetime.now()
+    logger.debug(f"Finished processing {ANALYSIS_DATE} at time {end}")
+    total_time = end - start
+    logger.debug(f"Finished in {total_time}")
+
+    logger.info(f"Combining historical and new DW data into a single netcdf file for {ANALYSIS_DATE}")
+
+    # Memory-efficient approach: Process files one by one and write incrementally
+    # First, get all downloaded files
+    downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{ANALYSIS_DATE}_*.nc')))
+    output_netcdf = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.nc'
+
+    if downloaded_files:
+        # Open historical file once to get structure and initial data
+        ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
+
+        # Create a list of all datasets to merge (historical + all downloads)
+        # Using xr.open_mfdataset with concat_dim to handle combining efficiently
+        # But since we need to be careful with memory, we'll process in chunks
+
+        # Open all downloaded files as a single dataset using multi-file dataset
+        # This doesn't load data into memory until needed
+        ds_downloads = xr.open_mfdataset(downloaded_files, combine='by_coords')
+
+        # Merge historical with downloads
+        # xr.merge creates a new dataset but doesn't load data into memory
+        ds_combined = xr.merge([ds_historical, ds_downloads], join='outer')
+
+        # Write to netcdf with compression to save space
+        # Use encoding to compress data and reduce file size
+        encoding = {var: {'zlib': True, 'complevel': 5} for var in ds_combined.data_vars}
+
+        # Write to temporary file first to avoid partial writes
+        temp_output = output_netcdf.with_suffix('.tmp.nc')
+        ds_combined.to_netcdf(temp_output, encoding=encoding, mode='w')
+
+        # Close all open datasets to free memory
+        ds_historical.close()
+        ds_downloads.close()
+        ds_combined.close()
+
+        # Replace with final file
+        temp_output.rename(output_netcdf)
+
+        logger.info(f"Successfully created combined netcdf: {output_netcdf}")
+        logger.info(f"File size: {output_netcdf.stat().st_size / (1024 ** 3):.2f} GB")
     else:
-        logger.debug(f"We have recent data")
-    print("\n✅ Near real-time breakpoint analysis completed successfully!")
+        logger.warning(f"No downloaded files found in {current_download_dir}")
+
+    # Clean up memory
+    del ds_historical, ds_downloads, ds_combined
+
+    logger.info("Combining breakpoint parquet files")
+
+    # Get all breakpoint parquet files
+    break_files = sorted(glob.glob(str(current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_*_breaks.parquet')))
+
+    if break_files:
+        # Memory-efficient approach: Read and combine parquet files in chunks
+        # For parquet, we can use pandas with chunking or dask for very large datasets
+
+        # Option 1: If the combined file might be large but fits in memory
+        # Read all files and concatenate
+        dfs = []
+        total_rows = 0
+
+        for file in tqdm(break_files, desc="Reading breakpoint files"):
+            df = pd.read_parquet(file)
+            dfs.append(df)
+            total_rows += len(df)
+
+            # Optional: Log progress
+            logger.debug(f"Read {file} with {len(df)} rows. Total rows so far: {total_rows}")
+
+        # Concatenate all dataframes
+        if dfs:
+            breaks_combined = pd.concat(dfs, ignore_index=True)
+
+            # Optional: Sort by drainage confidence as in your original code
+            breaks_combined = breaks_combined.sort_values('drainage_confidence', ascending=False)
+
+            # Create output filename with bounding box coordinates
+            output_parquet = Path(
+                output_dir) / f'DW_{ANALYSIS_DATE}_{X_MIN_START}_{X_MIN_END}_{Y_MIN_START}_{Y_MIN_END}.parquet'
+
+            # Save combined parquet file
+            breaks_combined.to_parquet(output_parquet, index=False)
+
+            logger.info(f"Successfully created combined parquet: {output_parquet}")
+            logger.info(f"Total rows: {len(breaks_combined)}")
+            logger.info(f"File size: {output_parquet.stat().st_size / (1024 ** 2):.2f} MB")
+
+            # Clean up
+            del dfs, breaks_combined
+        else:
+            logger.warning("No data found in breakpoint files")
+    else:
+        logger.warning(f"No breakpoint files found in {current_breakpoint_dir}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
+
+
