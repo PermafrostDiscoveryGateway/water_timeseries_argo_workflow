@@ -101,6 +101,7 @@ def main():
     # run loop
     for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
         # setup box
+        logger.debug(f"Processing {i}/{total} grid tiles.")
         bbox_west = int(lon)
         bbox_east = int(lon + bbox_size_lon)
         bbox_south = int(lat)
