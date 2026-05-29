@@ -178,6 +178,16 @@ spec:
           echo "Pip list (filtered):"
           pip list | grep -E "dask|pyarrow|dotenv" || echo "Packages not in pip list"
           
+          echo "=== CHECKING ACTUAL GEEMAP VERSION IN ARGO ==="
+          python -c "
+          import geemap
+          print(f'geemap version: {geemap.__version__}')
+          print(f'geemap location: {geemap.__file__}')
+          print(f'Has ee_initialize: {hasattr(geemap, \"ee_initialize\")}')
+          print(f'Has initialize: {hasattr(geemap, \"initialize\")}')
+          print(f'All geemap attributes starting with e: {[a for a in dir(geemap) if a.startswith(\"e\")][:10]}')
+          " 2>&1
+          
           # Create directories on PVC
           echo "=== CREATING DIRECTORIES ==="
           mkdir -p /data/water_timeseries/{dynamic_world_data,split_lakes,input,new_dynamic_world,split_new_dynamic_world,output,checkpoint,temp_netcdf,subsets,breakpoints}
