@@ -8,13 +8,13 @@ from loguru import logger
 import sys
 import glob
 import os
-import download_new_dynamic_world_data
 from water_timeseries.downloader import EarthEngineDownloader
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
 from water_timeseries.dataset import DWDataset
 from water_timeseries.breakpoint import NRTBreakpoint
 import datetime
 from region_boundaries import get_region_boundaries
+import download_new_dynamic_world_data
 
 
 def main():
