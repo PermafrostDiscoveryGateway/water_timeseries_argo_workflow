@@ -169,6 +169,46 @@ spec:
           
           # Verify geemap installation
           echo "=== VERIFYING GEEMAP INSTALLATION ==="
+          python << 'EOF'
+          import sys
+          try:
+              import geemap
+              version = getattr(geemap, '__version__', 'unknown')
+              has_ee_init = hasattr(geemap, 'ee_initialize')
+              has_initialize = hasattr(geemap, 'initialize')
+              
+              print("=" * 50)
+              print("GEEMAP VERIFICATION")
+              print("=" * 50)
+              print("geemap version: {}".format(version))
+              print("geemap location: {}".format(geemap.__file__))
+              print("Has ee_initialize: {}".format(has_ee_init))
+              print("Has initialize: {}".format(has_initialize))
+              
+              if has_ee_init:
+                  print("SUCCESS: geemap.ee_initialize is available")
+              else:
+                  print("WARNING: geemap.ee_initialize is missing")
+                  # Try to see what functions are available
+                  attrs = [attr for attr in dir(geemap) if not attr.startswith('_')][:20]
+                  print("Available geemap attributes: {}".format(attrs))
+                  sys.exit(1)
+                  
+          except ImportError as e:
+              print("ERROR: Failed to import geemap: {}".format(e))
+              sys.exit(1)
+          except Exception as e:
+              print("ERROR: Unexpected error: {}".format(e))
+              sys.exit(1)
+          
+          EOF
+          GEEMAP_CHECK=$?
+          if [ $GEEMAP_CHECK -ne 0 ]; then
+            echo "ERROR: Geemap verification failed!"
+            exit 1
+          fi
+          echo "=== GEEMAP INSTALLATION SUCCESSFUL ==="
+
           
           # Try to import with different Python paths
           echo "Testing import with default PYTHONPATH:"
