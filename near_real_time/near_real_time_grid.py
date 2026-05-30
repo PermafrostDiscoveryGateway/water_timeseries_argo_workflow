@@ -36,16 +36,16 @@ def main():
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
 
-    import geemap
-    import ee
-
-    # Try different initialization methods based on geemap version
-    if hasattr(geemap, 'ee_initialize'):
-        geemap.ee_initialize(project=EE_PROJECT_ID)
-    elif hasattr(geemap, 'initialize'):
-        geemap.initialize(project=EE_PROJECT_ID)
-    else:
-        ee.Initialize(project=EE_PROJECT_ID)
+    # import geemap
+    # import ee
+    #
+    # # Try different initialization methods based on geemap version
+    # if hasattr(geemap, 'ee_initialize'):
+    #     geemap.ee_initialize(project=EE_PROJECT_ID)
+    # elif hasattr(geemap, 'initialize'):
+    #     geemap.initialize(project=EE_PROJECT_ID)
+    # else:
+    #     ee.Initialize(project=EE_PROJECT_ID)
 
     current_region = os.getenv('CURRENT_REGION', 'TEST')
 

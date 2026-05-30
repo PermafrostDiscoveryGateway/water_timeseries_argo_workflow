@@ -161,6 +161,15 @@ spec:
           echo "Pip show pyarrow:"
           pip show pyarrow || echo "Not found via pip show"
           
+          # install geemap version 0.37.2 here
+           # Install geemap version 0.37.2
+          echo "=== INSTALLING GEEMAP 0.37.2 ==="
+          echo "Installing geemap version 0.37.2..."
+          pip install --no-cache-dir geemap==0.37.2
+          
+          # Verify geemap installation
+          echo "=== VERIFYING GEEMAP INSTALLATION ==="
+          
           # Try to import with different Python paths
           echo "Testing import with default PYTHONPATH:"
           python -c "import dotenv, dask, pyarrow" 2>&1 || echo "Import failed"
@@ -178,15 +187,7 @@ spec:
           echo "Pip list (filtered):"
           pip list | grep -E "dask|pyarrow|dotenv" || echo "Packages not in pip list"
           
-          echo "=== CHECKING ACTUAL GEEMAP VERSION IN ARGO ==="
-          python -c "
-          import geemap
-          print(f'geemap version: {geemap.__version__}')
-          print(f'geemap location: {geemap.__file__}')
-          print(f'Has ee_initialize: {hasattr(geemap, \"ee_initialize\")}')
-          print(f'Has initialize: {hasattr(geemap, \"initialize\")}')
-          print(f'All geemap attributes starting with e: {[a for a in dir(geemap) if a.startswith(\"e\")][:10]}')
-          " 2>&1
+          
           
           # Create directories on PVC
           echo "=== CREATING DIRECTORIES ==="
