@@ -103,6 +103,19 @@ def main():
     # create directory for partial dynamic world downloads
     current_download_dir = Path(str(dynamic_world_download_dir), f'download_{ANALYSIS_DATE}')
     current_download_dir.mkdir(exist_ok=True, parents=True)
+    import geemap
+    import ee
+    if not hasattr(geemap, 'ee_initialize'):
+        logger.warning("geemap.ee_initialize missing, adding runtime patch")
+
+        def ee_initialize(project=None, **kwargs):
+            if project:
+                ee.Initialize(project=project, **kwargs)
+            else:
+                ee.Initialize(**kwargs)
+
+        geemap.ee_initialize = ee_initialize
+        logger.info("Runtime patch applied to geemap")
 
     # setup downloader
     downloader = EarthEngineDownloader(ee_project=EE_PROJECT_ID)
