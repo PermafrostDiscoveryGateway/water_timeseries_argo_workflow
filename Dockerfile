@@ -1,4 +1,4 @@
-FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:main
+FROM ghcr.io/tcnichol/water-timeseries-v2:main
 
 # Install additional Python dependencies using uv
 RUN uv pip install \

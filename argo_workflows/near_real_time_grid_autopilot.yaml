@@ -199,11 +199,9 @@ spec:
                   # Try to see what functions are available
                   attrs = [attr for attr in dir(geemap) if not attr.startswith('_')][:20]
                   print("Available geemap attributes: {}".format(attrs))
-                  sys.exit(1)
                   
           except ImportError as e:
               print("ERROR: Failed to import geemap: {}".format(e))
-              sys.exit(1)
           except Exception as e:
               print("ERROR: Unexpected error: {}".format(e))
           
@@ -259,6 +257,42 @@ spec:
           # Set number of threads for Dask (use available cores)
           export DASK_NUM_THREADS=$(nproc)
           echo "Setting DASK_NUM_THREADS=$DASK_NUM_THREADS"
+          
+          echo "=== EARTH ENGINE CREDENTIALS DEBUG ==="
+          echo "EARTHENGINE_TOKEN path: ${EARTHENGINE_TOKEN}"
+          ls -la /root/.config/earthengine/
+          echo "File permissions:"
+          stat /root/.config/earthengine/credentials
+          echo "File size:"
+          wc -c /root/.config/earthengine/credentials
+          echo "First 50 chars of file:"
+          head -c 50 /root/.config/earthengine/credentials
+          echo ""
+          echo "Full file content (first 200 chars):"
+          cat /root/.config/earthengine/credentials | head -c 200
+          echo ""
+          
+          # Test JSON parsing
+          echo "Testing JSON parsing:"
+          python << 'EOF'
+          import json
+          import os
+          
+          cred_path = '/root/.config/earthengine/credentials'
+          print(f"Reading from: {cred_path}")
+          print(f"File exists: {os.path.exists(cred_path)}")
+          print(f"File size: {os.path.getsize(cred_path)} bytes")
+          
+          try:
+              with open(cred_path, 'r') as f:
+                  content = f.read()
+                  print(f"Content length: {len(content)} chars")
+                  print(f"First 100 chars: {content[:100]}")
+                  data = json.loads(content)
+                  print(f"✓ JSON valid! Keys: {list(data.keys())}")
+          except Exception as e:
+              print(f"✗ JSON error: {e}")
+          EOF
           
           # Check PVC space
           echo "=== PVC STORAGE ==="
