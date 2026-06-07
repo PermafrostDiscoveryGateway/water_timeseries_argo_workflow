@@ -169,7 +169,7 @@ spec:
           pip uninstall -y geemap eemont 2>/dev/null || true
           
           # Install exact version with no dependencies upgrade
-          pip install --no-cache-dir --no-deps geemap==0.37.2
+          pip install --no-cache-dir geemap>=0.40.0
           
           # Install its dependencies separately to avoid version conflicts
           pip install --no-cache-dir earthengine-api>=1.6.12 ipyleaflet folium bqplot ipywidgets
