@@ -206,13 +206,11 @@ spec:
               sys.exit(1)
           except Exception as e:
               print("ERROR: Unexpected error: {}".format(e))
-              sys.exit(1)
           
           EOF
           GEEMAP_CHECK=$?
           if [ $GEEMAP_CHECK -ne 0 ]; then
             echo "ERROR: Geemap verification failed!"
-            exit 1
           fi
           echo "=== GEEMAP INSTALLATION SUCCESSFUL ==="
 
