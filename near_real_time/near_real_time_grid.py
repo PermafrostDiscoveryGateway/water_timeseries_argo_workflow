@@ -11,6 +11,7 @@ import geemap
 import ee
 import glob
 import os
+import gc
 from water_timeseries.downloader import EarthEngineDownloader
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
 from water_timeseries.dataset import DWDataset
@@ -217,60 +218,109 @@ def main():
     output_netcdf = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.nc'
 
     if downloaded_files:
-        # FAST APPROACH: Just concatenate everything without coordinate alignment
-        logger.info("Fast concatenating NetCDF files (order doesn't matter)...")
+        logger.info(f"Found {len(downloaded_files)} NetCDF files to combine")
+        logger.info("Using memory-efficient batch processing...")
 
         # Open historical file
         ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
 
-        # Open all downloaded files and concatenate them quickly
-        # This is much faster than open_mfdataset with coordinate alignment
-        all_datasets = []
-        for nc_file in tqdm(downloaded_files, desc="Loading NetCDF files"):
-            ds = xr.open_dataset(nc_file)
-            all_datasets.append(ds)
+        # Process in batches to avoid memory issues
+        BATCH_SIZE = 5  # Process 5 files at a time (adjust based on available memory)
+        combined = None
+        total_duplicates_removed = 0
 
-        # Simple concatenation along id_geohash dimension (just stack them)
-        logger.info("Concatenating datasets...")
-        ds_downloads = xr.concat(all_datasets, dim='id_geohash')
+        num_batches = (len(downloaded_files) + BATCH_SIZE - 1) // BATCH_SIZE
 
-        # Remove duplicates if any (keep first occurrence)
-        _, unique_idx = np.unique(ds_downloads['id_geohash'].values, return_index=True)
-        unique_idx = np.sort(unique_idx)
-        if len(unique_idx) < len(ds_downloads['id_geohash']):
-            logger.info(f"Removing {len(ds_downloads['id_geohash']) - len(unique_idx)} duplicate id_geohash entries")
-            ds_downloads = ds_downloads.isel(id_geohash=unique_idx)
+        for batch_idx in tqdm(range(0, len(downloaded_files), BATCH_SIZE), desc="Processing batches",
+                              total=num_batches):
+            batch_files = downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
+            logger.info(f"Processing batch {batch_idx // BATCH_SIZE + 1}/{num_batches} ({len(batch_files)} files)")
 
-        # Sort the combined downloads by id_geohash at the end
-        logger.info("Sorting combined data by id_geohash...")
-        ds_downloads = ds_downloads.sortby('id_geohash')
+            # Load this batch
+            batch_datasets = []
+            for nc_file in batch_files:
+                ds = xr.open_dataset(nc_file)
+                batch_datasets.append(ds)
 
-        # Merge historical with downloads
-        logger.info("Merging with historical data...")
-        ds_combined = xr.merge([ds_historical, ds_downloads], join='outer')
+            # Concatenate this batch
+            batch_combined = xr.concat(batch_datasets, dim='id_geohash')
 
-        # Final sort to ensure everything is ordered
-        ds_combined = ds_combined.sortby('id_geohash')
+            # Remove duplicates within batch
+            _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
+            unique_idx = np.sort(unique_idx)
+            if len(unique_idx) < len(batch_combined['id_geohash']):
+                dup_count = len(batch_combined['id_geohash']) - len(unique_idx)
+                total_duplicates_removed += dup_count
+                logger.debug(f"  Removed {dup_count} duplicates in this batch")
+                batch_combined = batch_combined.isel(id_geohash=unique_idx)
 
-        # Write to netcdf with compression
-        logger.info("Writing combined NetCDF file...")
-        encoding = {var: {'zlib': True, 'complevel': 5} for var in ds_combined.data_vars}
+            # Sort this batch
+            batch_combined = batch_combined.sortby('id_geohash')
 
-        temp_output = output_netcdf.with_suffix('.tmp.nc')
-        ds_combined.to_netcdf(temp_output, encoding=encoding, mode='w')
+            # Merge with previous combined data
+            if combined is None:
+                combined = batch_combined
+            else:
+                # Concatenate with previous combined
+                combined = xr.concat([combined, batch_combined], dim='id_geohash')
+                # Remove duplicates
+                _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
+                unique_idx = np.sort(unique_idx)
+                if len(unique_idx) < len(combined['id_geohash']):
+                    dup_count = len(combined['id_geohash']) - len(unique_idx)
+                    total_duplicates_removed += dup_count
+                    logger.debug(f"  Removed {dup_count} duplicates during merge")
+                    combined = combined.isel(id_geohash=unique_idx)
+                # Sort after merge
+                combined = combined.sortby('id_geohash')
 
-        # Close all open datasets
-        ds_historical.close()
-        ds_downloads.close()
-        ds_combined.close()
-        for ds in all_datasets:
-            ds.close()
+            # Close batch datasets to free memory
+            for ds in batch_datasets:
+                ds.close()
+            batch_datasets.clear()
 
-        # Replace with final file
-        temp_output.rename(output_netcdf)
+            # Force garbage collection
+            gc.collect()
 
-        logger.info(f"Successfully created combined netcdf: {output_netcdf}")
-        logger.info(f"File size: {output_netcdf.stat().st_size / (1024 ** 3):.2f} GB")
+            # Log memory usage
+            import psutil
+            process = psutil.Process(os.getpid())
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            logger.debug(f"Current memory usage: {memory_mb:.2f} MB")
+
+        if total_duplicates_removed > 0:
+            logger.info(f"Total duplicates removed: {total_duplicates_removed}")
+
+        if combined is not None:
+            # Final sort to ensure everything is ordered
+            logger.info("Final sorting of combined data...")
+            combined = combined.sortby('id_geohash')
+
+            # Merge with historical
+            logger.info("Merging with historical data...")
+            ds_combined = xr.merge([ds_historical, combined], join='outer')
+            ds_combined = ds_combined.sortby('id_geohash')
+
+            # Write to netcdf with compression
+            logger.info("Writing combined NetCDF file...")
+            encoding = {var: {'zlib': True, 'complevel': 5} for var in ds_combined.data_vars}
+
+            temp_output = output_netcdf.with_suffix('.tmp.nc')
+            ds_combined.to_netcdf(temp_output, encoding=encoding, mode='w')
+
+            # Close everything
+            ds_historical.close()
+            combined.close()
+            ds_combined.close()
+
+            # Replace with final file
+            temp_output.rename(output_netcdf)
+
+            file_size_gb = output_netcdf.stat().st_size / (1024 ** 3)
+            logger.info(f"Successfully created combined netcdf: {output_netcdf}")
+            logger.info(f"File size: {file_size_gb:.2f} GB")
+        else:
+            logger.warning("No data was combined")
     else:
         logger.warning(f"No downloaded files found in {current_download_dir}")
 
