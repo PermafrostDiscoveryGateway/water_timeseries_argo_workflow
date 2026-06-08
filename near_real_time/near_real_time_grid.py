@@ -17,9 +17,31 @@ from water_timeseries.breakpoint import NRTBreakpoint
 import datetime
 from region_boundaries import get_region_boundaries
 import download_new_dynamic_world_data
+import shutil
+import json
 
 
 def main():
+    src = '/root/.config/earthengine/credentials'
+    dst = '/tmp/ee_creds.json'
+    shutil.copy2(src, dst)
+
+    # Read credentials
+    with open(dst, 'r') as f:
+        credentials = json.load(f)
+
+    # Initialize EE with credentials directly
+    ee.Initialize(credentials=credentials, project='pdg-project-406720')
+    print("✓ Earth Engine initialized successfully")
+
+    # Also set up geemap to use the same
+    os.environ['EARTHENGINE_TOKEN'] = dst
+    os.environ['EE_CONFIG_DIR'] = '/tmp'
+
+    # Create a flag file to indicate initialization is done
+    with open('/tmp/ee_initialized', 'w') as f:
+        f.write('done')
+
     region_boundaries = get_region_boundaries()
 
     start = datetime.datetime.now()
