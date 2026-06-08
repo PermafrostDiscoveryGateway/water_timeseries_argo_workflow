@@ -21,8 +21,31 @@ import shutil
 import json
 
 
-def main():
+def fix_netcdf_sorting(nc_file):
+    """Fix a NetCDF file by sorting it by id_geohash"""
+    try:
+        ds = xr.open_dataset(nc_file)
+        # Check if id_geohash is already sorted
+        id_geohash = ds['id_geohash'].values
+        is_sorted = all(id_geohash[i] <= id_geohash[i + 1] for i in range(len(id_geohash) - 1))
 
+        if not is_sorted:
+            logger.debug(f"Sorting {nc_file.name} by id_geohash...")
+            ds_sorted = ds.sortby('id_geohash')
+            # Save to a temporary file first
+            temp_file = nc_file.with_suffix('.tmp.nc')
+            ds_sorted.to_netcdf(temp_file)
+            # Replace original with sorted version
+            temp_file.rename(nc_file)
+            logger.debug(f"  Fixed and saved")
+        ds.close()
+        return True
+    except Exception as e:
+        logger.warning(f"Error fixing {nc_file}: {e}")
+        return False
+
+
+def main():
     region_boundaries = get_region_boundaries()
 
     start = datetime.datetime.now()
@@ -58,17 +81,6 @@ def main():
         logger.debug("Failed to initialize geemap ")
         logger.debug(e)
 
-    # import geemap
-    # import ee
-    #
-    # # Try different initialization methods based on geemap version
-    # if hasattr(geemap, 'ee_initialize'):
-    #     geemap.ee_initialize(project=EE_PROJECT_ID)
-    # elif hasattr(geemap, 'initialize'):
-    #     geemap.initialize(project=EE_PROJECT_ID)
-    # else:
-    #     ee.Initialize(project=EE_PROJECT_ID)
-
     current_region = os.getenv('CURRENT_REGION', 'TEST')
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
@@ -79,7 +91,6 @@ def main():
     if not all_dynamic_world_files:
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         sys.exit(1)
-
 
     # TODO use region here
     bounding_box_coords = region_boundaries['TEST']
@@ -224,36 +235,41 @@ def main():
 
     logger.info(f"Combining historical and new DW data into a single netcdf file for {ANALYSIS_DATE}")
 
-    # Memory-efficient approach: Process files one by one and write incrementally
-    # First, get all downloaded files
+    # Get all downloaded files
     downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{ANALYSIS_DATE}_*.nc')))
     output_netcdf = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.nc'
 
     if downloaded_files:
-        # Open historical file once to get structure and initial data
+        # FIX: Sort each NetCDF file by id_geohash before combining
+        logger.info("Fixing NetCDF files by sorting id_geohash dimension...")
+        for nc_file in tqdm(downloaded_files, desc="Fixing NetCDF files"):
+            fix_netcdf_sorting(Path(nc_file))
+
+        # Open historical file
         ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
 
-        # Create a list of all datasets to merge (historical + all downloads)
-        # Using xr.open_mfdataset with concat_dim to handle combining efficiently
-        # But since we need to be careful with memory, we'll process in chunks
-
-        # Open all downloaded files as a single dataset using multi-file dataset
-        # This doesn't load data into memory until needed
-        ds_downloads = xr.open_mfdataset(downloaded_files, combine='by_coords')
+        # Open all downloaded files as a single dataset
+        # Use combine='nested' and concat_dim to handle unsorted dimensions
+        try:
+            ds_downloads = xr.open_mfdataset(downloaded_files, combine='by_coords')
+        except ValueError as e:
+            logger.warning(f"combine='by_coords' failed: {e}")
+            logger.info("Trying alternative combining method...")
+            # Alternative: combine='nested' with concat_dim='id_geohash'
+            ds_downloads = xr.open_mfdataset(downloaded_files, combine='nested', concat_dim='id_geohash')
+            # Sort after combining
+            ds_downloads = ds_downloads.sortby('id_geohash')
 
         # Merge historical with downloads
-        # xr.merge creates a new dataset but doesn't load data into memory
         ds_combined = xr.merge([ds_historical, ds_downloads], join='outer')
 
-        # Write to netcdf with compression to save space
-        # Use encoding to compress data and reduce file size
+        # Write to netcdf with compression
         encoding = {var: {'zlib': True, 'complevel': 5} for var in ds_combined.data_vars}
 
-        # Write to temporary file first to avoid partial writes
         temp_output = output_netcdf.with_suffix('.tmp.nc')
         ds_combined.to_netcdf(temp_output, encoding=encoding, mode='w')
 
-        # Close all open datasets to free memory
+        # Close all open datasets
         ds_historical.close()
         ds_downloads.close()
         ds_combined.close()
@@ -266,20 +282,12 @@ def main():
     else:
         logger.warning(f"No downloaded files found in {current_download_dir}")
 
-    # Clean up memory
-    del ds_historical, ds_downloads, ds_combined
-
     logger.info("Combining breakpoint parquet files")
 
     # Get all breakpoint parquet files
     break_files = sorted(glob.glob(str(current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_*_breaks.parquet')))
 
     if break_files:
-        # Memory-efficient approach: Read and combine parquet files in chunks
-        # For parquet, we can use pandas with chunking or dask for very large datasets
-
-        # Option 1: If the combined file might be large but fits in memory
-        # Read all files and concatenate
         dfs = []
         total_rows = 0
 
@@ -287,29 +295,21 @@ def main():
             df = pd.read_parquet(file)
             dfs.append(df)
             total_rows += len(df)
-
-            # Optional: Log progress
             logger.debug(f"Read {file} with {len(df)} rows. Total rows so far: {total_rows}")
 
-        # Concatenate all dataframes
         if dfs:
             breaks_combined = pd.concat(dfs, ignore_index=True)
-
-            # Optional: Sort by drainage confidence as in your original code
             breaks_combined = breaks_combined.sort_values('drainage_confidence', ascending=False)
 
-            # Create output filename with bounding box coordinates
             output_parquet = Path(
                 output_dir) / f'DW_{ANALYSIS_DATE}_{X_MIN_START}_{X_MIN_END}_{Y_MIN_START}_{Y_MIN_END}.parquet'
 
-            # Save combined parquet file
             breaks_combined.to_parquet(output_parquet, index=False)
 
             logger.info(f"Successfully created combined parquet: {output_parquet}")
             logger.info(f"Total rows: {len(breaks_combined)}")
             logger.info(f"File size: {output_parquet.stat().st_size / (1024 ** 2):.2f} MB")
 
-            # Clean up
             del dfs, breaks_combined
         else:
             logger.warning("No data found in breakpoint files")
@@ -319,5 +319,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
