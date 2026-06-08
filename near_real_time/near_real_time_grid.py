@@ -6,6 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from loguru import logger
 import sys
+import geemap
 import glob
 import os
 from water_timeseries.downloader import EarthEngineDownloader
@@ -35,6 +36,8 @@ def main():
     project = os.environ['project']
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
+
+    logger.debug(f"Version of geemap is {geemap.__version__}")
 
     # import geemap
     # import ee
