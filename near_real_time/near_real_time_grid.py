@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from loguru import logger
 import sys
 import geemap
+import ee
 import glob
 import os
 from water_timeseries.downloader import EarthEngineDownloader
@@ -107,8 +108,7 @@ def main():
     # create directory for partial dynamic world downloads
     current_download_dir = Path(str(dynamic_world_download_dir), f'download_{ANALYSIS_DATE}')
     current_download_dir.mkdir(exist_ok=True, parents=True)
-    import geemap
-    import ee
+
     if not hasattr(geemap, 'ee_initialize'):
         logger.warning("geemap.ee_initialize missing, adding runtime patch")
 
