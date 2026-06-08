@@ -61,6 +61,7 @@ def main():
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         sys.exit(1)
 
+    # TODO use region here
     bounding_box_coords = region_boundaries['TEST']
 
     X_MIN_START = bounding_box_coords['X_MIN_START']
