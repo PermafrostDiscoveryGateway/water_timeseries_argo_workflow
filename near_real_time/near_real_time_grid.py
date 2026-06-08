@@ -43,6 +43,13 @@ def main():
 
     logger.debug(f"Version of geemap is {geemap.__version__}")
 
+    try:
+        geemap.ee_initialize(project=EE_PROJECT_ID)
+        logger.debug("Initialized geemap")
+    except Exception as e:
+        logger.debug("Failed to initialize geemap ")
+        logger.debug(e)
+
     # import geemap
     # import ee
     #
@@ -64,6 +71,7 @@ def main():
     if not all_dynamic_world_files:
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         sys.exit(1)
+
 
     # TODO use region here
     bounding_box_coords = region_boundaries['TEST']

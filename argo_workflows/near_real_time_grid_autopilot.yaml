@@ -222,31 +222,6 @@ spec:
           
           # Fix Earth Engine credentials - replace symlink with real file in the same location
           # This doesn't affect the original secret on disk, only the in-memory mount
-          echo "=== FIXING EARTH ENGINE CREDENTIALS PATH ==="
-            
-          # The original location is a tmpfs mount (in memory)
-          # We can create a real file there since it's writable (tmpfs is writable)
-          # Copy the credentials to a real file in the same directory
-          cp -L /root/.config/earthengine/credentials /root/.config/earthengine/credentials.real
-            
-          # Remove the symlink (it's in a tmpfs, won't affect the original secret)
-          rm -f /root/.config/earthengine/credentials
-            
-          # Copy the real file to the expected location
-          cp /root/.config/earthengine/credentials.real /root/.config/earthengine/credentials
-            
-          # Also create in the alternate location
-          mkdir -p /root/.earthengine
-          cp /root/.config/earthengine/credentials /root/.earthengine/credentials
-            
-          # Verify it's now a real file
-          echo "Credentials file type:"
-          ls -la /root/.config/earthengine/credentials
-          file /root/.config/earthengine/credentials
-          head -c 100 /root/.config/earthengine/credentials
-            
-          # Test JSON parsing
-          python -c "import json; json.load(open('/root/.config/earthengine/credentials')); print('✓ Credentials valid')"
           
           # Find module locations
           echo "Searching for modules:"
