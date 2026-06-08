@@ -1,6 +1,7 @@
 import geopandas as gpd
 import xarray as xr
 import pandas as pd
+import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 from dotenv import load_dotenv
@@ -19,30 +20,6 @@ from region_boundaries import get_region_boundaries
 import download_new_dynamic_world_data
 import shutil
 import json
-
-
-def fix_netcdf_sorting(nc_file):
-    """Fix a NetCDF file by sorting it by id_geohash"""
-    try:
-        ds = xr.open_dataset(nc_file)
-        # Check if id_geohash is already sorted
-        id_geohash = ds['id_geohash'].values
-        is_sorted = all(id_geohash[i] <= id_geohash[i + 1] for i in range(len(id_geohash) - 1))
-
-        if not is_sorted:
-            logger.debug(f"Sorting {nc_file.name} by id_geohash...")
-            ds_sorted = ds.sortby('id_geohash')
-            # Save to a temporary file first
-            temp_file = nc_file.with_suffix('.tmp.nc')
-            ds_sorted.to_netcdf(temp_file)
-            # Replace original with sorted version
-            temp_file.rename(nc_file)
-            logger.debug(f"  Fixed and saved")
-        ds.close()
-        return True
-    except Exception as e:
-        logger.warning(f"Error fixing {nc_file}: {e}")
-        return False
 
 
 def main():
@@ -240,30 +217,43 @@ def main():
     output_netcdf = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.nc'
 
     if downloaded_files:
-        # FIX: Sort each NetCDF file by id_geohash before combining
-        logger.info("Fixing NetCDF files by sorting id_geohash dimension...")
-        for nc_file in tqdm(downloaded_files, desc="Fixing NetCDF files"):
-            fix_netcdf_sorting(Path(nc_file))
+        # FAST APPROACH: Just concatenate everything without coordinate alignment
+        logger.info("Fast concatenating NetCDF files (order doesn't matter)...")
 
         # Open historical file
         ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
 
-        # Open all downloaded files as a single dataset
-        # Use combine='nested' and concat_dim to handle unsorted dimensions
-        try:
-            ds_downloads = xr.open_mfdataset(downloaded_files, combine='by_coords')
-        except ValueError as e:
-            logger.warning(f"combine='by_coords' failed: {e}")
-            logger.info("Trying alternative combining method...")
-            # Alternative: combine='nested' with concat_dim='id_geohash'
-            ds_downloads = xr.open_mfdataset(downloaded_files, combine='nested', concat_dim='id_geohash')
-            # Sort after combining
-            ds_downloads = ds_downloads.sortby('id_geohash')
+        # Open all downloaded files and concatenate them quickly
+        # This is much faster than open_mfdataset with coordinate alignment
+        all_datasets = []
+        for nc_file in tqdm(downloaded_files, desc="Loading NetCDF files"):
+            ds = xr.open_dataset(nc_file)
+            all_datasets.append(ds)
+
+        # Simple concatenation along id_geohash dimension (just stack them)
+        logger.info("Concatenating datasets...")
+        ds_downloads = xr.concat(all_datasets, dim='id_geohash')
+
+        # Remove duplicates if any (keep first occurrence)
+        _, unique_idx = np.unique(ds_downloads['id_geohash'].values, return_index=True)
+        unique_idx = np.sort(unique_idx)
+        if len(unique_idx) < len(ds_downloads['id_geohash']):
+            logger.info(f"Removing {len(ds_downloads['id_geohash']) - len(unique_idx)} duplicate id_geohash entries")
+            ds_downloads = ds_downloads.isel(id_geohash=unique_idx)
+
+        # Sort the combined downloads by id_geohash at the end
+        logger.info("Sorting combined data by id_geohash...")
+        ds_downloads = ds_downloads.sortby('id_geohash')
 
         # Merge historical with downloads
+        logger.info("Merging with historical data...")
         ds_combined = xr.merge([ds_historical, ds_downloads], join='outer')
 
+        # Final sort to ensure everything is ordered
+        ds_combined = ds_combined.sortby('id_geohash')
+
         # Write to netcdf with compression
+        logger.info("Writing combined NetCDF file...")
         encoding = {var: {'zlib': True, 'complevel': 5} for var in ds_combined.data_vars}
 
         temp_output = output_netcdf.with_suffix('.tmp.nc')
@@ -273,6 +263,8 @@ def main():
         ds_historical.close()
         ds_downloads.close()
         ds_combined.close()
+        for ds in all_datasets:
+            ds.close()
 
         # Replace with final file
         temp_output.rename(output_netcdf)
