@@ -27,6 +27,8 @@ ENV PYTHONPATH="/app:${PYTHONPATH}"
 # Verify geemap version after install
 RUN python -c "import geemap; print(f'geemap version after install: {geemap.__version__}'); print(f'Has ee_initialize: {hasattr(geemap, \"ee_initialize\")}')" || echo "geemap verification failed"
 
+RUN python -c "import geemap; print(f'✅ geemap version: {geemap.__version__}'); assert hasattr(geemap, 'ee_initialize'), 'ee_initialize missing!'; print('✅ ee_initialize exists!')"
+
 # Set working directory
 WORKDIR /app
 
