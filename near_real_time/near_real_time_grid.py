@@ -41,6 +41,14 @@ def main():
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
 
+    logger.debug(f"Trying earth engine initialize")
+    try:
+        ee.Initialize(project=EE_PROJECT_ID)
+        logger.debug("Earth engine successfully initialized")
+    except Exception as e:
+        logger.debug("Failed to initialize earth engine")
+        logger.debug(e)
+
     logger.debug(f"Version of geemap is {geemap.__version__}")
 
     try:
