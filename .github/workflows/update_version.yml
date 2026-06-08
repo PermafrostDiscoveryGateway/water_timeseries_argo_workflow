@@ -14,11 +14,6 @@ on:
         description: 'Custom image tag (optional)'
         required: false
         type: string
-      clean_cache:
-        description: 'Clear Docker cache before building (fixes geemap version issues)'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -37,15 +32,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          clean: true  # Force clean checkout
-
-      - name: Verify code version (debug)
-        run: |
-          echo "Current commit: $(git log -1 --format='%H %s')"
-          echo "Checking geemap call in downloader.py:"
-          grep -n "geemap\." src/water_timeseries/downloader.py | head -5 || echo "File not found"
-          echo "Looking for ee_initialize:"
-          grep -n "ee_initialize" src/water_timeseries/downloader.py || echo "NOT FOUND - this is your problem!"
+          clean: true
 
       - name: Set Docker tags (lowercase)
         id: docker_tags
@@ -94,10 +81,9 @@ jobs:
           driver-opts: |
             image=moby/buildkit:latest
 
-      - name: Clear Docker cache (if requested)
-        if: github.event.inputs.clean_cache == 'true' || github.event_name == 'workflow_dispatch' && contains(github.event.inputs.clean_cache, 'true')
+      - name: Clear Docker cache (always)
         run: |
-          echo "🧹 Clearing Docker build cache..."
+          echo "🧹 Clearing all Docker cache..."
           docker builder prune -af
           docker system prune -af --volumes
           echo "✅ Cache cleared"
@@ -120,15 +106,9 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=$(date -Iseconds)
             org.opencontainers.image.description="Argo Workflows for water timeseries analysis"
-          # Temporarily disable cache to force fresh build
-          no-cache: ${{ github.event.inputs.clean_cache == 'true' || github.event_name == 'workflow_dispatch' && contains(github.event.inputs.clean_cache, 'true') }}
-          # If not clearing cache, use GitHub cache but with build args to bust pip/uv cache
-          cache-from: ${{ github.event.inputs.clean_cache != 'true' && 'type=gha' || '' }}
-          cache-to: ${{ github.event.inputs.clean_cache != 'true' && 'type=gha,mode=max' || '' }}
-          # Add build args to bust Python dependency cache
-          build-args: |
-            BUILDKIT_PROGRESS=plain
-            CACHE_BUST=${{ github.sha }}
+          no-cache: true  # Always disable Docker layer cache
+          cache-from: ""   # No cache source
+          cache-to: ""     # No cache output
 
       - name: Image digest output
         run: |
