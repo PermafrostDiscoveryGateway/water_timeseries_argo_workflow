@@ -23,6 +23,7 @@ import json
 
 def main():
     src = '/root/.config/earthengine/credentials'
+    logger.debug(f"{src} exists {os.path.exists(src)}")
     dst = '/tmp/ee_creds.json'
     shutil.copy2(src, dst)
 
