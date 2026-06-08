@@ -9,7 +9,7 @@ RUN uv pip install \
     toml \
     dask[dataframe] \
     pyarrow \
-    geemap==0.37.2  # ← Explicitly pin to match base image
+    geemap==0.37.2
 
 # Alternatively, prevent upgrading any packages that are already installed:
 # RUN uv pip install --no-deps \  # This would skip dependencies but might break things
