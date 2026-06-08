@@ -33,7 +33,7 @@ def main():
 
     # Initialize EE with credentials directly
     ee.Initialize(credentials=credentials, project='pdg-project-406720')
-    print("✓ Earth Engine initialized successfully")
+    logger.debug("✓ Earth Engine initialized successfully")
 
     # Also set up geemap to use the same
     os.environ['EARTHENGINE_TOKEN'] = dst
