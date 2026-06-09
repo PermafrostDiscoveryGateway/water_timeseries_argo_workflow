@@ -136,7 +136,10 @@ def main():
         load_dotenv()
         logger.info("Loading environment from default .env file")
 
+    REGION_NAME = os.getenv("region_name", "TEST")
+
     output_dir = os.environ['output_dir']
+    output_dir = os.path.join(output_dir, REGION_NAME)
     project = os.environ['project']
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
@@ -162,7 +165,7 @@ def main():
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         sys.exit(1)
 
-    bounding_box_coords = region_boundaries['TEST']
+    bounding_box_coords = region_boundaries[REGION_NAME]
 
     X_MIN_START = bounding_box_coords['X_MIN_START']
     X_MIN_END = bounding_box_coords['X_MIN_END']
@@ -197,11 +200,13 @@ def main():
 
     bp = NRTBreakpoint()
 
-    current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
+    current_breakpoint_dir = Path(output_dir)  / f'breakpoint_{ANALYSIS_DATE}'
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
+    logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
-    current_download_dir = Path(str(dynamic_world_download_dir), f'download_{ANALYSIS_DATE}')
+    current_download_dir = Path(str(dynamic_world_download_dir),  f'download_{ANALYSIS_DATE}')
     current_download_dir.mkdir(exist_ok=True, parents=True)
+    logger.debug(f"Current download directory: {current_download_dir}")
 
     if not hasattr(geemap, 'ee_initialize'):
         logger.warning("geemap.ee_initialize missing, adding runtime patch")
