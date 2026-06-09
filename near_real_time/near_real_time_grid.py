@@ -61,14 +61,12 @@ def close_and_clean(ds, name: str):
         log_memory_usage(f"After closing {name}")
 
 
-def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=500):
+def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250):
     """
-    Merge historical and combined datasets in chunks without Dask
-    Uses pure NetCDF operations
+    Merge historical and combined datasets in chunks.
+    Collects all chunks first then concatenates and writes to file.
+    This avoids the dimension size error when appending.
     """
-    from netCDF4 import Dataset
-    import tempfile
-
     logger.info(f"Merging in chunks of {chunk_size} ids")
     log_memory_usage("Before chunked merge")
 
@@ -77,11 +75,8 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=500
     total_ids = len(combined_ids)
     logger.info(f"Total ids to merge: {total_ids}")
 
-    # Create temporary file for chunked writing
-    temp_output = output_path.with_suffix('.tmp.nc')
-
-    first_chunk = True
-    encoding = {var: {'zlib': True, 'complevel': 5} for var in ds_historical.data_vars}
+    # List to hold merged chunks
+    merged_chunks = []
 
     # Process in chunks
     for chunk_start in tqdm(range(0, total_ids, chunk_size), desc="Merging chunks"):
@@ -97,28 +92,40 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=500
 
         # Merge just this chunk
         merged_chunk = xr.merge([hist_chunk, new_chunk])
+        merged_chunks.append(merged_chunk)
 
-        # Write chunk to netcdf
-        if first_chunk:
-            merged_chunk.to_netcdf(temp_output, mode='w', encoding=encoding)
-            first_chunk = False
-        else:
-            # Append mode for subsequent chunks
-            merged_chunk.to_netcdf(temp_output, mode='a', group=None)
-
-        # Clean up chunk data
+        # Clean up chunk data to free memory
         close_and_clean(hist_chunk, f"hist_chunk_{chunk_start}")
         close_and_clean(new_chunk, f"new_chunk_{chunk_start}")
-        close_and_clean(merged_chunk, f"merged_chunk_{chunk_start}")
 
         log_memory_usage(f"Chunk {chunk_start // chunk_size + 1} complete")
 
-    # Rename temp file to final output
-    if os.path.exists(temp_output):
-        if output_path.exists():
-            output_path.unlink()
-        temp_output.rename(output_path)
-        logger.info(f"Successfully wrote merged file to {output_path}")
+    # Concatenate all chunks and write to file
+    logger.info("Concatenating all chunks and writing to file...")
+    if merged_chunks:
+        final_merged = xr.concat(merged_chunks, dim='id_geohash')
+
+        encoding = {var: {'zlib': True, 'complevel': 5} for var in final_merged.data_vars}
+
+        temp_output = output_path.with_suffix('.tmp.nc')
+
+        # Write the final merged dataset
+        final_merged.to_netcdf(temp_output, encoding=encoding, mode='w')
+
+        # Clean up
+        close_and_clean(final_merged, "final_merged")
+        for chunk in merged_chunks:
+            close_and_clean(chunk, "merged_chunk")
+
+        # Rename temp file to final output
+        if temp_output.exists():
+            if output_path.exists():
+                output_path.unlink()
+            temp_output.rename(output_path)
+            logger.info(f"Successfully wrote merged file to {output_path}")
+            logger.info(f"File size: {output_path.stat().st_size / (1024 ** 3):.2f} GB")
+    else:
+        logger.error("No chunks were created, cannot merge")
 
     return output_path
 
@@ -359,6 +366,10 @@ def main():
     # Final concatenation of remaining breaks
     if breaks_list:
         breaks_merged = pd.concat(breaks_list, ignore_index=True)
+        joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+        path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+        joined.to_parquet(path_to_joined_file)
+        logger.info(f"Final combined file saved to {path_to_joined_file}")
     elif partial_saved:
         # Load the partial file if it exists and no breaks_list
         partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
@@ -368,15 +379,6 @@ def main():
             path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
             final_joined.to_parquet(path_to_joined_file)
             logger.info(f"Final combined file saved to {path_to_joined_file}")
-            breaks_merged = pd.DataFrame()  # Placeholder
-    else:
-        breaks_merged = pd.DataFrame()
-
-    if not breaks_merged.empty:
-        joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
-        path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
-        joined.to_parquet(path_to_joined_file)
-        breaks_merged.sort_values('drainage_confidence', ascending=False)
 
     end = datetime.datetime.now()
     logger.debug(f"Finished processing {ANALYSIS_DATE} at time {end}")
@@ -399,7 +401,7 @@ def main():
         log_memory_usage("After loading historical dataset for final merge")
 
         # Process in batches to avoid memory issues
-        BATCH_SIZE = 2  # Reduced from 5 to 2 for better memory management
+        BATCH_SIZE = 2  # Process 2 files at a time for better memory management
         combined = None
         total_duplicates_removed = 0
 
@@ -467,9 +469,9 @@ def main():
             combined = combined.sortby('id_geohash')
             log_memory_usage("Before merging with historical")
 
-            # Use chunked merging with smaller chunk size
+            # Use chunked merging
             logger.info("Merging with historical data using chunked approach...")
-            merge_netcdf_chunked(ds_historical, combined, output_netcdf, chunk_size=250)  # Reduced from 500
+            merge_netcdf_chunked(ds_historical, combined, output_netcdf, chunk_size=250)
 
             # Clean up the combined dataset
             close_and_clean(combined, "combined")
