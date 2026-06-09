@@ -126,6 +126,7 @@ def main():
 
     region_boundaries = get_region_boundaries()
 
+
     start = datetime.datetime.now()
     logger.debug(f"Current time: {datetime.datetime.now()}")
 
