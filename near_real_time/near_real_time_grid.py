@@ -316,6 +316,7 @@ def main():
 
     downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{ANALYSIS_DATE}_*.nc')))
     output_netcdf = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.nc'
+    logger.debug(f"Output netcdf file being saved to {output_netcdf}")
 
     if downloaded_files:
         ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
