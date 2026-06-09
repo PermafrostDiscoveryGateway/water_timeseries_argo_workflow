@@ -12,6 +12,7 @@ import ee
 import glob
 import os
 import gc
+import psutil
 from water_timeseries.downloader import EarthEngineDownloader
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
 from water_timeseries.dataset import DWDataset
@@ -21,9 +22,111 @@ from region_boundaries import get_region_boundaries
 import download_new_dynamic_world_data
 import shutil
 import json
+import resource
+
+
+def log_memory_usage(stage: str):
+    """Log current memory usage"""
+    process = psutil.Process(os.getpid())
+    mem_mb = process.memory_info().rss / 1024 / 1024
+    mem_gb = mem_mb / 1024
+
+    # Get additional memory info
+    try:
+        # RSS (Resident Set Size) in GB
+        rss_gb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 / 1024
+        logger.debug(f"[MEMORY] {stage}: {mem_mb:.2f} MB ({mem_gb:.2f} GB) | Max RSS: {rss_gb:.2f} GB")
+    except:
+        logger.debug(f"[MEMORY] {stage}: {mem_mb:.2f} MB ({mem_gb:.2f} GB)")
+
+    # Warn if memory is high
+    if mem_gb > 10:
+        logger.warning(f"High memory usage detected: {mem_gb:.2f} GB at stage: {stage}")
+
+
+def get_file_size_gb(file_path: str) -> float:
+    """Get file size in GB"""
+    if os.path.exists(file_path):
+        return os.path.getsize(file_path) / (1024 ** 3)
+    return 0
+
+
+def close_and_clean(ds, name: str):
+    """Safely close a dataset and clean up"""
+    if ds is not None:
+        logger.debug(f"Closing dataset: {name}")
+        ds.close()
+        del ds
+        gc.collect()
+        log_memory_usage(f"After closing {name}")
+
+
+def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=500):
+    """
+    Merge historical and combined datasets in chunks without Dask
+    Uses pure NetCDF operations
+    """
+    from netCDF4 import Dataset
+    import tempfile
+
+    logger.info(f"Merging in chunks of {chunk_size} ids")
+    log_memory_usage("Before chunked merge")
+
+    # Get all unique ids from combined dataset
+    combined_ids = combined_ds['id_geohash'].values
+    total_ids = len(combined_ids)
+    logger.info(f"Total ids to merge: {total_ids}")
+
+    # Create temporary file for chunked writing
+    temp_output = output_path.with_suffix('.tmp.nc')
+
+    first_chunk = True
+    encoding = {var: {'zlib': True, 'complevel': 5} for var in ds_historical.data_vars}
+
+    # Process in chunks
+    for chunk_start in tqdm(range(0, total_ids, chunk_size), desc="Merging chunks"):
+        chunk_end = min(chunk_start + chunk_size, total_ids)
+        chunk_ids = combined_ids[chunk_start:chunk_end]
+
+        logger.debug(f"Processing chunk: ids {chunk_start} to {chunk_end} ({len(chunk_ids)} ids)")
+        log_memory_usage(f"Chunk {chunk_start // chunk_size + 1} start")
+
+        # Subset both datasets for this chunk
+        hist_chunk = ds_historical.sel(id_geohash=chunk_ids)
+        new_chunk = combined_ds.sel(id_geohash=chunk_ids)
+
+        # Merge just this chunk
+        merged_chunk = xr.merge([hist_chunk, new_chunk])
+
+        # Write chunk to netcdf
+        if first_chunk:
+            merged_chunk.to_netcdf(temp_output, mode='w', encoding=encoding)
+            first_chunk = False
+        else:
+            # Append mode for subsequent chunks
+            merged_chunk.to_netcdf(temp_output, mode='a', group=None)
+
+        # Clean up chunk data
+        close_and_clean(hist_chunk, f"hist_chunk_{chunk_start}")
+        close_and_clean(new_chunk, f"new_chunk_{chunk_start}")
+        close_and_clean(merged_chunk, f"merged_chunk_{chunk_start}")
+
+        log_memory_usage(f"Chunk {chunk_start // chunk_size + 1} complete")
+
+    # Rename temp file to final output
+    if os.path.exists(temp_output):
+        if output_path.exists():
+            output_path.unlink()
+        temp_output.rename(output_path)
+        logger.info(f"Successfully wrote merged file to {output_path}")
+
+    return output_path
 
 
 def main():
+    # Start memory logging
+    log_memory_usage("Program start")
+
     region_boundaries = get_region_boundaries()
 
     start = datetime.datetime.now()
@@ -70,7 +173,6 @@ def main():
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         sys.exit(1)
 
-    # TODO use region here
     bounding_box_coords = region_boundaries['TEST']
 
     X_MIN_START = bounding_box_coords['X_MIN_START']
@@ -79,6 +181,10 @@ def main():
     Y_MIN_END = bounding_box_coords['Y_MIN_END']
 
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+
+    # Log historical file size
+    hist_file_size_gb = get_file_size_gb(most_recent_dynamic_world_file)
+    logger.info(f"Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
 
     missing_dates = download_new_dynamic_world_data.check_missing_data_in_netcdf(most_recent_dynamic_world_file, )
     missing_analysis_dates = []
@@ -97,15 +203,17 @@ def main():
 
     # read lake vectors
     gdf = gpd.read_parquet(path_lake_vector)
+    log_memory_usage("After loading lake vectors")
 
-    # read historical DW data
-    ds_raw = xr.open_dataset(path_historical_dw)
+    # NOTE: DO NOT load historical data here anymore - wait until needed
+    # We'll load it lazily when we need to merge
 
     bbox_size_lon = 1
     bbox_size_lat = 1
     grid = create_longitude_latitude_grid(lon_range=(X_MIN_START, X_MIN_END), lat_range=(Y_MIN_START, Y_MIN_END),
                                           bbox_size_lon=bbox_size_lon, bbox_size_lat=bbox_size_lat)
     print('created grid')
+    log_memory_usage("After creating grid")
 
     bp = NRTBreakpoint()
 
@@ -185,8 +293,15 @@ def main():
         else:
             print(f'Outfile already exists: Skipping download for {bbox_west} {bbox_south} \n')
 
+        # Load historical data ONLY when we need it (lazy loading)
+        # But check if ds_historical is already loaded, if not load it
+        if 'ds_historical' not in locals():
+            logger.info("Loading historical dataset for the first time...")
+            ds_historical = xr.open_dataset(path_historical_dw)
+            log_memory_usage("After loading historical dataset")
+
         # subset historical data to grid cell
-        ds_historical_subset = ds_raw.sel(id_geohash=id_list)
+        ds_historical_subset = ds_historical.sel(id_geohash=id_list)
 
         # merge historical and recent and convert to DWDataset object (required to run breakpoint)
         ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
@@ -206,6 +321,11 @@ def main():
         joined.to_parquet(path_to_joined_file)
         breaks_merged.sort_values('drainage_confidence', ascending=False)
 
+        # Clean up to prevent memory buildup
+        close_and_clean(ds_dl, f"ds_dl_{bbox_west}")
+        close_and_clean(ds_historical_subset, f"ds_historical_subset_{bbox_west}")
+        close_and_clean(ds_merged, f"ds_merged_{bbox_west}")
+
     end = datetime.datetime.now()
     logger.debug(f"Finished processing {ANALYSIS_DATE} at time {end}")
     total_time = end - start
@@ -221,11 +341,15 @@ def main():
         logger.info(f"Found {len(downloaded_files)} NetCDF files to combine")
         logger.info("Using memory-efficient batch processing...")
 
-        # Open historical file
-        ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
+        # Load historical file - we already have it from before
+        if 'ds_historical' not in locals():
+            ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
+            log_memory_usage("After loading historical dataset for final merge")
+        else:
+            log_memory_usage("Historical dataset already loaded")
 
         # Process in batches to avoid memory issues
-        BATCH_SIZE = 5  # Process 5 files at a time (adjust based on available memory)
+        BATCH_SIZE = 5  # Process 5 files at a time
         combined = None
         total_duplicates_removed = 0
 
@@ -235,6 +359,7 @@ def main():
                               total=num_batches):
             batch_files = downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
             logger.info(f"Processing batch {batch_idx // BATCH_SIZE + 1}/{num_batches} ({len(batch_files)} files)")
+            log_memory_usage(f"Before batch {batch_idx // BATCH_SIZE + 1}")
 
             # Load this batch
             batch_datasets = []
@@ -281,12 +406,7 @@ def main():
 
             # Force garbage collection
             gc.collect()
-
-            # Log memory usage
-            import psutil
-            process = psutil.Process(os.getpid())
-            memory_mb = process.memory_info().rss / 1024 / 1024
-            logger.debug(f"Current memory usage: {memory_mb:.2f} MB")
+            log_memory_usage(f"After batch {batch_idx // BATCH_SIZE + 1}")
 
         if total_duplicates_removed > 0:
             logger.info(f"Total duplicates removed: {total_duplicates_removed}")
@@ -295,30 +415,29 @@ def main():
             # Final sort to ensure everything is ordered
             logger.info("Final sorting of combined data...")
             combined = combined.sortby('id_geohash')
+            log_memory_usage("Before merging with historical")
 
-            # Merge with historical
-            logger.info("Merging with historical data...")
-            ds_combined = xr.merge([ds_historical, combined], join='outer')
-            ds_combined = ds_combined.sortby('id_geohash')
+            # ========== REPLACED THE MEMORY-INTENSIVE MERGE ==========
+            # Instead of xr.merge which copies everything, use chunked merging
+            logger.info("Merging with historical data using chunked approach...")
 
-            # Write to netcdf with compression
-            logger.info("Writing combined NetCDF file...")
-            encoding = {var: {'zlib': True, 'complevel': 5} for var in ds_combined.data_vars}
+            # Use the chunked merge function
+            merge_netcdf_chunked(ds_historical, combined, output_netcdf, chunk_size=500)
 
-            temp_output = output_netcdf.with_suffix('.tmp.nc')
-            ds_combined.to_netcdf(temp_output, encoding=encoding, mode='w')
+            # Clean up the combined dataset
+            close_and_clean(combined, "combined")
 
-            # Close everything
-            ds_historical.close()
-            combined.close()
-            ds_combined.close()
+            # Verify the output file
+            if output_netcdf.exists():
+                file_size_gb = output_netcdf.stat().st_size / (1024 ** 3)
+                logger.info(f"Successfully created combined netcdf: {output_netcdf}")
+                logger.info(f"File size: {file_size_gb:.2f} GB")
+            else:
+                logger.error("Failed to create combined netcdf")
 
-            # Replace with final file
-            temp_output.rename(output_netcdf)
+            # Close historical dataset
+            close_and_clean(ds_historical, "ds_historical")
 
-            file_size_gb = output_netcdf.stat().st_size / (1024 ** 3)
-            logger.info(f"Successfully created combined netcdf: {output_netcdf}")
-            logger.info(f"File size: {file_size_gb:.2f} GB")
         else:
             logger.warning("No data was combined")
     else:
@@ -357,6 +476,9 @@ def main():
             logger.warning("No data found in breakpoint files")
     else:
         logger.warning(f"No breakpoint files found in {current_breakpoint_dir}")
+
+    log_memory_usage("Program end")
+    logger.info("Script completed successfully")
 
 
 if __name__ == '__main__':
