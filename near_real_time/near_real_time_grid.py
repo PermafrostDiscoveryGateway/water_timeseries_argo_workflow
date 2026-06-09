@@ -234,6 +234,7 @@ def main():
     partial_saved = False
 
     # run loop
+    logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
     for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
         logger.debug(f"Processing {i}/{total} grid tiles.")
         bbox_west = int(lon)
