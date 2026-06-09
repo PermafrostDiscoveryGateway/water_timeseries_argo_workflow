@@ -166,7 +166,6 @@ def main():
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         sys.exit(1)
 
-
     logger.debug(f"Region name is {REGION_NAME}")
 
     bounding_box_coords = region_boundaries[REGION_NAME]
@@ -207,11 +206,11 @@ def main():
 
     bp = NRTBreakpoint()
 
-    current_breakpoint_dir = Path(output_dir)  / f'breakpoint_{ANALYSIS_DATE}'
+    current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
     logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
-    current_download_dir = Path(str(dynamic_world_download_dir),  f'download_{ANALYSIS_DATE}')
+    current_download_dir = Path(str(dynamic_world_download_dir), f'download_{ANALYSIS_DATE}')
     current_download_dir.mkdir(exist_ok=True, parents=True)
     logger.debug(f"Current download directory: {current_download_dir}")
 
@@ -232,6 +231,13 @@ def main():
     breaks_list = []
     total = len(grid[:])
     partial_saved = False
+
+    # First, load historical dataset once to get valid IDs
+    logger.info("Loading historical dataset to check valid IDs...")
+    ds_historical_check = xr.open_dataset(path_historical_dw)
+    valid_historical_ids = set(ds_historical_check['id_geohash'].values)
+    ds_historical_check.close()
+    logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
 
     # run loop
     logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
@@ -263,6 +269,21 @@ def main():
             print(f'No lakes for grid {bbox_west} {bbox_south}. Skipping!')
             continue
 
+        # ========== FIX: Filter IDs to only those that exist in historical data ==========
+        original_count = len(id_list)
+        id_list = [id_val for id_val in id_list if id_val in valid_historical_ids]
+        filtered_count = len(id_list)
+
+        if filtered_count == 0:
+            print(
+                f'WARNING: No valid historical IDs for grid {bbox_west} {bbox_south} (had {original_count} lakes, none in historical data). Skipping!')
+            continue
+        elif filtered_count < original_count:
+            print(
+                f'NOTE: Filtered {original_count - filtered_count} lakes not found in historical data. Processing {filtered_count} lakes.')
+            # Also filter the gdf_subset to only keep valid IDs
+            gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
+
         # Download or load existing file
         if not outfile_download.exists():
             try:
@@ -282,7 +303,7 @@ def main():
         logger.info(f"Loading historical dataset for tile {i}...")
         ds_historical = xr.open_dataset(path_historical_dw)
 
-        # Subset historical data
+        # Subset historical data (now with guaranteed valid IDs)
         ds_historical_subset = ds_historical.sel(id_geohash=id_list)
 
         # Close historical immediately
