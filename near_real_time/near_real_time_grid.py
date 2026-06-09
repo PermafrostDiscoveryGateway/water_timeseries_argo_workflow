@@ -124,6 +124,12 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=500
 
 
 def main():
+    # Set thread limits to prevent excessive memory usage
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['NUMEXPR_NUM_THREADS'] = '1'
+
     # Start memory logging
     log_memory_usage("Program start")
 
@@ -205,9 +211,6 @@ def main():
     gdf = gpd.read_parquet(path_lake_vector)
     log_memory_usage("After loading lake vectors")
 
-    # NOTE: DO NOT load historical data here anymore - wait until needed
-    # We'll load it lazily when we need to merge
-
     bbox_size_lon = 1
     bbox_size_lat = 1
     grid = create_longitude_latitude_grid(lon_range=(X_MIN_START, X_MIN_END), lat_range=(Y_MIN_START, Y_MIN_END),
@@ -243,6 +246,9 @@ def main():
     breaks_list = []
     total = len(grid[:])
 
+    # Track if we've saved a partial file
+    partial_saved = False
+
     # run loop
     for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
         # setup box
@@ -260,9 +266,21 @@ def main():
 
         # check if breakpoint file already exists
         if outfile_breaks.exists():
-            print(f'Breakpoints have been already calculated!: Skip processing for  {bbox_west} {bbox_south} \n')
+            print(f'Breakpoints have been already calculated!: Skip processing for {bbox_west} {bbox_south} \n')
             print('Data is loaded and appended \n')
             breaks_list.append(pd.read_parquet(outfile_breaks))
+
+            # Periodically save partial results
+            if len(breaks_list) >= 10:
+                if breaks_list:
+                    temp_merged = pd.concat(breaks_list, ignore_index=True)
+                    temp_joined = gdf.set_index('id_geohash').join(temp_merged, how='inner').reset_index()
+                    partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
+                    temp_joined.to_parquet(partial_file)
+                    logger.info(f"Saved partial results to {partial_file}")
+                    partial_saved = True
+                    del temp_merged, temp_joined
+                    gc.collect()
             continue
 
         # subset lakes to grid cell
@@ -279,7 +297,6 @@ def main():
 
         # download
         if not outfile_download.exists():
-            # start download for specified date, run up to 2 parallel runs, max_total_requests can be tuned, setting too high might crash the download (rejection by GEE)
             try:
                 ds_dl = downloader.download_dw_monthly(gdf=gdf_subset, max_total_requests=2000, n_parallel=2,
                                                        date_list=[ANALYSIS_DATE], save_to_file=outfile_download)
@@ -292,18 +309,21 @@ def main():
                     raise
         else:
             print(f'Outfile already exists: Skipping download for {bbox_west} {bbox_south} \n')
+            # If download already exists, load it for processing
+            ds_dl = xr.open_dataset(outfile_download)
 
-        # Load historical data ONLY when we need it (lazy loading)
-        # But check if ds_historical is already loaded, if not load it
-        if 'ds_historical' not in locals():
-            logger.info("Loading historical dataset for the first time...")
-            ds_historical = xr.open_dataset(path_historical_dw)
-            log_memory_usage("After loading historical dataset")
+        # ========== CRITICAL FIX: Load historical data per tile, not globally ==========
+        logger.info(f"Loading historical dataset for tile {i}...")
+        ds_historical = xr.open_dataset(path_historical_dw)
+        log_memory_usage(f"After loading historical dataset for tile {i}")
 
         # subset historical data to grid cell
         ds_historical_subset = ds_historical.sel(id_geohash=id_list)
 
-        # merge historical and recent and convert to DWDataset object (required to run breakpoint)
+        # Close historical immediately after subsetting to free memory
+        close_and_clean(ds_historical, f"ds_historical_tile_{i}")
+
+        # merge historical and recent and convert to DWDataset object
         ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
         dwds = DWDataset(ds_merged)
 
@@ -314,17 +334,49 @@ def main():
         # add to merge list
         breaks_list.append(breaks)
 
-        breaks_merged = pd.concat(breaks_list)
-
-        joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
-        path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
-        joined.to_parquet(path_to_joined_file)
-        breaks_merged.sort_values('drainage_confidence', ascending=False)
+        # Periodically save and clear breaks_list to prevent memory buildup
+        if len(breaks_list) >= 10:
+            logger.info(f"Saving intermediate results after {len(breaks_list)} tiles...")
+            if breaks_list:
+                breaks_merged = pd.concat(breaks_list, ignore_index=True)
+                joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+                path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
+                joined.to_parquet(path_to_joined_file)
+                logger.info(f"Saved partial results to {path_to_joined_file}")
+                partial_saved = True
+                breaks_list = []  # Reset list to free memory
+                gc.collect()
 
         # Clean up to prevent memory buildup
         close_and_clean(ds_dl, f"ds_dl_{bbox_west}")
         close_and_clean(ds_historical_subset, f"ds_historical_subset_{bbox_west}")
         close_and_clean(ds_merged, f"ds_merged_{bbox_west}")
+
+        # Force garbage collection after each tile
+        gc.collect()
+        log_memory_usage(f"After tile {i} cleanup")
+
+    # Final concatenation of remaining breaks
+    if breaks_list:
+        breaks_merged = pd.concat(breaks_list, ignore_index=True)
+    elif partial_saved:
+        # Load the partial file if it exists and no breaks_list
+        partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
+        if partial_file.exists():
+            logger.info(f"Loading partial results from {partial_file}")
+            final_joined = pd.read_parquet(partial_file)
+            path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+            final_joined.to_parquet(path_to_joined_file)
+            logger.info(f"Final combined file saved to {path_to_joined_file}")
+            breaks_merged = pd.DataFrame()  # Placeholder
+    else:
+        breaks_merged = pd.DataFrame()
+
+    if not breaks_merged.empty:
+        joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+        path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+        joined.to_parquet(path_to_joined_file)
+        breaks_merged.sort_values('drainage_confidence', ascending=False)
 
     end = datetime.datetime.now()
     logger.debug(f"Finished processing {ANALYSIS_DATE} at time {end}")
@@ -341,15 +393,13 @@ def main():
         logger.info(f"Found {len(downloaded_files)} NetCDF files to combine")
         logger.info("Using memory-efficient batch processing...")
 
-        # Load historical file - we already have it from before
-        if 'ds_historical' not in locals():
-            ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
-            log_memory_usage("After loading historical dataset for final merge")
-        else:
-            log_memory_usage("Historical dataset already loaded")
+        # Load historical file for final merge
+        logger.info("Loading historical dataset for final merge...")
+        ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
+        log_memory_usage("After loading historical dataset for final merge")
 
         # Process in batches to avoid memory issues
-        BATCH_SIZE = 5  # Process 5 files at a time
+        BATCH_SIZE = 2  # Reduced from 5 to 2 for better memory management
         combined = None
         total_duplicates_removed = 0
 
@@ -417,12 +467,9 @@ def main():
             combined = combined.sortby('id_geohash')
             log_memory_usage("Before merging with historical")
 
-            # ========== REPLACED THE MEMORY-INTENSIVE MERGE ==========
-            # Instead of xr.merge which copies everything, use chunked merging
+            # Use chunked merging with smaller chunk size
             logger.info("Merging with historical data using chunked approach...")
-
-            # Use the chunked merge function
-            merge_netcdf_chunked(ds_historical, combined, output_netcdf, chunk_size=500)
+            merge_netcdf_chunked(ds_historical, combined, output_netcdf, chunk_size=250)  # Reduced from 500
 
             # Clean up the combined dataset
             close_and_clean(combined, "combined")
@@ -457,6 +504,12 @@ def main():
             dfs.append(df)
             total_rows += len(df)
             logger.debug(f"Read {file} with {len(df)} rows. Total rows so far: {total_rows}")
+
+            # Clear memory periodically
+            if len(dfs) >= 20:
+                temp_combined = pd.concat(dfs, ignore_index=True)
+                dfs = [temp_combined]
+                gc.collect()
 
         if dfs:
             breaks_combined = pd.concat(dfs, ignore_index=True)
