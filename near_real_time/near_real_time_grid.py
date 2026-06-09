@@ -5,6 +5,7 @@ import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 from dotenv import load_dotenv
+import time
 from loguru import logger
 import sys
 import geemap
@@ -165,7 +166,13 @@ def main():
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         sys.exit(1)
 
+
+    logger.debug(f"Region name is {REGION_NAME}")
+
     bounding_box_coords = region_boundaries[REGION_NAME]
+
+    logger.debug(f"Bounding box coordinates are {bounding_box_coords}")
+    time.sleep(15)
 
     X_MIN_START = bounding_box_coords['X_MIN_START']
     X_MIN_END = bounding_box_coords['X_MIN_END']
