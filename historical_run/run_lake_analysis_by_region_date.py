@@ -115,7 +115,14 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250
     return output_path
 
 
-def main():
+def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
+    """
+    Run the water timeseries analysis for a specific region and analysis date.
+
+    Args:
+        REGION: Region name (e.g., "TEST")
+        ANALYSIS_DATE: Analysis date in YYYY-MM format (e.g., "2026-05")
+    """
     # Set thread limits
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
@@ -129,15 +136,8 @@ def main():
     start = datetime.datetime.now()
     logger.debug(f"Current time: {datetime.datetime.now()}")
 
-    if len(sys.argv) > 1:
-        env_path = sys.argv[1]
-        load_dotenv(dotenv_path=env_path)
-        logger.info(f"Loading environment from: {env_path}")
-    else:
-        load_dotenv()
-        logger.info("Loading environment from default .env file")
-
-    REGION_NAME = os.getenv("region_name", "TEST")
+    # Environment variables should already be loaded from .env file
+    REGION_NAME = REGION
 
     output_dir = os.environ['output_dir']
     output_dir = os.path.join(output_dir, REGION_NAME)
@@ -191,8 +191,6 @@ def main():
     vector_lake_file = os.environ['vector_lake_file']
     path_historical_dw = most_recent_dynamic_world_file
     path_lake_vector = vector_lake_file
-
-    ANALYSIS_DATE = "2026-05"
 
     gdf = gpd.read_parquet(path_lake_vector)
     log_memory_usage("After loading lake vectors")
@@ -387,6 +385,24 @@ def main():
             ds_historical.close()
 
     logger.info("Script completed successfully")
+
+
+def main():
+    """Main function that loads .env and calls the analysis function"""
+    # Load environment variables
+    if len(sys.argv) > 1:
+        env_path = sys.argv[1]
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
+
+    # Call the analysis function with sample parameters
+    REGION = "TEST"
+    ANALYSIS_DATE = "2026-05"
+
+    run_water_timeseries_analysis(REGION, ANALYSIS_DATE)
 
 
 if __name__ == '__main__':
