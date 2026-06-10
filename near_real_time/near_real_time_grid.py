@@ -117,10 +117,10 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250
 
 def main():
     # Set thread limits
-    os.environ['OMP_NUM_THREADS'] = '1'
-    os.environ['MKL_NUM_THREADS'] = '1'
-    os.environ['OPENBLAS_NUM_THREADS'] = '1'
-    os.environ['NUMEXPR_NUM_THREADS'] = '1'
+    # os.environ['OMP_NUM_THREADS'] = '1'
+    # os.environ['MKL_NUM_THREADS'] = '1'
+    # os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    # os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
     log_memory_usage("Program start")
 

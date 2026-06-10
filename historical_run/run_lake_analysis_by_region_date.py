@@ -159,10 +159,10 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
         ANALYSIS_DATE: Analysis date in YYYY-MM format (e.g., "2026-05")
     """
     # Set thread limits
-    os.environ['OMP_NUM_THREADS'] = '1'
-    os.environ['MKL_NUM_THREADS'] = '1'
-    os.environ['OPENBLAS_NUM_THREADS'] = '1'
-    os.environ['NUMEXPR_NUM_THREADS'] = '1'
+    # os.environ['OMP_NUM_THREADS'] = '1'
+    # os.environ['MKL_NUM_THREADS'] = '1'
+    # os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    # os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
     log_memory_usage("Program start")
 
