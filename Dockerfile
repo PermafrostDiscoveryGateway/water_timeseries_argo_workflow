@@ -20,6 +20,8 @@ RUN uv pip install \
 # Copy your application code
 COPY google_cloud_utils/ /app/google_cloud_utils/
 COPY near_real_time /app/near_real_time
+COPY utils /app/utils
+COPY historical_run /app/historical_run
 
 # Add /app to Python path
 ENV PYTHONPATH="/app:${PYTHONPATH}"
