@@ -19,8 +19,8 @@ from water_timeseries.utils.spatial import create_longitude_latitude_grid, filte
 from water_timeseries.dataset import DWDataset
 from water_timeseries.breakpoint import NRTBreakpoint
 import datetime
-from region_boundaries import get_region_boundaries
-import download_new_dynamic_world_data
+from utils.region_boundaries import get_region_boundaries
+from utils.download_new_dynamic_world_data import download_new_dynamic_world_data
 import json
 import resource
 
