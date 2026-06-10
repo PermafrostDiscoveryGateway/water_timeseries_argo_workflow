@@ -114,6 +114,86 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250
     return output_path
 
 
+def debug_dataframe_info(dwds, analysis_date):
+    """Debug function to print dataframe info before breakpoint calculation"""
+    print("\n" + "=" * 80)
+    print(f"DEBUG INFO for analysis_date: {analysis_date}")
+    print("=" * 80)
+
+    # Check the water column
+    water_col = dwds.water_column
+    print(f"\n1. Water column name: '{water_col}'")
+
+    # Get the water data as dataframe
+    try:
+        water_df = dwds.ds[water_col].to_dataframe()
+        print(f"\n2. Water dataframe shape: {water_df.shape}")
+        print(f"   Water dataframe index: {water_df.index.name}")
+        print(f"   Water dataframe columns: {list(water_df.columns)}")
+        print(f"   Water dataframe head:\n{water_df.head()}")
+    except Exception as e:
+        print(f"   Error getting water dataframe: {e}")
+
+    # Check what calculate_break might be doing internally
+    print(f"\n3. Dataset structure:")
+    print(f"   Dimensions: {list(dwds.ds.dims.keys())}")
+    print(f"   Coordinates: {list(dwds.ds.coords.keys())}")
+    print(f"   Data variables: {list(dwds.ds.data_vars.keys())}")
+
+    # Check if date is a coordinate or variable
+    if 'date' in dwds.ds.coords:
+        print(f"\n4. 'date' is a coordinate")
+        print(f"   Date values: {dwds.ds['date'].values[:5]}...")
+    elif 'date' in dwds.ds.data_vars:
+        print(f"\n4. 'date' is a data variable")
+        print(f"   Date shape: {dwds.ds['date'].shape}")
+        print(f"   Date values: {dwds.ds['date'].values[:5]}...")
+    else:
+        print(f"\n4. 'date' not found in dataset")
+
+    # Try to see what the breakpoint calculation will do
+    print(f"\n5. Checking ds_analysis_filtered (from breakpoint.py):")
+    # This simulates what happens inside calculate_break
+    try:
+        # Filter to analysis_date
+        ds_filtered = dwds.ds.where(dwds.ds['date'] <= pd.to_datetime(analysis_date), drop=True)
+        # Get the water column dataframe
+        filtered_water_df = ds_filtered[water_col].to_dataframe()
+        print(f"   Filtered water dataframe shape: {filtered_water_df.shape}")
+        print(f"   Filtered water dataframe index: {filtered_water_df.index.names}")
+        print(f"   Filtered water dataframe columns: {list(filtered_water_df.columns)}")
+    except Exception as e:
+        print(f"   Error simulating filter: {e}")
+
+    print("=" * 80 + "\n")
+
+
+def fix_dataset_for_breakpoint(ds):
+    """Convert dataset to a format that won't cause MultiIndex join issues"""
+    # Create a completely new dataset structure
+    # Stack id_geohash and date into a single dimension
+    stacked = ds.stack(sample=('id_geohash', 'date'))
+
+    # Reset the index to make everything flat
+    # Convert to dataframe, reset index, then back to dataset
+    # This is brute force but effective
+    df_list = []
+    for var in stacked.data_vars:
+        df = stacked[var].to_dataframe()
+        df_list.append(df)
+
+    # Combine all variables
+    combined_df = pd.concat(df_list, axis=1)
+
+    # Reset index to make sample a regular column
+    combined_df = combined_df.reset_index()
+
+    # Create new dataset from dataframe
+    ds_fixed = xr.Dataset.from_dataframe(combined_df)
+
+    return ds_fixed
+
+
 def main():
     # Set thread limits
     os.environ['OMP_NUM_THREADS'] = '1'
@@ -124,7 +204,6 @@ def main():
     log_memory_usage("Program start")
 
     region_boundaries = get_region_boundaries()
-
 
     start = datetime.datetime.now()
     logger.debug(f"Current time: {datetime.datetime.now()}")
@@ -184,7 +263,8 @@ def main():
     logger.info(f"Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
 
     # TODO get all the dates here
-    dates_to_run = [datetime.date(year, month, 1).strftime("%Y-%m") for year in range(2016, 2026) for month in [6, 7, 8, 9]]
+    dates_to_run = [datetime.date(year, month, 1).strftime("%Y-%m") for year in range(2016, 2026) for month in
+                    [6, 7, 8, 9]]
 
     for date in dates_to_run:
         vector_lake_file = os.environ['vector_lake_file']
@@ -311,8 +391,31 @@ def main():
             gc.collect()
 
             # Merge and process
-            ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
-            dwds = DWDataset(ds_merged)
+            ds_merged = xr.merge([ds_historical_subset, ds_dl], compat='override').sortby('date')
+
+            # FIX: Convert to a flat structure without MultiIndex
+            # Create a new dataset with id_geohash as the only dimension
+            # by making each id_geohash have its own date values as variables
+            ds_fixed = xr.Dataset()
+
+            # Add id_geohash as a dimension
+            ds_fixed['id_geohash'] = ds_merged['id_geohash']
+
+            # For each variable, keep the structure but ensure no MultiIndex issues
+            for var in ds_merged.data_vars:
+                ds_fixed[var] = ds_merged[var]
+
+            # Ensure date is properly set as a coordinate
+            ds_fixed = ds_fixed.assign_coords(date=ds_merged['date'])
+
+            dwds = DWDataset(ds_fixed)
+
+            # Debug to verify the fix
+            print("\n=== VERIFYING FIX ===")
+            water_df = dwds.ds['water'].to_dataframe()
+            print(f"Water dataframe index levels: {water_df.index.names}")
+            print(f"Water dataframe columns: {list(water_df.columns)}")
+            print("===================\n")
 
             breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
             breaks.to_parquet(outfile_breaks)
