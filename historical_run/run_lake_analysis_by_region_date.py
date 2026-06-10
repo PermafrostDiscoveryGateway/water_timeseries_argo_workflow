@@ -390,7 +390,7 @@ def main():
 
     # Call the analysis function with sample parameters
     REGION = "TEST"
-    ANALYSIS_DATE = "2026-05"
+    ANALYSIS_DATE = "2024-06"
 
     run_water_timeseries_analysis(REGION, ANALYSIS_DATE)
 
