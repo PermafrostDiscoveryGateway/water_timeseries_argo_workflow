@@ -7,7 +7,7 @@ import os
 import numpy as np
 import glob
 import xarray as xr
-from combine_chunks_with_previous import combine_new_dynamic_world_data_with_latest
+from .combine_chunks_with_previous import combine_new_dynamic_world_data_with_latest
 from dotenv import load_dotenv
 from water_timeseries.downloader import EarthEngineDownloader
 
