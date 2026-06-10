@@ -17,11 +17,154 @@ import psutil
 from water_timeseries.downloader import EarthEngineDownloader
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
 from water_timeseries.dataset import DWDataset
-from water_timeseries.breakpoint import NRTBreakpoint
+from water_timeseries.breakpoint import NRTBreakpoint as OriginalNRTBreakpoint
 import datetime
 from utils.region_boundaries import get_region_boundaries
 from utils.download_new_dynamic_world_data import download_new_dynamic_world_data, check_missing_data_in_netcdf
 import resource
+from joblib import Parallel, delayed
+
+
+# ============= PATCHED NRTBREAKPOINT CLASS =============
+class PatchedNRTBreakpoint(OriginalNRTBreakpoint):
+    """Patched version of NRTBreakpoint that fixes the date column overlap issue."""
+
+    def calculate_break(
+            self,
+            dataset,
+            analysis_date,
+            data_aggregation_period: str = "all",
+            object_id=None,
+            keep_nans: bool = False,
+    ):
+        """Calculate breakpoints with fixed join operation."""
+
+        analysis_date = self._validate_analysis_date(analysis_date)
+        print(analysis_date)
+        print(analysis_date.strftime("%Y-%m"))
+
+        # Check if analysis_date in dataset.dates_ (convert to YYYY-MM format for comparison)
+        if analysis_date not in dataset.dates_:
+            raise ValueError(f"Analysis date {analysis_date.strftime('%Y-%m')} is not available in the dataset.")
+
+        # select dataset - default normalized data
+        data = dataset.ds_normalized
+
+        if object_id is not None:
+            if isinstance(object_id, str):
+                object_id = [object_id]
+            object_id = [obj for obj in object_id if obj in dataset.object_ids_]
+            data = data.sel(id_geohash=object_id)
+
+        # split data into historical and analysis datasets based on analysis_date
+        ds_analysis = data.sel(date=analysis_date)
+        ds_historical = data.where(data["date"] < analysis_date, drop=True)
+
+        if data_aggregation_period == "monthly":
+            print("Filtering to monthly data for analysis date month:", analysis_date.month)
+            ds_historical = ds_historical.where(ds_historical.date.dt.month == analysis_date.month, drop=True)
+
+        # filter to dates where analysis date has some data
+        ds_analysis_filtered, ds_historical_filtered, valid_ids, nan_ids = self._filter_valid_ids(
+            ds_analysis, ds_historical
+        )
+
+        if len(valid_ids) == 0:
+            if keep_nans:
+                return pd.DataFrame(index=nan_ids, columns=self.output_columns)
+            else:
+                return pd.DataFrame(columns=self.output_columns)
+
+        # loop over each lake and predict next value using ARIMA
+        cpu_count = os.cpu_count() or 1
+        n_jobs = max(1, min(cpu_count, len(valid_ids)))
+        predictions = Parallel(n_jobs=n_jobs, verbose=10)(
+            delayed(self.predict_nrt_arima)(
+                ds_in=ds_historical_filtered, id_geohash=idx, water_column=dataset.water_column
+            )
+            for idx in tqdm(valid_ids, desc="NRT breakpoints")
+        )
+        # remove None values
+        predictions = [prediction for prediction in predictions if prediction is not None]
+        prediction_df = pd.DataFrame(predictions)
+
+        if prediction_df.empty:
+            prediction_df = pd.DataFrame(
+                index=ds_analysis_filtered.id_geohash.values,
+                columns=self.output_columns,
+            )
+
+        # ========== FIXED JOIN OPERATION ==========
+        # Convert the water column to dataframe and reset index
+        left_df = ds_analysis_filtered[dataset.water_column].to_dataframe().reset_index()
+
+        # Handle right_df - it has id_geohash as index name
+        if prediction_df.index.name == 'id_geohash' or prediction_df.index.name is None:
+            # Reset index to make id_geohash a column
+            right_df = prediction_df.reset_index()
+            # Rename the index column to 'id_geohash' if it's unnamed
+            if 'index' in right_df.columns and 'id_geohash' not in right_df.columns:
+                right_df = right_df.rename(columns={'index': 'id_geohash'})
+        else:
+            right_df = prediction_df.copy()
+
+        # Ensure both dataframes have the required columns
+        if 'id_geohash' not in left_df.columns:
+            raise KeyError("left_df missing 'id_geohash' column")
+        if 'id_geohash' not in right_df.columns:
+            raise KeyError("right_df missing 'id_geohash' column")
+        if 'date' not in left_df.columns:
+            raise KeyError("left_df missing 'date' column")
+
+        # Merge on id_geohash and date
+        df_output = left_df.merge(right_df, on=['id_geohash', 'date'], how='left').round(4)
+        # ==========================================
+
+        # rename observed water column for clarity
+        df_output.rename(columns={dataset.water_column: "water_observed"}, inplace=True)
+
+        # calculate residuals
+        df_output["water_residual"] = df_output["water_observed"] - df_output["water_predicted"]
+
+        df_historical_stats = self._get_ds_stats(ds_historical_filtered, water_column=dataset.water_column).round(4)
+        df_historical_stats.columns = "water_historical_" + df_historical_stats.columns.astype(str)
+
+        df_output = df_output.join(df_historical_stats, on='id_geohash', how='left').round(4)
+
+        # add confidence level to output
+        df_output = self._add_confidence_level(df_output)
+
+        # if keep_nans is selected: calculate historical stats for these and append to calculated data
+        if keep_nans:
+            prediction_df_nan = pd.DataFrame(
+                index=nan_ids,
+                columns=self.output_columns_base,
+            )
+            df_historical_stats_nans = self._get_ds_stats(
+                ds_historical.sel(id_geohash=nan_ids), water_column=dataset.water_column
+            ).round(4)
+            df_historical_stats_nans.columns = "water_historical_" + df_historical_stats_nans.columns.astype(str)
+
+            # Reset index for NaN data
+            df_output_nan = prediction_df_nan.reset_index()
+            df_output_nan = df_output_nan.rename(columns={'index': 'id_geohash'})
+            df_output_nan = df_output_nan.join(df_historical_stats_nans, on='id_geohash', how='left').round(4)
+            df_output = pd.concat([df_output, df_output_nan]).sort_values('id_geohash').reset_index(drop=True)
+
+        # Set index back to id_geohash for consistency with expected output
+        if 'id_geohash' in df_output.columns:
+            df_output = df_output.set_index('id_geohash')
+
+        # Select only the columns that exist in the output
+        available_columns = [col for col in self.output_columns if col in df_output.columns]
+        return df_output[available_columns]
+
+
+# Replace the original NRTBreakpoint with our patched version
+NRTBreakpoint = PatchedNRTBreakpoint
+
+
+# ===================================================
 
 
 def log_memory_usage(stage: str):
@@ -168,32 +311,6 @@ def debug_dataframe_info(dwds, analysis_date):
     print("=" * 80 + "\n")
 
 
-def fix_dataset_for_breakpoint(ds):
-    """Convert dataset to a format that won't cause MultiIndex join issues"""
-    # Create a completely new dataset structure
-    # Stack id_geohash and date into a single dimension
-    stacked = ds.stack(sample=('id_geohash', 'date'))
-
-    # Reset the index to make everything flat
-    # Convert to dataframe, reset index, then back to dataset
-    # This is brute force but effective
-    df_list = []
-    for var in stacked.data_vars:
-        df = stacked[var].to_dataframe()
-        df_list.append(df)
-
-    # Combine all variables
-    combined_df = pd.concat(df_list, axis=1)
-
-    # Reset index to make sample a regular column
-    combined_df = combined_df.reset_index()
-
-    # Create new dataset from dataframe
-    ds_fixed = xr.Dataset.from_dataframe(combined_df)
-
-    return ds_fixed
-
-
 def main():
     # Set thread limits
     os.environ['OMP_NUM_THREADS'] = '1'
@@ -283,6 +400,7 @@ def main():
         print('created grid')
         log_memory_usage("After creating grid")
 
+        # Use the patched NRTBreakpoint
         bp = NRTBreakpoint()
 
         current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
@@ -392,30 +510,7 @@ def main():
 
             # Merge and process
             ds_merged = xr.merge([ds_historical_subset, ds_dl], compat='override').sortby('date')
-
-            # FIX: Convert to a flat structure without MultiIndex
-            # Create a new dataset with id_geohash as the only dimension
-            # by making each id_geohash have its own date values as variables
-            ds_fixed = xr.Dataset()
-
-            # Add id_geohash as a dimension
-            ds_fixed['id_geohash'] = ds_merged['id_geohash']
-
-            # For each variable, keep the structure but ensure no MultiIndex issues
-            for var in ds_merged.data_vars:
-                ds_fixed[var] = ds_merged[var]
-
-            # Ensure date is properly set as a coordinate
-            ds_fixed = ds_fixed.assign_coords(date=ds_merged['date'])
-
-            dwds = DWDataset(ds_fixed)
-
-            # Debug to verify the fix
-            print("\n=== VERIFYING FIX ===")
-            water_df = dwds.ds['water'].to_dataframe()
-            print(f"Water dataframe index levels: {water_df.index.names}")
-            print(f"Water dataframe columns: {list(water_df.columns)}")
-            print("===================\n")
+            dwds = DWDataset(ds_merged)
 
             breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
             breaks.to_parquet(outfile_breaks)
