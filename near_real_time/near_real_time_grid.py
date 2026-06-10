@@ -117,10 +117,10 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250
 
 def main():
     # Set thread limits
-    os.environ['OMP_NUM_THREADS'] = '1'
-    os.environ['MKL_NUM_THREADS'] = '1'
-    os.environ['OPENBLAS_NUM_THREADS'] = '1'
-    os.environ['NUMEXPR_NUM_THREADS'] = '1'
+    # os.environ['OMP_NUM_THREADS'] = '1'
+    # os.environ['MKL_NUM_THREADS'] = '1'
+    # os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    # os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
     log_memory_usage("Program start")
 
@@ -216,11 +216,11 @@ def main():
 
     bp = NRTBreakpoint()
 
-    current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
+    current_breakpoint_dir = Path(output_dir) / REGION_NAME / f'breakpoint_{ANALYSIS_DATE}'
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
     logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
-    current_download_dir = Path(str(dynamic_world_download_dir), f'download_{ANALYSIS_DATE}')
+    current_download_dir = Path(str(dynamic_world_download_dir), REGION_NAME, f'download_{ANALYSIS_DATE}')
     current_download_dir.mkdir(exist_ok=True, parents=True)
     logger.debug(f"Current download directory: {current_download_dir}")
 
