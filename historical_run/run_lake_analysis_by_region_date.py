@@ -175,7 +175,7 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
     REGION_NAME = REGION
 
     output_dir = os.environ['output_dir']
-    output_dir = os.path.join(output_dir, REGION_NAME)
+    output_dir = os.path.join(output_dir, REGION_NAME, 'historical')
     project = os.environ['project']
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
