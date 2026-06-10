@@ -191,7 +191,9 @@ spec:
           dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           output_dir=/data/water_timeseries/output
-          region_name=TEST
+          region_name=CANADA
+          start_year=2015
+          end_year=2024
           EOF
           
           # Create debug directory
@@ -207,7 +209,7 @@ spec:
           echo "=== RUNNING SCRIPT ==="
           cd /app
           
-          python /app/near_real_time/near_real_time_grid.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
+          python /app/historical_run/historical_grid.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
           
           SCRIPT_EXIT_CODE=${PIPESTATUS[0]}
           
