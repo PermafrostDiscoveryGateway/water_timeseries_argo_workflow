@@ -77,7 +77,7 @@ spec:
     inputs: {}
     outputs: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:19-download-and-process-over-grid-tiles
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:23-script-for-historical-run-run-by-a-date-range
       imagePullPolicy: Always
       resources:
         requests:
