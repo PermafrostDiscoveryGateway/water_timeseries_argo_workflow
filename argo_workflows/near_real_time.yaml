@@ -1,0 +1,243 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: near-real-time
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+  entrypoint: main
+  imagePullSecrets:
+  - name: ghcr-secret
+  volumes:
+  - name: lake-drainage-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+  - name: gcp-creds
+    secret:
+      secretName: personal-gcp-creds
+      items:
+      - key: key.json
+        path: application_default_credentials.json
+  - name: earth-engine-creds
+    secret:
+      secretName: earth-engine-creds
+      items:
+      - key: credentials
+        path: credentials
+  templates:
+  - name: main
+    metadata:
+      labels:
+        long-running-job: "true"
+    container:
+      image: ghcr.io/tcnichol/water_timeseries_argo_workflow:3-near-real-time-run-argo-workflow
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "16Gi"
+          cpu: "4"
+          ephemeral-storage: "5Gi"
+        limits:
+          memory: "18Gi"
+          cpu: "4"
+          ephemeral-storage: "10Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          
+          echo "=== STARTING NEAR REAL-TIME BREAKPOINT JOB ==="
+          echo "Timestamp: $(date)"
+          echo "Hostname: $(hostname)"
+          echo "Pod: ${POD_NAME:-unknown}"
+          
+          # Create ALL required directories as specified in .env file
+          echo "=== CREATING DIRECTORY STRUCTURE ==="
+          
+          # Main directories from .env
+          mkdir -p /data/water_timeseries
+          mkdir -p /data/water_timeseries/dynamic_world_data
+          mkdir -p /data/water_timeseries/split_lakes
+          mkdir -p /data/water_timeseries/input
+          mkdir -p /data/water_timeseries/new_dynamic_world
+          mkdir -p /data/water_timeseries/split_new_dynamic_world
+          mkdir -p /data/water_timeseries/output
+          s
+          
+          # Set permissions
+          chmod -R 755 /data/water_timeseries
+          
+          # Check if input files exist
+          echo "=== CHECKING INPUT FILES ==="
+          if [ ! -f "/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet" ]; then
+            echo "WARNING: Vector lake file not found. This may be expected if first run."
+            ls -la /data/water_timeseries/input/ 2>/dev/null || echo "Input directory empty or missing"
+          fi
+          
+          # Check for existing Dynamic World files
+          if [ -d "/data/water_timeseries/dynamic_world_data" ]; then
+            DW_COUNT=$(find /data/water_timeseries/dynamic_world_data -name "*.nc" 2>/dev/null | wc -l)
+            echo "Found $DW_COUNT existing Dynamic World .nc files"
+          fi
+          
+          # Create .env file in the expected location
+          echo "=== CREATING .env FILE ==="
+          cat > /data/.env << 'EOF'
+          project=pdg-project-406720
+          vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          bucket_path=pdg-storage-default/water_timeseries_v2/data/input
+          base_dir=/data/water_timeseries
+          dynamic_world_dir=/data/water_timeseries/dynamic_world_data
+          split_vector_dataset_dir=/data/water_timeseries/split_lakes
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          new_dynamic_world_data_dir=/data/water_timeseries/new_dynamic_world
+          split_new_dynamic_world_data_dir=/data/water_timeseries/split_new_dynamic_world
+          dynamic_world_data_file=/data/water_timeseries/input/lakes_dw_V2d.nc
+          output_dir=/data/water_timeseries/output
+          download_recent_data=False
+          EOF
+          
+          # Also create a version with download_recent_data=True for testing
+          # Uncomment to always download fresh data
+          # sed -i 's/download_recent_data=False/download_recent_data=True/' /data/.env
+          
+          echo "Created .env file at /data/.env with contents:"
+          cat /data/.env
+          
+          # Check available space and system info
+          echo "=== SYSTEM INFORMATION ==="
+          df -h /data
+          echo "Memory info:"
+          free -h
+          echo "CPU info:"
+          lscpu | grep -E "^(CPU\(s\):|Model name:|Architecture:)"
+          echo "Python version:"
+          python --version
+          
+          # Set up credentials
+          echo "=== SETTING UP CREDENTIALS ==="
+          
+          # GCP credentials
+          export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+          if [ -f "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
+            echo "✅ GCP credentials found"
+          else
+            echo "❌ GCP credentials missing"
+            ls -la /root/.config/gcloud/
+          fi
+          
+          # Earth Engine credentials
+          export EARTHENGINE_TOKEN=/root/.config/earthengine/credentials
+          if [ -f "$EARTHENGINE_TOKEN" ]; then
+            echo "✅ Earth Engine credentials found"
+          else
+            echo "❌ Earth Engine credentials missing"
+            ls -la /root/.config/earthengine/
+          fi
+          
+          # Set Earth Engine project
+          export EE_CLOUD_PROJECT=pdg-wg-workflow
+          export EE_PROJECT=pdg-project-406720
+          
+          # Environment variables dump (excluding secrets)
+          echo "=== KEY ENVIRONMENT VARIABLES ==="
+          env | grep -E "EE_|GOOGLE_|PROJECT|_DIR|_FILE" | sort
+          
+          # Create a debug directory for logs
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)"
+          mkdir -p "$DEBUG_DIR"
+          
+          # Run the near-real-time breakpoint script
+          echo "=== RUNNING NEAR REAL-TIME BREAKPOINT SCRIPT ==="
+          echo "Python script will load .env from: /data/.env"
+          
+          # Run the script with the .env file path as argument
+          cd /app
+          python /app/near_real_time/near_real_time.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
+          
+          SCRIPT_EXIT_CODE=${PIPESTATUS[0]}
+          
+          echo "=== SCRIPT COMPLETED ==="
+          echo "Exit code: $SCRIPT_EXIT_CODE"
+          echo "Timestamp: $(date)"
+          
+          # Check for output files
+          echo "=== CHECKING OUTPUT ==="
+          if [ -d "/data/water_timeseries/output" ]; then
+            echo "Output directory contents:"
+            ls -lh /data/water_timeseries/output/
+            OUTPUT_COUNT=$(find /data/water_timeseries/output -type f -name "*.csv" -o -name "*.parquet" 2>/dev/null | wc -l)
+            echo "Total output files: $OUTPUT_COUNT"
+            
+            if [ $OUTPUT_COUNT -gt 0 ]; then
+              echo "✅ Successfully generated output files"
+              # List the most recent output files
+              find /data/water_timeseries/output -type f -printf '%T@ %p\n' | sort -rn | head -5 | cut -d' ' -f2-
+            fi
+          else
+            echo "❌ Output directory not found or empty"
+          fi
+          
+          # Capture additional diagnostics if script failed
+          if [ $SCRIPT_EXIT_CODE -ne 0 ]; then
+            echo "=== SCRIPT FAILED - CAPTURING DEBUG INFO ==="
+            
+            # Save all possible debug info
+            echo "=== Python package versions ==="
+            pip list | grep -E "xarray|pandas|loguru|earthengine|google"
+            
+            echo "=== Directory structure ==="
+            find /data/water_timeseries -type d | head -20
+            
+            echo "=== Available .nc files ==="
+            find /data -name "*.nc" 2>/dev/null | head -10
+            
+            echo "=== Last 50 lines of script output ==="
+            tail -50 "$DEBUG_DIR/script_output.log"
+            
+            # Keep container alive for debugging
+            echo "Debug mode activated. Pod will remain for 6 hours."
+            echo "Use: kubectl -n argo exec -it $POD_NAME -- /bin/bash"
+            
+            # Create a marker file to indicate debugging
+            touch "$DEBUG_DIR/DEBUG_MODE_ACTIVE"
+            
+            # Wait for debugger
+            sleep 21600
+          fi
+          
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: ENV_FILE_PATH
+        value: "/data/.env"
+      - name: GOOGLE_APPLICATION_CREDENTIALS
+        value: /root/.config/gcloud/application_default_credentials.json
+      - name: EARTHENGINE_TOKEN
+        value: /root/.config/earthengine/credentials
+      - name: EE_CLOUD_PROJECT
+        value: "pdg-wg-workflow"
+      - name: EE_PROJECT
+        value: "pdg-project-406720"
+      - name: POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+      - name: POD_NAMESPACE
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.namespace
+      - name: PYTHONUNBUFFERED
+        value: "1"  # Ensures Python output is not buffered
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: earth-engine-creds
+        mountPath: /root/.config/earthengine
+        readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data

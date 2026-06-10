@@ -1,23 +1,37 @@
 FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:main
 
-# Install additional Python dependencies
-COPY requirements.txt /tmp/requirements.txt
-RUN uv pip install --system -r /tmp/requirements.txt
+# Install additional Python dependencies using uv
+# Pin geemap to prevent it from upgrading
+RUN uv pip install \
+    python-dotenv \
+    google-cloud-storage \
+    google-api-core \
+    toml \
+    dask[dataframe] \
+    pyarrow \
+    geemap==0.37.2
 
-# Copy google_cloud_utils folder and everything in it to /app/google_cloud_utils
+# Alternatively, prevent upgrading any packages that are already installed:
+# RUN uv pip install --no-deps \  # This would skip dependencies but might break things
+#     python-dotenv \
+#     google-cloud-storage \
+#     ...
+
+# Copy your application code
 COPY google_cloud_utils/ /app/google_cloud_utils/
+COPY near_real_time /app/near_real_time
 
-# Copy utils folder and everything in it to /app/utils
-COPY utils/ /app/utils/
-
-# Add /app to Python path so modules can be imported
+# Add /app to Python path
 ENV PYTHONPATH="/app:${PYTHONPATH}"
+
+# Verify geemap version after install
+RUN python -c "import geemap; print(f'geemap version after install: {geemap.__version__}'); print(f'Has ee_initialize: {hasattr(geemap, \"ee_initialize\")}')" || echo "geemap verification failed"
+
+RUN python -c "import geemap; print(f'✅ geemap version: {geemap.__version__}'); assert hasattr(geemap, 'ee_initialize'), 'ee_initialize missing!'; print('✅ ee_initialize exists!')"
 
 # Set working directory
 WORKDIR /app
 
-# Entrypoint - allows running any Python script with parameters
+# No verification step - just run
 ENTRYPOINT ["python"]
-
-# Default command (shows help if no script specified)
-CMD ["-c", "print('Usage: docker run <image> <script.py> [args...]')"]
+CMD ["-c", "print('Usage: docker run <script.py> [args...]')"]
