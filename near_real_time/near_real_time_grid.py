@@ -12,9 +12,11 @@ import ee
 import glob
 import os
 import gc
+import shutil
 import psutil
 from water_timeseries.downloader import EarthEngineDownloader
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
+from water_timeseries.utils import io
 from water_timeseries.dataset import DWDataset
 from water_timeseries.breakpoint import NRTBreakpoint
 import datetime
@@ -56,10 +58,10 @@ def close_and_clean(ds, name: str):
         gc.collect()
 
 
-def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250):
+def merge_zarr_chunked(ds_historical, combined_ds, output_path, chunk_size=250):
     """
     Merge historical and combined datasets in chunks.
-    Collects all chunks first then concatenates and writes to file.
+    Collects all chunks first then concatenates and writes to zarr file.
     """
     logger.info(f"Merging in chunks of {chunk_size} ids")
     log_memory_usage("Before chunked merge")
@@ -92,11 +94,9 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250
     if merged_chunks:
         final_merged = xr.concat(merged_chunks, dim='id_geohash')
 
-        encoding = {var: {'zlib': True, 'complevel': 5} for var in final_merged.data_vars}
+        temp_output = output_path.with_suffix('.tmp.zarr')
 
-        temp_output = output_path.with_suffix('.tmp.nc')
-
-        final_merged.to_netcdf(temp_output, encoding=encoding, mode='w')
+        io.save_xarray_dataset(final_merged, temp_output)
 
         close_and_clean(final_merged, "final_merged")
         for chunk in merged_chunks:
@@ -104,10 +104,11 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250
 
         if temp_output.exists():
             if output_path.exists():
-                output_path.unlink()
+                shutil.rmtree(output_path)
             temp_output.rename(output_path)
             logger.info(f"Successfully wrote merged file to {output_path}")
-            logger.info(f"File size: {output_path.stat().st_size / (1024 ** 3):.2f} GB")
+            size_gb = sum(f.stat().st_size for f in output_path.rglob('*') if f.is_file()) / (1024 ** 3)
+            logger.info(f"File size: {size_gb:.2f} GB")
     else:
         logger.error("No chunks were created, cannot merge")
 
@@ -317,11 +318,11 @@ def main():
     end = datetime.datetime.now()
     logger.debug(f"Finished processing in {end - start}")
 
-    logger.info("Combining NetCDF files...")
+    logger.info("Combining into Zarr file...")
 
     downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{ANALYSIS_DATE}_*.nc')))
-    output_netcdf = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.nc'
-    logger.debug(f"Output netcdf file being saved to {output_netcdf}")
+    output_zarr = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.zarr'
+    logger.debug(f"Output zarr file being saved to {output_zarr}")
 
     if downloaded_files:
         ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
@@ -353,7 +354,7 @@ def main():
             gc.collect()
 
         if combined is not None:
-            merge_netcdf_chunked(ds_historical, combined, output_netcdf, chunk_size=250)
+            merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
             ds_historical.close()
 
     logger.info("Script completed successfully")
