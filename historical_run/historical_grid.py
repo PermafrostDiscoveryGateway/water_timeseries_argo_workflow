@@ -2,7 +2,8 @@ from .run_lake_analysis_by_region_date import run_water_timeseries_analysis
 import sys
 from loguru import logger
 from datetime import date
-
+from dotenv import load_dotenv
+import os
 
 def get_dates(start_year, end_year):
     """
@@ -27,11 +28,22 @@ def get_dates(start_year, end_year):
 
 
 def main():
-    REGION = sys.argv[1]
     logger.debug(f"Beginning historical run")
+    if len(sys.argv) > 1:
+        env_path = sys.argv[1]
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
+
+    REGION = os.getenv("REGION", "TEST")
+    start_year = int(os.getenv("START_YEAR", 2016))
+    end_year = int(os.getenv("END_YEAR", 2025))
+
 
     logger.debug(f"Historical dates are")
-    historical_dates = get_dates(2016, 2025)
+    historical_dates = get_dates(start_year, end_year)
     for date in historical_dates:
         logger.debug(f"Doing historical run for {REGION} and date {date}")
         run_water_timeseries_analysis(REGION, date)
