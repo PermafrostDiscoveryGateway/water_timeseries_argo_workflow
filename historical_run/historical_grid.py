@@ -98,26 +98,18 @@ class PatchedNRTBreakpoint(OriginalNRTBreakpoint):
         # Convert the water column to dataframe and reset index
         left_df = ds_analysis_filtered[dataset.water_column].to_dataframe().reset_index()
 
-        # Handle right_df - it has id_geohash as index name
+        # For right_df, we just need to align by id_geohash since date is the same for all
+        # (all rows are for the same analysis_date)
         if prediction_df.index.name == 'id_geohash' or prediction_df.index.name is None:
-            # Reset index to make id_geohash a column
             right_df = prediction_df.reset_index()
-            # Rename the index column to 'id_geohash' if it's unnamed
             if 'index' in right_df.columns and 'id_geohash' not in right_df.columns:
                 right_df = right_df.rename(columns={'index': 'id_geohash'})
         else:
             right_df = prediction_df.copy()
 
-        # Ensure both dataframes have the required columns
-        if 'id_geohash' not in left_df.columns:
-            raise KeyError("left_df missing 'id_geohash' column")
-        if 'id_geohash' not in right_df.columns:
-            raise KeyError("right_df missing 'id_geohash' column")
-        if 'date' not in left_df.columns:
-            raise KeyError("left_df missing 'date' column")
-
-        # Merge on id_geohash and date
-        df_output = left_df.merge(right_df, on=['id_geohash', 'date'], how='left').round(4)
+        # Simply merge on id_geohash only, since date is constant
+        # The left_df has date column, right_df doesn't need it
+        df_output = left_df.merge(right_df, on='id_geohash', how='left').round(4)
         # ==========================================
 
         # rename observed water column for clarity
