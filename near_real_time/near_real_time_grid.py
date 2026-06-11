@@ -20,8 +20,6 @@ from water_timeseries.dataset import DWDataset
 from water_timeseries.breakpoint import NRTBreakpoint
 import datetime
 from utils.region_boundaries import get_region_boundaries
-from utils.download_new_dynamic_world_data import download_new_dynamic_world_data, check_missing_data_in_netcdf
-import json
 import resource
 
 
