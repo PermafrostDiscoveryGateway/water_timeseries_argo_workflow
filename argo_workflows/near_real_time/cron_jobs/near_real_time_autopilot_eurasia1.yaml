@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  name: near-real-time-autopilot
+  name: near-real-time-eurasia1
   namespace: argo
   annotations:
     workflows.argoproj.io/pod-keep: "OnCompletion"
@@ -38,7 +38,7 @@ spec:
           ephemeral-storage: "8Gi"
         limits:
           cpu: "16"
-          memory: "48Gi"  # Higher limit
+          memory: "48Gi"
           ephemeral-storage: "16Gi"
 
   artifactRepository:
@@ -75,9 +75,14 @@ spec:
       labels:
         long-running-job: "true"
     inputs: {}
-    outputs: {}
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:10-for-chunk-progress-save-intermediate-results-allow-resume
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:19-download-and-process-over-grid-tiles
       imagePullPolicy: Always
       resources:
         requests:
@@ -90,9 +95,20 @@ spec:
           set -e
           set -x
           
+          # Create log directory and file for artifact
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+          
           echo "=== STARTING NEAR REAL-TIME BREAKPOINT JOB (AUTOPILOT) ==="
           echo "Timestamp: $(date)"
           echo "Pod: ${POD_NAME:-unknown}"
+          
+          # Create debug directory on PVC for long-term storage
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)"
+          mkdir -p "$DEBUG_DIR"
+          
+          # Also tee to PVC for persistence
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
           
           # Check resources
           echo "=== RESOURCE ALLOCATION ==="
@@ -105,113 +121,76 @@ spec:
           echo "=== PYTHON ENVIRONMENT ==="
           which python
           python --version
-          which pip
-          pip --version
           
-          echo "Python sys.path:"
-          python -c "import sys; print('\n'.join(sys.path))"
+          # Fix Earth Engine credentials - copy to writable location and redirect
+          echo "=== FIXING EARTH ENGINE CREDENTIALS ==="
           
-          # Try multiple methods to install packages
-          echo "=== INSTALLING PYTHON PACKAGES ==="
+          # Create a writable directory with the same structure
+          mkdir -p /tmp/home/.config/earthengine
           
-          # Install Dask and dependencies first (required for new functionality)
-          echo "=== INSTALLING DASK AND DEPENDENCIES ==="
+          # Copy the credentials from the read-only mount to writable location
+          cp -L /root/.config/earthengine/credentials /tmp/home/.config/earthengine/credentials
           
-          # Method 1: Try uv
-          if command -v uv &> /dev/null; then
-            echo "Method 1: Using uv"
-            uv pip install --system python-dotenv dask[dataframe] pyarrow || true
-          fi
+          # Set HOME to point to our writable directory
+          export HOME=/tmp/home
           
-          # Method 2: Try pip with --user
-          echo "Method 2: Using pip with --user"
-          pip install --user --no-cache-dir python-dotenv google-cloud-storage toml dask[dataframe] pyarrow || true
+          # Also set explicit token path
+          export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
           
-          # Method 3: Try pip with --target
-          echo "Method 3: Using pip with --target"
-          mkdir -p /tmp/packages
-          pip install --target=/tmp/packages --no-cache-dir python-dotenv google-cloud-storage toml dask[dataframe] pyarrow || true
-          export PYTHONPATH="/tmp/packages:${PYTHONPATH}"
+          # For geemap, also set the config directory
+          export EE_CONFIG_DIR=/tmp/home/.config/earthengine
           
-          # Method 4: Direct download and install
-          echo "Method 4: Direct download"
-          curl -s https://bootstrap.pypa.io/get-pip.py | python
-          pip install python-dotenv dask[dataframe] pyarrow --no-cache-dir || true
+          # Verify the copied credentials
+          echo "Credentials copied to: $EARTHENGINE_TOKEN"
+          ls -la /tmp/home/.config/earthengine/credentials
           
-          # Verify Dask installation
-          echo "=== VERIFYING DASK INSTALLATION ==="
+          # Verify JSON is valid
+          python -c "
+          import json
+          with open('$EARTHENGINE_TOKEN', 'r') as f:
+              data = json.load(f)
+              print(f'✓ Credentials valid! Keys: {list(data.keys())}')
+          "
           
-          # Check Dask version and components
-          python -c "import dask; print(f'Dask version: {dask.__version__}')" 2>&1 || echo "Dask import failed"
-          python -c "import dask.dataframe; print('Dask dataframe module loaded successfully')" 2>&1 || echo "Dask dataframe import failed"
-          python -c "import pyarrow; print(f'PyArrow version: {pyarrow.__version__}')" 2>&1 || echo "PyArrow import failed"
-          
-          # Check Dask configuration
-          echo "Dask configuration:"
-          python -c "import dask; print(dask.config.config)" 2>&1 | head -20 || echo "Cannot get Dask config"
-          
-          # Verify other installations
-          echo "=== VERIFYING OTHER INSTALLATIONS ==="
-          
-          # Check where pip installs packages
-          echo "Pip show python-dotenv:"
-          pip show python-dotenv || echo "Not found via pip show"
-          echo "Pip show dask:"
-          pip show dask || echo "Not found via pip show"
-          echo "Pip show pyarrow:"
-          pip show pyarrow || echo "Not found via pip show"
-          
-          # Try to import with different Python paths
-          echo "Testing import with default PYTHONPATH:"
-          python -c "import dotenv, dask, pyarrow" 2>&1 || echo "Import failed"
-          
-          echo "Testing import with /tmp/packages:"
-          PYTHONPATH="/tmp/packages" python -c "import dotenv, dask, pyarrow" 2>&1 || echo "Import failed"
-          
-          # Find module locations
-          echo "Searching for modules:"
-          find / -name "dask" -type d 2>/dev/null | head -5
-          find / -name "pyarrow" -type d 2>/dev/null | head -5
-          find / -name "dotenv.py" -o -name "dotenv" -type d 2>/dev/null | head -10
-          
-          # List installed packages
-          echo "Pip list (filtered):"
-          pip list | grep -E "dask|pyarrow|dotenv" || echo "Packages not in pip list"
+          # Set other environment variables
+          export EE_CLOUD_PROJECT=pdg-wg-workflow
+          export EE_PROJECT=pdg-project-406720
+          export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
           
           # Create directories on PVC
           echo "=== CREATING DIRECTORIES ==="
           mkdir -p /data/water_timeseries/{dynamic_world_data,split_lakes,input,new_dynamic_world,split_new_dynamic_world,output,checkpoint,temp_netcdf,subsets,breakpoints}
-          chmod -R 755 /data/water_timeseries
-          
-          # Create Dask workspace directory for temporary files
           mkdir -p /data/water_timeseries/dask_work_space
-          chmod 755 /data/water_timeseries/dask_work_space
+          chmod -R 755 /data/water_timeseries
           
           # Set environment variables
           export TMPDIR=/data/water_timeseries/temp_netcdf
           export TEMP=/data/water_timeseries/temp_netcdf
           export TMP=/data/water_timeseries/temp_netcdf
-          export PYTHONPATH="/tmp/packages:${PYTHONPATH}"
           
           # Dask-specific environment variables
           export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
           export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
           export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
           export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
-          export DASK_LOGGING__DISTRIBUTED=WARNING
-          
-          # Set number of threads for Dask (use available cores)
+          export DASK_SCHEDULER=threads
           export DASK_NUM_THREADS=$(nproc)
-          echo "Setting DASK_NUM_THREADS=$DASK_NUM_THREADS"
+          
+          # Clean PYTHONPATH - use only the venv
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+          
+          echo "=== VERIFYING GEEMAP ==="
+          python << 'EOF'
+          import os
+          import geemap
+          print(f"geemap version: {geemap.__version__}")
+          print(f"Has ee_initialize: {hasattr(geemap, 'ee_initialize')}")
+          print(f"EARTHENGINE_TOKEN: {os.environ.get('EARTHENGINE_TOKEN', 'NOT SET')}")
+          EOF
           
           # Check PVC space
           echo "=== PVC STORAGE ==="
           df -h /data
-          
-          # Check available memory for Dask
-          echo "=== MEMORY INFO FOR DASK ==="
-          free -h
-          echo "Available memory for Dask workers: $(free -g | awk '/^Mem:/{print $7}') GB"
           
           # Create .env file
           echo "=== CREATING .env FILE ==="
@@ -221,113 +200,46 @@ spec:
           bucket_path=pdg-storage-default/water_timeseries_v2/data/input
           base_dir=/data/water_timeseries
           dynamic_world_dir=/data/water_timeseries/dynamic_world_data
-          split_vector_dataset_dir=/data/water_timeseries/split_lakes
+          dynamic_world_data=/data/water_timeseries/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
-          new_dynamic_world_data_dir=/data/water_timeseries/new_dynamic_world
-          split_new_dynamic_world_data_dir=/data/water_timeseries/split_new_dynamic_world
-          dynamic_world_data_file=/data/water_timeseries/input/lakes_dw_V2d.nc
           output_dir=/data/water_timeseries/output
-          download_recent_data=False
-          lake_chunk_size=20000
-          data_aggregation_period=all
+          region_name=EURASIA1
           EOF
           
-          # Set up credentials
-          echo "=== SETTING UP CREDENTIALS ==="
-          export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
-          export EARTHENGINE_TOKEN=/root/.config/earthengine/credentials
-          export EE_CLOUD_PROJECT=pdg-wg-workflow
-          export EE_PROJECT=pdg-project-406720
-          
-          # Create debug directory
-          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)"
-          mkdir -p "$DEBUG_DIR"
-          
-          # Save environment info for debugging
+          # Save environment info to PVC
           echo "=== SAVING ENVIRONMENT INFO ==="
           env | sort > "$DEBUG_DIR/environment.txt"
           pip list > "$DEBUG_DIR/pip_list.txt"
-          python -c "import sys; print(sys.path)" > "$DEBUG_DIR/python_path.txt"
           
-          # Test Dask functionality before running main script
-          echo "=== TESTING DASK FUNCTIONALITY ==="
-          python -c "
-          import dask.dataframe as dd
-          import pandas as pd
-          import tempfile
-          import os
+          # Copy environment info to artifact log as well
+          echo "=== ENVIRONMENT VARIABLES ==="
+          env | sort
+          echo "=== PIP PACKAGES ==="
+          pip list
           
-          print('Testing Dask with small DataFrame...')
-          # Create test data
-          test_df = pd.DataFrame({'a': range(100), 'b': range(100, 200)})
-          test_file = os.path.join('/data/water_timeseries/dask_work_space', 'test.parquet')
-          test_df.to_parquet(test_file)
-          
-          # Read with Dask
-          ddf = dd.read_parquet(test_file)
-          result = ddf.compute()
-          print(f'Dask test successful! Result shape: {result.shape}')
-          # print(f'Dask version: {dd.__version__}')
-
-          # Clean up
-          os.remove(test_file)
-          print('Dask is working correctly!')
-          " 2>&1 | tee "$DEBUG_DIR/dask_test.log"
-          
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
-            echo "ERROR: Dask test failed! Check $DEBUG_DIR/dask_test.log"
-            exit 1
-          fi
-          
-          # Final attempt: Install to the system Python directory
-          echo "=== FINAL INSTALLATION ATTEMPT ==="
-          sudo pip install python-dotenv dask[dataframe] pyarrow google-cloud-storage toml 2>&1 || echo "sudo not available"
-          
-          # Run the script with explicit PYTHONPATH
+          # Run the script with unbuffered output
           echo "=== RUNNING SCRIPT ==="
           cd /app
-          echo "Current directory: $(pwd)"
-          echo "Files in /app:"
-          ls -la /app/
-          echo "Files in /app/near_real_time:"
-          ls -la /app/near_real_time/ || echo "Directory not found"
           
-          # Try to run with detailed error
-          export PYTHONPATH="/tmp/packages:/usr/local/lib/python3.12/site-packages:${PYTHONPATH}"
-          echo "Final PYTHONPATH: $PYTHONPATH"
-
-          # Set Dask scheduler to use threads (local cluster)
-          export DASK_SCHEDULER=threads
+          # Use python -u for unbuffered output and capture exit code properly
+          python -u /app/near_real_time/near_real_time_grid.py /data/.env
+          SCRIPT_EXIT_CODE=$?
           
-          echo "Starting near_real_time_cron.py with Dask support..."
-          python /app/near_real_time/near_real_time_cron.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
-          
-          SCRIPT_EXIT_CODE=${PIPESTATUS[0]}
-
           echo "=== SCRIPT COMPLETED with exit code: $SCRIPT_EXIT_CODE ==="
-
+          
           # Check for output files
           if [ -d "/data/water_timeseries/output" ]; then
             echo "Output files:"
             ls -lh /data/water_timeseries/output/
-            
-            # Check for combined parquet files
-            echo "Combined results files:"
-            ls -lh /data/water_timeseries/output/*.parquet 2>/dev/null || echo "No parquet files found"
-            
-            # Display file sizes
-            echo "File sizes:"
-            du -sh /data/water_timeseries/output/* 2>/dev/null || echo "No output files"
           fi
           
-          # Check Dask workspace usage
-          if [ -d "/data/water_timeseries/dask_work_space" ]; then
-            echo "Dask workspace size:"
-            du -sh /data/water_timeseries/dask_work_space
-          fi
-
           echo "=== DEBUG INFO SAVED TO: $DEBUG_DIR ==="
-
+          echo "=== FULL LOG SAVED TO: /tmp/workflow_output.log ==="
+          
+          # Ensure everything is flushed to disk
+          sync
+          
           exit $SCRIPT_EXIT_CODE
       env:
       - name: lake_chunk_size
@@ -336,8 +248,6 @@ spec:
         value: "/data/.env"
       - name: GOOGLE_APPLICATION_CREDENTIALS
         value: /root/.config/gcloud/application_default_credentials.json
-      - name: EARTHENGINE_TOKEN
-        value: /root/.config/earthengine/credentials
       - name: EE_CLOUD_PROJECT
         value: "pdg-wg-workflow"
       - name: EE_PROJECT
@@ -358,7 +268,7 @@ spec:
             resource: limits.cpu
             divisor: "1"
       - name: OMP_NUM_THREADS
-        value: "1"  # Prevent numpy from oversubscribing threads
+        value: "1"
       volumeMounts:
       - name: gcp-creds
         mountPath: /root/.config/gcloud
