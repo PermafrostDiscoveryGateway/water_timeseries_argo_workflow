@@ -306,7 +306,7 @@ def main():
                 if not outfile_download.exists():
                     try:
                         ds_dl = downloader.download_dw_monthly(gdf=gdf_subset, max_total_requests=2000, n_parallel=2,
-                                                               date_list=[ANALYSIS_DATE], save_to_file=outfile_download)
+                                                               date_list=[ANALYSIS_DATE], save_to_file=str(outfile_download))
                     except ValueError as e:
                         if "No data was extracted" in str(e):
                             print(f"No data for {bbox_west} {bbox_south}")
