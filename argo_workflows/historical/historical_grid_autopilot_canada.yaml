@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  name: near-real-time-autopilot
+  name: historical-canada-job
   namespace: argo
   annotations:
     workflows.argoproj.io/pod-keep: "OnCompletion"
@@ -75,9 +75,14 @@ spec:
       labels:
         long-running-job: "true"
     inputs: {}
-    outputs: {}
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:23-script-for-historical-run-run-by-a-date-range
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:19-download-and-process-over-grid-tiles
       imagePullPolicy: Always
       resources:
         requests:
@@ -90,9 +95,20 @@ spec:
           set -e
           set -x
           
+          # Create log directory and file for artifact
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+          
           echo "=== STARTING NEAR REAL-TIME BREAKPOINT JOB (AUTOPILOT) ==="
           echo "Timestamp: $(date)"
           echo "Pod: ${POD_NAME:-unknown}"
+          
+          # Create debug directory on PVC for long-term storage
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)"
+          mkdir -p "$DEBUG_DIR"
+          
+          # Also tee to PVC for persistence
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
           
           # Check resources
           echo "=== RESOURCE ALLOCATION ==="
@@ -120,9 +136,6 @@ spec:
           
           # Also set explicit token path
           export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
-          
-          # Create a symlink in the original location that points to our writable file
-          # Since the original location is read-only, we use environment variables instead
           
           # For geemap, also set the config directory
           export EE_CONFIG_DIR=/tmp/home/.config/earthengine
@@ -196,22 +209,24 @@ spec:
           end_year=2024
           EOF
           
-          # Create debug directory
-          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)"
-          mkdir -p "$DEBUG_DIR"
-          
-          # Save environment info
+          # Save environment info to PVC
           echo "=== SAVING ENVIRONMENT INFO ==="
           env | sort > "$DEBUG_DIR/environment.txt"
           pip list > "$DEBUG_DIR/pip_list.txt"
           
-          # Run the script
+          # Copy environment info to artifact log as well
+          echo "=== ENVIRONMENT VARIABLES ==="
+          env | sort
+          echo "=== PIP PACKAGES ==="
+          pip list
+          
+          # Run the script with unbuffered output
           echo "=== RUNNING SCRIPT ==="
           cd /app
           
-          python /app/historical_run/historical_grid.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
-          
-          SCRIPT_EXIT_CODE=${PIPESTATUS[0]}
+          # Use python -u for unbuffered output and capture exit code properly
+          python -u /app/historical_run/historical_grid.py /data/.env
+          SCRIPT_EXIT_CODE=$?
           
           echo "=== SCRIPT COMPLETED with exit code: $SCRIPT_EXIT_CODE ==="
           
@@ -222,6 +237,10 @@ spec:
           fi
           
           echo "=== DEBUG INFO SAVED TO: $DEBUG_DIR ==="
+          echo "=== FULL LOG SAVED TO: /tmp/workflow_output.log ==="
+          
+          # Ensure everything is flushed to disk
+          sync
           
           exit $SCRIPT_EXIT_CODE
       env:
