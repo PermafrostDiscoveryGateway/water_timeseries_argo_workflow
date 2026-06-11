@@ -184,9 +184,19 @@ def main():
     logger.info(f"Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
 
     missing_dates = download_new_dynamic_world_data.check_missing_data_in_netcdf(most_recent_dynamic_world_file)
-    for date in missing_dates:
-        missing_date_string = date.strftime("%Y-%m")
-        logger.debug(f"We are missing {missing_date_string}")
+
+    # ========== NEW LOGIC: Handle missing dates ==========
+    if missing_dates:
+        logger.warning(f"Found {len(missing_dates)} missing dates in historical data")
+        for date in missing_dates:
+            missing_date_string = date.strftime("%Y-%m")
+            logger.warning(f"Missing date: {missing_date_string}")
+        logger.info("Will download missing data and run breakpoint analysis")
+        DOWNLOAD_REQUIRED = True
+    else:
+        logger.info("No missing dates found in historical data")
+        logger.info("Will run breakpoint analysis using existing data only (no download)")
+        DOWNLOAD_REQUIRED = False
 
     vector_lake_file = os.environ['vector_lake_file']
     path_historical_dw = most_recent_dynamic_world_file
@@ -206,11 +216,11 @@ def main():
 
     bp = NRTBreakpoint()
 
-    current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
+    current_breakpoint_dir = Path(output_dir) / REGION_NAME / f'breakpoint_{ANALYSIS_DATE}'
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
     logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
-    current_download_dir = Path(str(dynamic_world_download_dir), f'download_{ANALYSIS_DATE}')
+    current_download_dir = Path(str(dynamic_world_download_dir), REGION_NAME, f'download_{ANALYSIS_DATE}')
     current_download_dir.mkdir(exist_ok=True, parents=True)
     logger.debug(f"Current download directory: {current_download_dir}")
 
@@ -226,7 +236,12 @@ def main():
         geemap.ee_initialize = ee_initialize
         logger.info("Runtime patch applied to geemap")
 
-    downloader = EarthEngineDownloader(ee_project=EE_PROJECT_ID)
+    # Only initialize downloader if we need to download
+    if DOWNLOAD_REQUIRED:
+        downloader = EarthEngineDownloader(ee_project=EE_PROJECT_ID)
+    else:
+        downloader = None
+        logger.info("Downloader disabled - using only existing historical data")
 
     breaks_list = []
     total = len(grid[:])
@@ -269,7 +284,7 @@ def main():
             print(f'No lakes for grid {bbox_west} {bbox_south}. Skipping!')
             continue
 
-        # ========== FIX: Filter IDs to only those that exist in historical data ==========
+        # Filter IDs to only those that exist in historical data
         original_count = len(id_list)
         id_list = [id_val for id_val in id_list if id_val in valid_historical_ids]
         filtered_count = len(id_list)
@@ -284,26 +299,34 @@ def main():
             # Also filter the gdf_subset to only keep valid IDs
             gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
 
-        # Download or load existing file
-        if not outfile_download.exists():
-            try:
-                ds_dl = downloader.download_dw_monthly(gdf=gdf_subset, max_total_requests=2000, n_parallel=2,
-                                                       date_list=[ANALYSIS_DATE], save_to_file=outfile_download)
-            except ValueError as e:
-                if "No data was extracted" in str(e):
-                    print(f"No data for {bbox_west} {bbox_south}")
-                    continue
-                else:
-                    raise
+        # ========== NEW LOGIC: Handle download vs no-download cases ==========
+        if DOWNLOAD_REQUIRED:
+            # Download or load existing file
+            if not outfile_download.exists():
+                try:
+                    ds_dl = downloader.download_dw_monthly(gdf=gdf_subset, max_total_requests=2000, n_parallel=2,
+                                                           date_list=[ANALYSIS_DATE], save_to_file=outfile_download)
+                except ValueError as e:
+                    if "No data was extracted" in str(e):
+                        print(f"No data for {bbox_west} {bbox_south}")
+                        continue
+                    else:
+                        raise
+            else:
+                print(f'Loading existing download for {bbox_west} {bbox_south}')
+                ds_dl = xr.open_dataset(outfile_download)
         else:
-            print(f'Loading existing download for {bbox_west} {bbox_south}')
-            ds_dl = xr.open_dataset(outfile_download)
+            # No download required - we'll use historical data only
+            # Create a dummy dataset with no new data, or simply use historical only
+            print(f'No download needed for {bbox_west} {bbox_south} - using historical data only')
+            # Create an empty dataset with the same structure but no new dates
+            ds_dl = None
 
-        # Load historical data for this tile only
+        # Load historical data for this tile
         logger.info(f"Loading historical dataset for tile {i}...")
         ds_historical = xr.open_dataset(path_historical_dw)
 
-        # Subset historical data (now with guaranteed valid IDs)
+        # Subset historical data
         ds_historical_subset = ds_historical.sel(id_geohash=id_list)
 
         # Close historical immediately
@@ -311,19 +334,28 @@ def main():
         del ds_historical
         gc.collect()
 
-        # Merge and process
-        ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
-        dwds = DWDataset(ds_merged)
+        # ========== NEW LOGIC: Merge or use historical only ==========
+        if DOWNLOAD_REQUIRED and ds_dl is not None:
+            # Merge historical and new data
+            ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
+            # Clean up download dataset
+            ds_dl.close()
+            del ds_dl
+        else:
+            # Use only historical data
+            logger.info(f"No new data to merge for grid {bbox_west} {bbox_south} - using historical data only")
+            ds_merged = ds_historical_subset
 
+        # Create dataset and calculate breakpoints
+        dwds = DWDataset(ds_merged)
         breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
         breaks.to_parquet(outfile_breaks)
         breaks_list.append(breaks)
 
         # Clean up
-        ds_dl.close()
         ds_historical_subset.close()
         ds_merged.close()
-        del ds_dl, ds_historical_subset, ds_merged
+        del ds_historical_subset, ds_merged
         gc.collect()
 
         # Periodic save
@@ -347,44 +379,48 @@ def main():
     end = datetime.datetime.now()
     logger.debug(f"Finished processing in {end - start}")
 
-    logger.info("Combining NetCDF files...")
+    # ========== NEW LOGIC: Only combine NetCDF files if downloads occurred ==========
+    if DOWNLOAD_REQUIRED:
+        logger.info("Combining NetCDF files...")
 
-    downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{ANALYSIS_DATE}_*.nc')))
-    output_netcdf = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.nc'
-    logger.debug(f"Output netcdf file being saved to {output_netcdf}")
+        downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{ANALYSIS_DATE}_*.nc')))
+        output_netcdf = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.nc'
+        logger.debug(f"Output netcdf file being saved to {output_netcdf}")
 
-    if downloaded_files:
-        ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
+        if downloaded_files:
+            ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
 
-        BATCH_SIZE = 2
-        combined = None
+            BATCH_SIZE = 2
+            combined = None
 
-        for batch_idx in tqdm(range(0, len(downloaded_files), BATCH_SIZE), desc="Processing batches"):
-            batch_files = downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
-            batch_datasets = []
+            for batch_idx in tqdm(range(0, len(downloaded_files), BATCH_SIZE), desc="Processing batches"):
+                batch_files = downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
+                batch_datasets = []
 
-            for nc_file in batch_files:
-                ds = xr.open_dataset(nc_file)
-                batch_datasets.append(ds)
+                for nc_file in batch_files:
+                    ds = xr.open_dataset(nc_file)
+                    batch_datasets.append(ds)
 
-            batch_combined = xr.concat(batch_datasets, dim='id_geohash')
-            _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
-            batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
+                batch_combined = xr.concat(batch_datasets, dim='id_geohash')
+                _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
+                batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
 
-            if combined is None:
-                combined = batch_combined
-            else:
-                combined = xr.concat([combined, batch_combined], dim='id_geohash')
-                _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
-                combined = combined.isel(id_geohash=np.sort(unique_idx))
+                if combined is None:
+                    combined = batch_combined
+                else:
+                    combined = xr.concat([combined, batch_combined], dim='id_geohash')
+                    _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
+                    combined = combined.isel(id_geohash=np.sort(unique_idx))
 
-            for ds in batch_datasets:
-                ds.close()
-            gc.collect()
+                for ds in batch_datasets:
+                    ds.close()
+                gc.collect()
 
-        if combined is not None:
-            merge_netcdf_chunked(ds_historical, combined, output_netcdf, chunk_size=250)
-            ds_historical.close()
+            if combined is not None:
+                merge_netcdf_chunked(ds_historical, combined, output_netcdf, chunk_size=250)
+                ds_historical.close()
+    else:
+        logger.info("No missing dates found - skipping NetCDF combination step (no new data to add)")
 
     logger.info("Script completed successfully")
 
