@@ -216,7 +216,7 @@ def main():
         bbox_size_lat = 1
         grid = create_longitude_latitude_grid(lon_range=(X_MIN_START, X_MIN_END), lat_range=(Y_MIN_START, Y_MIN_END),
                                               bbox_size_lon=bbox_size_lon, bbox_size_lat=bbox_size_lat)
-        print('created grid')
+        logger.debug('created grid')
         log_memory_usage("After creating grid")
 
         bp = NRTBreakpoint()
@@ -269,24 +269,24 @@ def main():
             bbox_south = int(lat)
             bbox_north = int(lat + bbox_size_lat)
 
-            print(f"Run processing for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
+            logger.debug(f"Run processing for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
 
             outfile_download = current_download_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}.nc'
             outfile_breaks = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
 
             if outfile_breaks.exists():
-                print(f'Breakpoints already calculated! Skipping {bbox_west} {bbox_south}')
+                logger.debug(f'Breakpoints already calculated! Skipping {bbox_west} {bbox_south}')
                 breaks_list.append(pd.read_parquet(outfile_breaks))
                 continue
 
             gdf_subset = filter_gdf_by_bbox(gdf=gdf, bbox_west=lon, bbox_east=lon + bbox_size_lon, bbox_south=lat,
                                             bbox_north=lat + bbox_size_lat)
             n_lakes = len(gdf_subset)
-            print('Number of lakes: ', n_lakes)
+            logger.debug('Number of lakes: ', n_lakes)
 
             id_list = gdf_subset['id_geohash'].values.tolist()
             if n_lakes == 0:
-                print(f'No lakes for grid {bbox_west} {bbox_south}. Skipping!')
+                logger.debug(f'No lakes for grid {bbox_west} {bbox_south}. Skipping!')
                 continue
 
             # Filter IDs to only those that exist in historical data
@@ -295,11 +295,11 @@ def main():
             filtered_count = len(id_list)
 
             if filtered_count == 0:
-                print(
+                logger.debug(
                     f'WARNING: No valid historical IDs for grid {bbox_west} {bbox_south} (had {original_count} lakes, none in historical data). Skipping!')
                 continue
             elif filtered_count < original_count:
-                print(
+                logger.debug(
                     f'NOTE: Filtered {original_count - filtered_count} lakes not found in historical data. Processing {filtered_count} lakes.')
                 # Also filter the gdf_subset to only keep valid IDs
                 gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
@@ -313,17 +313,17 @@ def main():
                                                                date_list=[ANALYSIS_DATE], save_to_file=str(outfile_download))
                     except ValueError as e:
                         if "No data was extracted" in str(e):
-                            print(f"No data for {bbox_west} {bbox_south}")
+                            logger.debug(f"No data for {bbox_west} {bbox_south}")
                             continue
                         else:
                             raise
                 else:
-                    print(f'Loading existing download for {bbox_west} {bbox_south}')
+                    logger.debug(f'Loading existing download for {bbox_west} {bbox_south}')
                     ds_dl = xr.open_dataset(outfile_download)
             else:
                 # No download required - we'll use historical data only
                 # Create a dummy dataset with no new data, or simply use historical only
-                print(f'No download needed for {bbox_west} {bbox_south} - using historical data only')
+                logger.debug(f'No download needed for {bbox_west} {bbox_south} - using historical data only')
                 # Create an empty dataset with the same structure but no new dates
                 ds_dl = None
 
