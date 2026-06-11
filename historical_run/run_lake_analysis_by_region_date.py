@@ -171,11 +171,15 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
     start = datetime.datetime.now()
     logger.debug(f"Current time: {datetime.datetime.now()}")
 
+
     # Environment variables should already be loaded from .env file
     REGION_NAME = REGION
+    start_year = str(int(os.getenv("START_YEAR", 2016)))
+    end_year = str(int(os.getenv("END_YEAR", 2025)))
+    CURRENT_RANGE = f"{start_year}_{end_year}"
 
     output_dir = os.environ['output_dir']
-    output_dir = os.path.join(output_dir, REGION_NAME, 'historical')
+    output_dir = os.path.join(output_dir, REGION_NAME, CURRENT_RANGE,'historical')
     project = os.environ['project']
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
