@@ -257,7 +257,7 @@ def main():
     logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
     time.sleep(15)
     for date in missing_dates:
-        ANALYSIS_DATE = date
+        ANALYSIS_DATE = '2026-06-01'
         for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
             logger.debug(f"Processing {i}/{total} grid tiles.")
             bbox_west = int(lon)
