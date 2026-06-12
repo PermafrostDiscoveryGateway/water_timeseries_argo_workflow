@@ -386,11 +386,12 @@ def main():
     output_zarr = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.zarr'
     logger.debug(f"Output zarr file being saved to {output_zarr}")
 
+    combined = None
+    ds_historical = None
     if downloaded_files:
         ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
 
         BATCH_SIZE = 2
-        combined = None
 
         for batch_idx in tqdm(range(0, len(downloaded_files), BATCH_SIZE), desc="Processing batches"):
             batch_files = downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
@@ -415,7 +416,7 @@ def main():
                 ds.close()
             gc.collect()
 
-    if combined is not None:
+    if combined is not None and ds_historical is not None:
         merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
         ds_historical.close()
 
