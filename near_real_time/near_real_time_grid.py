@@ -386,38 +386,38 @@ def main():
     output_zarr = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.zarr'
     logger.debug(f"Output zarr file being saved to {output_zarr}")
 
-        if downloaded_files:
-            ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
+    if downloaded_files:
+        ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
 
-            BATCH_SIZE = 2
-            combined = None
+        BATCH_SIZE = 2
+        combined = None
 
-            for batch_idx in tqdm(range(0, len(downloaded_files), BATCH_SIZE), desc="Processing batches"):
-                batch_files = downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
-                batch_datasets = []
+        for batch_idx in tqdm(range(0, len(downloaded_files), BATCH_SIZE), desc="Processing batches"):
+            batch_files = downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
+            batch_datasets = []
 
-                for nc_file in batch_files:
-                    ds = xr.open_dataset(nc_file)
-                    batch_datasets.append(ds)
+            for nc_file in batch_files:
+                ds = xr.open_dataset(nc_file)
+                batch_datasets.append(ds)
 
-                batch_combined = xr.concat(batch_datasets, dim='id_geohash')
-                _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
-                batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
+            batch_combined = xr.concat(batch_datasets, dim='id_geohash')
+            _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
+            batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
 
-                if combined is None:
-                    combined = batch_combined
-                else:
-                    combined = xr.concat([combined, batch_combined], dim='id_geohash')
-                    _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
-                    combined = combined.isel(id_geohash=np.sort(unique_idx))
+            if combined is None:
+                combined = batch_combined
+            else:
+                combined = xr.concat([combined, batch_combined], dim='id_geohash')
+                _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
+                combined = combined.isel(id_geohash=np.sort(unique_idx))
 
-                for ds in batch_datasets:
-                    ds.close()
-                gc.collect()
+            for ds in batch_datasets:
+                ds.close()
+            gc.collect()
 
-        if combined is not None:
-            merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
-            ds_historical.close()
+    if combined is not None:
+        merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
+        ds_historical.close()
 
     logger.info("Script completed successfully")
 
