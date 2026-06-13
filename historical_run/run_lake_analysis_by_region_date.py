@@ -28,25 +28,6 @@ import datetime
 from utils.region_boundaries import get_region_boundaries
 import json
 import resource
-# Monkey patch the calculate_break method to fix the join issue
-original_calculate_break = NRTBreakpoint.calculate_break
-
-def patched_calculate_break(dataset, analysis_date):
-    """Patched version that fixes the column overlap issue"""
-    # Call the original method but catch the error
-    try:
-        return original_calculate_break(dataset, analysis_date)
-    except ValueError as e:
-        if "columns overlap but no suffix specified" in str(e):
-            # If we get the column overlap error, we need to modify the internal state
-            # This is more complex - better to modify the source file
-            logger.warning("Column overlap error occurred - this indicates a bug in breakpoint.py")
-            raise
-        else:
-            raise
-
-# Apply the patch (though this won't fix the internal issue)
-NRTBreakpoint = patched_calculate_break
 
 
 def log_memory_usage(stage: str):

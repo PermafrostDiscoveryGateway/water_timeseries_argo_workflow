@@ -1,4 +1,4 @@
-FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:main
+FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:151-error-on-running-historical-data
 
 # Install additional Python dependencies using uv
 # Pin geemap to prevent it from upgrading
