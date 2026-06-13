@@ -241,8 +241,10 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
     logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
+
     breaks_list = []
     total = len(grid[:])
+    partial_saved = False
 
     # First, load historical dataset once to get valid IDs and also get the data for analysis date
     logger.info("Loading historical dataset to check valid IDs and extract analysis date data...")
@@ -264,7 +266,6 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
 
     # run loop - now using the pre-extracted analysis date data
     logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
-    time.sleep(15)
     for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
         logger.debug(f"Processing {i}/{total} grid tiles.")
         bbox_west = int(lon)
@@ -273,6 +274,7 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
         bbox_north = int(lat + bbox_size_lat)
 
         print(f"Run processing for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
+
 
         outfile_breaks = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
 
