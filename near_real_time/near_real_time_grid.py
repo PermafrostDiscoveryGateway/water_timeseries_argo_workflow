@@ -2,6 +2,13 @@ import geopandas as gpd
 import xarray as xr
 import pandas as pd
 import numpy as np
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 from tqdm import tqdm
 from pathlib import Path
 from dotenv import load_dotenv
@@ -221,7 +228,7 @@ def main():
 
         bp = NRTBreakpoint()
 
-        current_breakpoint_dir = Path(output_dir) / REGION_NAME / f'breakpoint_{ANALYSIS_DATE}'
+        current_breakpoint_dir = Path(output_dir)  / f'breakpoint_{ANALYSIS_DATE}'
         current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
         logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
