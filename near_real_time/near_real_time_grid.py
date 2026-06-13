@@ -10,9 +10,11 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 from tqdm import tqdm
+from pathlib import Path
 from dotenv import load_dotenv
 import time
 from loguru import logger
+import sys
 import geemap
 import ee
 import glob
@@ -20,14 +22,16 @@ import os
 import gc
 import shutil
 import psutil
+from water_timeseries.downloader import EarthEngineDownloader
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
 from water_timeseries.utils import io
 from water_timeseries.dataset import DWDataset
 from water_timeseries.breakpoint import NRTBreakpoint
 import datetime
-import argparse
 
+from utils.download_new_dynamic_world_data import download_new_dynamic_world_data
 from utils.region_boundaries import get_region_boundaries
+import utils.download_new_dynamic_world_data
 import json
 import resource
 
@@ -122,21 +126,11 @@ def merge_zarr_chunked(ds_historical, combined_ds, output_path, chunk_size=250):
 
 
 def main():
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Run breakpoint analysis for a specific date and region (no download)')
-    parser.add_argument('analysis_date', type=str, help='Analysis date in YYYY-MM format (e.g., 2024-01)')
-    parser.add_argument('--env', type=str, help='Path to .env file', default=None)
-    parser.add_argument('--region', type=str, help='Region name (overrides .env file)', default=None)
-
-    args = parser.parse_args()
-
-    # Validate date format
-    try:
-        analysis_date_obj = datetime.datetime.strptime(args.analysis_date, "%Y-%m")
-        ANALYSIS_DATE = args.analysis_date
-    except ValueError:
-        logger.error(f"Invalid date format: {args.analysis_date}. Please use YYYY-MM format")
-        sys.exit(1)
+    # Set thread limits
+    # os.environ['OMP_NUM_THREADS'] = '1'
+    # os.environ['MKL_NUM_THREADS'] = '1'
+    # os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    # os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
     log_memory_usage("Program start")
 
@@ -144,23 +138,16 @@ def main():
 
     start = datetime.datetime.now()
     logger.debug(f"Current time: {datetime.datetime.now()}")
-    logger.info(f"Processing analysis date: {ANALYSIS_DATE}")
 
-    # Load environment variables
-    if args.env:
-        load_dotenv(dotenv_path=args.env)
-        logger.info(f"Loading environment from: {args.env}")
+    if len(sys.argv) > 1:
+        env_path = sys.argv[1]
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
     else:
         load_dotenv()
         logger.info("Loading environment from default .env file")
 
-    # Set region name (command line argument takes precedence)
-    if args.region:
-        REGION_NAME = args.region
-    else:
-        REGION_NAME = os.getenv("region_name", "TEST")
-
-    logger.info(f"Processing region: {REGION_NAME}")
+    REGION_NAME = os.getenv("region_name", "TEST")
 
     output_dir = os.environ['output_dir']
     output_dir = os.path.join(output_dir, REGION_NAME)
@@ -168,7 +155,6 @@ def main():
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
 
-    # Initialize Earth Engine (optional - may not be needed if no download)
     try:
         ee.Initialize(project=EE_PROJECT_ID)
         logger.debug("Earth engine successfully initialized")
@@ -182,6 +168,8 @@ def main():
         logger.debug(f"Failed to initialize geemap: {e}")
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
+    dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
+    dynamic_world_download_dir.mkdir(exist_ok=True, parents=True)
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
 
     if not all_dynamic_world_files:
@@ -193,7 +181,7 @@ def main():
     bounding_box_coords = region_boundaries[REGION_NAME]
 
     logger.debug(f"Bounding box coordinates are {bounding_box_coords}")
-    time.sleep(5)
+    time.sleep(15)
 
     X_MIN_START = bounding_box_coords['X_MIN_START']
     X_MIN_END = bounding_box_coords['X_MIN_END']
@@ -205,150 +193,256 @@ def main():
     hist_file_size_gb = get_file_size_gb(most_recent_dynamic_world_file)
     logger.info(f"Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
 
+    missing_dates = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(most_recent_dynamic_world_file)
+
+    # ========== NEW LOGIC: Handle missing dates ==========
+    if missing_dates:
+        logger.warning(f"Found {len(missing_dates)} missing dates in historical data")
+        for date in missing_dates:
+            missing_date_string = date.strftime("%Y-%m")
+            logger.warning(f"Missing date: {missing_date_string}")
+        logger.info("Will download missing data and run breakpoint analysis")
+        DOWNLOAD_REQUIRED = True
+    else:
+        logger.info("No missing dates found in historical data")
+        logger.info("Will run breakpoint analysis using existing data only (no download)")
+        DOWNLOAD_REQUIRED = False
+
     vector_lake_file = os.environ['vector_lake_file']
     path_historical_dw = most_recent_dynamic_world_file
     path_lake_vector = vector_lake_file
 
-    # Load lake vectors
-    gdf = gpd.read_parquet(path_lake_vector)
-    log_memory_usage("After loading lake vectors")
+    # DO DATES HERE
+    for date in missing_dates:
+        ANALYSIS_DATE = date.strftime("%Y-%m")
 
-    bbox_size_lon = 1
-    bbox_size_lat = 1
-    grid = create_longitude_latitude_grid(lon_range=(X_MIN_START, X_MIN_END),
-                                          lat_range=(Y_MIN_START, Y_MIN_END),
-                                          bbox_size_lon=bbox_size_lon,
-                                          bbox_size_lat=bbox_size_lat)
-    logger.info('Created grid')
-    log_memory_usage("After creating grid")
+        gdf = gpd.read_parquet(path_lake_vector)
+        log_memory_usage("After loading lake vectors")
 
-    bp = NRTBreakpoint()
+        bbox_size_lon = 1
+        bbox_size_lat = 1
+        grid = create_longitude_latitude_grid(lon_range=(X_MIN_START, X_MIN_END), lat_range=(Y_MIN_START, Y_MIN_END),
+                                              bbox_size_lon=bbox_size_lon, bbox_size_lat=bbox_size_lat)
+        print('created grid')
+        log_memory_usage("After creating grid")
 
-    current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
-    current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
-    logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
+        bp = NRTBreakpoint()
 
-    # No download directory needed since we're not downloading
-    logger.info("Running in NO-DOWNLOAD mode - using only existing historical data")
+        current_breakpoint_dir = Path(output_dir)  / f'breakpoint_{ANALYSIS_DATE}'
+        current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
+        logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
-    breaks_list = []
-    total = len(grid[:])
+        current_download_dir = Path(str(dynamic_world_download_dir), REGION_NAME, f'download_{ANALYSIS_DATE}')
+        current_download_dir.mkdir(exist_ok=True, parents=True)
+        logger.debug(f"Current download directory: {current_download_dir}")
 
-    # Load historical dataset once to get valid IDs
-    logger.info("Loading historical dataset to check valid IDs...")
-    ds_historical_check = xr.open_dataset(path_historical_dw)
-    valid_historical_ids = set(ds_historical_check['id_geohash'].values)
-    ds_historical_check.close()
-    logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
+        if not hasattr(geemap, 'ee_initialize'):
+            logger.warning("geemap.ee_initialize missing, adding runtime patch")
 
-    # Check if the analysis date exists in the historical dataset
-    logger.info(f"Checking if {ANALYSIS_DATE} exists in historical data...")
-    ds_date_check = xr.open_dataset(path_historical_dw)
-    available_dates = pd.to_datetime(ds_date_check['date'].values)
-    ds_date_check.close()
+            def ee_initialize(project=None, **kwargs):
+                if project:
+                    ee.Initialize(project=project, **kwargs)
+                else:
+                    ee.Initialize(**kwargs)
 
-    date_exists = pd.Timestamp(ANALYSIS_DATE) in available_dates
-    if not date_exists:
-        logger.warning(f"Analysis date {ANALYSIS_DATE} not found in historical dataset!")
-        logger.warning(f"Available dates range: {available_dates.min()} to {available_dates.max()}")
-        logger.warning(f"Will still attempt to run breakpoint analysis, but may fail if date is missing")
+            geemap.ee_initialize = ee_initialize
+            logger.info("Runtime patch applied to geemap")
 
-    logger.info(f"Processing {total} grid tiles for {REGION_NAME}")
+        # Only initialize downloader if we need to download
+        if DOWNLOAD_REQUIRED:
+            downloader = EarthEngineDownloader(ee_project=EE_PROJECT_ID)
+        else:
+            downloader = None
+            logger.info("Downloader disabled - using only existing historical data")
 
-    for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
-        logger.debug(f"Processing {i}/{total} grid tiles.")
-        bbox_west = int(lon)
-        bbox_east = int(lon + bbox_size_lon)
-        bbox_south = int(lat)
-        bbox_north = int(lat + bbox_size_lat)
+        breaks_list = []
+        total = len(grid[:])
+        partial_saved = False
 
-        logger.debug(f"Run processing for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
+        # First, load historical dataset once to get valid IDs
+        logger.info("Loading historical dataset to check valid IDs...")
+        ds_historical_check = xr.open_dataset(path_historical_dw)
+        valid_historical_ids = set(ds_historical_check['id_geohash'].values)
+        ds_historical_check.close()
+        logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
 
-        outfile_breaks = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
+        # run loop
+        logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
+        ANALYSIS_DATE = date.strftime("%Y-%m")
+        for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
+            logger.debug(f"Processing {i}/{total} grid tiles.")
+            bbox_west = int(lon)
+            bbox_east = int(lon + bbox_size_lon)
+            bbox_south = int(lat)
+            bbox_north = int(lat + bbox_size_lat)
 
-        if outfile_breaks.exists():
-            logger.debug(f'Breakpoints already calculated! Skipping {bbox_west} {bbox_south}')
-            breaks_list.append(pd.read_parquet(outfile_breaks))
-            continue
+            print(f"Run processing for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
 
-        gdf_subset = filter_gdf_by_bbox(gdf=gdf,
-                                        bbox_west=lon,
-                                        bbox_east=lon + bbox_size_lon,
-                                        bbox_south=lat,
-                                        bbox_north=lat + bbox_size_lat)
-        n_lakes = len(gdf_subset)
-        logger.debug(f'Number of lakes: {n_lakes}')
+            outfile_download = current_download_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}.nc'
+            outfile_breaks = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
 
-        id_list = gdf_subset['id_geohash'].values.tolist()
-        if n_lakes == 0:
-            logger.debug(f'No lakes for grid {bbox_west} {bbox_south}. Skipping!')
-            continue
+            if outfile_breaks.exists():
+                print(f'Breakpoints already calculated! Skipping {bbox_west} {bbox_south}')
+                breaks_list.append(pd.read_parquet(outfile_breaks))
+                continue
 
-        # Filter IDs to only those that exist in historical data
-        original_count = len(id_list)
-        id_list = [id_val for id_val in id_list if id_val in valid_historical_ids]
-        filtered_count = len(id_list)
+            gdf_subset = filter_gdf_by_bbox(gdf=gdf, bbox_west=lon, bbox_east=lon + bbox_size_lon, bbox_south=lat,
+                                            bbox_north=lat + bbox_size_lat)
+            n_lakes = len(gdf_subset)
+            print('Number of lakes: ', n_lakes)
 
-        if filtered_count == 0:
-            logger.warning(
-                f'No valid historical IDs for grid {bbox_west} {bbox_south} (had {original_count} lakes, none in historical data). Skipping!')
-            continue
-        elif filtered_count < original_count:
-            logger.info(
-                f'Filtered {original_count - filtered_count} lakes not found in historical data. Processing {filtered_count} lakes.')
-            # Also filter the gdf_subset to only keep valid IDs
-            gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
+            id_list = gdf_subset['id_geohash'].values.tolist()
+            if n_lakes == 0:
+                print(f'No lakes for grid {bbox_west} {bbox_south}. Skipping!')
+                continue
 
-        # Load historical data for this tile
-        logger.debug(f"Loading historical dataset for tile {i}...")
-        ds_historical = xr.open_dataset(path_historical_dw)
+            # Filter IDs to only those that exist in historical data
+            original_count = len(id_list)
+            id_list = [id_val for id_val in id_list if id_val in valid_historical_ids]
+            filtered_count = len(id_list)
 
-        # Subset historical data
-        ds_historical_subset = ds_historical.sel(id_geohash=id_list)
+            if filtered_count == 0:
+                print(
+                    f'WARNING: No valid historical IDs for grid {bbox_west} {bbox_south} (had {original_count} lakes, none in historical data). Skipping!')
+                continue
+            elif filtered_count < original_count:
+                print(
+                    f'NOTE: Filtered {original_count - filtered_count} lakes not found in historical data. Processing {filtered_count} lakes.')
+                # Also filter the gdf_subset to only keep valid IDs
+                gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
 
-        # Close historical immediately
-        ds_historical.close()
-        del ds_historical
-        gc.collect()
+            # ========== NEW LOGIC: Handle download vs no-download cases ==========
+            if DOWNLOAD_REQUIRED:
+                # Download or load existing file
+                if not outfile_download.exists():
+                    try:
+                        ds_dl = downloader.download_dw_monthly(gdf=gdf_subset, max_total_requests=2000, n_parallel=2,
+                                                               date_list=[ANALYSIS_DATE], save_to_file=outfile_download)
+                    except ValueError as e:
+                        if "No data was extracted" in str(e):
+                            print(f"No data for {bbox_west} {bbox_south}")
+                            continue
+                        else:
+                            raise
+                else:
+                    print(f'Loading existing download for {bbox_west} {bbox_south}')
+                    ds_dl = xr.open_dataset(outfile_download)
+            else:
+                # No download required - we'll use historical data only
+                # Create a dummy dataset with no new data, or simply use historical only
+                print(f'No download needed for {bbox_west} {bbox_south} - using historical data only')
+                # Create an empty dataset with the same structure but no new dates
+                ds_dl = None
 
-        # Use only historical data (no download/merge needed)
-        ds_merged = ds_historical_subset
+            # Load historical data for this tile
+            logger.info(f"Loading historical dataset for tile {i}...")
+            ds_historical = xr.open_dataset(path_historical_dw)
 
-        # Create dataset and calculate breakpoints
-        dwds = DWDataset(ds_merged)
-        breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
-        breaks.to_parquet(outfile_breaks)
-        breaks_list.append(breaks)
+            # Subset historical data
+            ds_historical_subset = ds_historical.sel(id_geohash=id_list)
 
-        # Clean up
-        ds_historical_subset.close()
-        ds_merged.close()
-        del ds_historical_subset, ds_merged
-        gc.collect()
-
-        # Periodic save
-        if len(breaks_list) >= 10:
-            logger.info(f"Saving intermediate results...")
-            breaks_merged = pd.concat(breaks_list, ignore_index=True)
-            joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
-            partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
-            joined.to_parquet(partial_file)
-            breaks_list = []
+            # Close historical immediately
+            ds_historical.close()
+            del ds_historical
             gc.collect()
 
-    # Final save
-    if breaks_list:
-        breaks_merged = pd.concat(breaks_list, ignore_index=True)
-        joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
-        path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
-        joined.to_parquet(path_to_joined_file)
-        logger.info(f"Final combined file saved to {path_to_joined_file}")
+            # ========== NEW LOGIC: Merge or use historical only ==========
+            if DOWNLOAD_REQUIRED and ds_dl is not None:
+                # Merge historical and new data
+                ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
+                # Clean up download dataset
+                ds_dl.close()
+                del ds_dl
+            else:
+                # Use only historical data
+                logger.info(f"No new data to merge for grid {bbox_west} {bbox_south} - using historical data only")
+                ds_merged = ds_historical_subset
 
-    end = datetime.datetime.now()
-    logger.info(f"Finished processing in {end - start}")
+            # Create dataset and calculate breakpoints
+            dwds = DWDataset(ds_merged)
+            # Debug: Check the structure
+            print("=== DEBUGGING ===")
+            print(f"Dataset structure: {ds_merged}")
+            print(f"Water column: {dwds.water_column}")
+            print(f"Date in ds_merged: {'date' in ds_merged.dims}")
+            print(f"Date as coordinate: {'date' in ds_merged.coords}")
 
-    # Note: Zarr file creation is skipped since no new data was downloaded
-    logger.info("No Zarr file created because no new data was downloaded")
+            # Check what the breakpoint method sees
+            test_df = ds_merged[dwds.water_column].to_dataframe()
+            print(f"Water DataFrame index: {test_df.index.names}")
+            print(f"Water DataFrame columns: {test_df.columns.tolist()}")
+
+            breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
+            breaks.to_parquet(outfile_breaks)
+            breaks_list.append(breaks)
+
+            # Clean up
+            ds_historical_subset.close()
+            ds_merged.close()
+            del ds_historical_subset, ds_merged
+            gc.collect()
+
+            # Periodic save
+            if len(breaks_list) >= 10:
+                logger.info(f"Saving intermediate results...")
+                breaks_merged = pd.concat(breaks_list, ignore_index=True)
+                joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+                partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
+                joined.to_parquet(partial_file)
+                breaks_list = []
+                gc.collect()
+
+            # Final save
+        if breaks_list:
+            breaks_merged = pd.concat(breaks_list, ignore_index=True)
+            joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+            path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+            joined.to_parquet(path_to_joined_file)
+            logger.info(f"Final combined file saved to {path_to_joined_file}")
+
+        end = datetime.datetime.now()
+        logger.debug(f"Finished processing in {end - start}")
+
+        logger.info("Combining into Zarr file...")
+
+        downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{ANALYSIS_DATE}_*.nc')))
+        output_zarr = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.zarr'
+        logger.debug(f"Output zarr file being saved to {output_zarr}")
+
+        combined = None
+        ds_historical = None
+        if downloaded_files:
+            ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
+
+            BATCH_SIZE = 2
+
+            for batch_idx in tqdm(range(0, len(downloaded_files), BATCH_SIZE), desc="Processing batches"):
+                batch_files = downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
+                batch_datasets = []
+
+                for nc_file in batch_files:
+                    ds = xr.open_dataset(nc_file)
+                    batch_datasets.append(ds)
+
+                batch_combined = xr.concat(batch_datasets, dim='id_geohash')
+                _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
+                batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
+
+                if combined is None:
+                    combined = batch_combined
+                else:
+                    combined = xr.concat([combined, batch_combined], dim='id_geohash')
+                    _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
+                    combined = combined.isel(id_geohash=np.sort(unique_idx))
+
+                for ds in batch_datasets:
+                    ds.close()
+                gc.collect()
+
+        if combined is not None and ds_historical is not None:
+            merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
+            ds_historical.close()
+
     logger.info("Script completed successfully")
 
 

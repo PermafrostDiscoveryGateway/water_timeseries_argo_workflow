@@ -5,6 +5,13 @@ import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 from dotenv import load_dotenv
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 import time
 from loguru import logger
 import sys
@@ -158,12 +165,6 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
         REGION: Region name (e.g., "TEST")
         ANALYSIS_DATE: Analysis date in YYYY-MM format (e.g., "2026-05")
     """
-    # Set thread limits
-    # os.environ['OMP_NUM_THREADS'] = '1'
-    # os.environ['MKL_NUM_THREADS'] = '1'
-    # os.environ['OPENBLAS_NUM_THREADS'] = '1'
-    # os.environ['NUMEXPR_NUM_THREADS'] = '1'
-
     log_memory_usage("Program start")
 
     region_boundaries = get_region_boundaries()
@@ -240,31 +241,22 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
     logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
-
     breaks_list = []
     total = len(grid[:])
-    partial_saved = False
 
-    # First, load historical dataset once to get valid IDs and also get the data for analysis date
-    logger.info("Loading historical dataset to check valid IDs and extract analysis date data...")
+    # Load historical dataset once
+    logger.info("Loading historical dataset...")
     ds_historical_full = xr.open_dataset(path_historical_dw)
     valid_historical_ids = set(ds_historical_full['id_geohash'].values)
-
-    # Extract data for the specific analysis date from the historical dataset
-    # Assuming 'date' is a dimension in the dataset
-    try:
-        # Get the slice for the analysis date
-        ds_analysis_date = ds_historical_full.sel(date=ANALYSIS_DATE)
-        logger.info(f"Successfully extracted data for date {ANALYSIS_DATE}")
-    except (KeyError, ValueError) as e:
-        logger.error(f"Could not extract data for date {ANALYSIS_DATE}: {e}")
-        ds_historical_full.close()
-        sys.exit(1)
-
     logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
 
-    # run loop - now using the pre-extracted analysis date data
+    # The historical dataset already contains all dates including the analysis date
+    # So we don't need to extract or merge anything - just use it as is
+    logger.info(f"Historical dataset includes date {ANALYSIS_DATE} and all previous dates")
+
+    # run loop - using the full historical dataset
     logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
+
     for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
         logger.debug(f"Processing {i}/{total} grid tiles.")
         bbox_west = int(lon)
@@ -273,7 +265,6 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
         bbox_north = int(lat + bbox_size_lat)
 
         print(f"Run processing for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
-
 
         outfile_breaks = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
 
@@ -307,46 +298,32 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
             # Also filter the gdf_subset to only keep valid IDs
             gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
 
-        # Subset the analysis date data for these IDs
-        ds_analysis_subset = ds_analysis_date.sel(id_geohash=id_list)
-
-        # Subset historical data for these IDs (full time series)
+        # Subset historical data for these IDs (includes ALL dates including analysis date)
         ds_historical_subset = ds_historical_full.sel(id_geohash=id_list)
 
-        # Merge and process - now using ds_analysis_subset instead of downloaded data
-        # Note: ds_analysis_subset is just the slice for the analysis date
-        # We need to merge it with the historical data properly
-        # Since ds_analysis_subset might have different dimensions, we'll need to align them
+        # Create DWDataset directly from the historical subset
+        # This already contains the time series up to and including ANALYSIS_DATE
+        dwds = DWDataset(ds_historical_subset)
 
-        # Option 1: If ds_analysis_subset is just a slice, we can add it as a new variable
-        # or expand it to match dimensions. Here's a simple approach:
-        ds_merged = ds_historical_subset.copy()
+        # Debug: Check the structure
+        print("=== DEBUGGING ===")
+        print(f"Dataset structure: {ds_historical_subset}")
+        print(f"Water column: {dwds.water_column}")
+        print(f"Date in ds_merged: {'date' in ds_historical_subset.dims}")
+        print(f"Date as coordinate: {'date' in ds_historical_subset.coords}")
 
-        # Add the analysis date data as a new data variable or replace the slice
-        # This depends on your exact data structure. Adjust as needed:
-        for var in ds_analysis_subset.data_vars:
-            if var in ds_merged.data_vars:
-                # If the variable exists, we might want to keep the full time series
-                # and just note that this is the analysis date
-                logger.debug(f"Variable {var} already exists in historical data")
-            else:
-                # Add new variable from analysis date
-                ds_merged[var] = ds_analysis_subset[var]
+        # Check what the breakpoint method sees
+        test_df = ds_historical_subset[dwds.water_column].to_dataframe()
+        print(f"Water DataFrame index: {test_df.index.names}")
+        print(f"Water DataFrame columns: {test_df.columns.tolist()}")
 
-        # Sort by date if needed
-        if 'date' in ds_merged.dims:
-            ds_merged = ds_merged.sortby('date')
-
-        dwds = DWDataset(ds_merged)
-
+        # Calculate breakpoints - this will use the full time series
         breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
         breaks.to_parquet(outfile_breaks)
         breaks_list.append(breaks)
 
         # Clean up
         close_and_clean(ds_historical_subset, f"historical_subset_{i}")
-        close_and_clean(ds_analysis_subset, f"analysis_subset_{i}")
-        close_and_clean(ds_merged, f"merged_{i}")
         gc.collect()
 
         # Periodic save
@@ -370,31 +347,34 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
     # Close the full historical dataset
     close_and_clean(ds_historical_full, "ds_historical_full")
 
-    # Clean up ds_analysis_date reference (already closed via ds_historical_full)
-
     end = datetime.datetime.now()
-    logger.debug(f"Finished processing in {end - start}")
-
+    logger.info(f"Finished processing in {end - start}")
     logger.info("Analysis completed successfully")
 
 
-def main():
-    """Main function that loads .env and calls the analysis function"""
-    # Load environment variables
-    if len(sys.argv) > 1:
-        env_path = sys.argv[1]
-        load_dotenv(dotenv_path=env_path)
-        logger.info(f"Loading environment from: {env_path}")
-    else:
-        load_dotenv()
-        logger.info("Loading environment from default .env file")
-
-    # Call the analysis function with sample parameters
-    REGION = "TEST"
-    ANALYSIS_DATE = "2024-06"
-
-    run_water_timeseries_analysis(REGION, ANALYSIS_DATE)
-
-
-if __name__ == '__main__':
-    main()
+# def main():
+#     """Main function that loads .env and calls the analysis function"""
+#     # Load environment variables
+#     if len(sys.argv) > 1:
+#         env_path = sys.argv[1]
+#         load_dotenv(dotenv_path=env_path)
+#         logger.info(f"Loading environment from: {env_path}")
+#     else:
+#         load_dotenv()
+#         logger.info("Loading environment from default .env file")
+#
+#     # Parse command line arguments for region and date
+#     if len(sys.argv) >= 3:
+#         REGION = sys.argv[2] if len(sys.argv) > 2 else "TEST"
+#         ANALYSIS_DATE = sys.argv[1] if len(sys.argv) > 1 else "2024-06"
+#     else:
+#         # Default values if not provided
+#         REGION = "TEST"
+#         ANALYSIS_DATE = "2024-06"
+#
+#     logger.info(f"Running analysis for region: {REGION}, date: {ANALYSIS_DATE}")
+#     run_water_timeseries_analysis(REGION, ANALYSIS_DATE)
+#
+#
+# if __name__ == '__main__':
+#     main()
