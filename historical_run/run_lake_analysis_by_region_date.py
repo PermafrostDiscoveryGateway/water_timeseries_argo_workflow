@@ -204,7 +204,6 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
     bounding_box_coords = region_boundaries[REGION_NAME]
 
     logger.debug(f"Bounding box coordinates are {bounding_box_coords}")
-    time.sleep(15)
 
     X_MIN_START = bounding_box_coords['X_MIN_START']
     X_MIN_END = bounding_box_coords['X_MIN_END']
