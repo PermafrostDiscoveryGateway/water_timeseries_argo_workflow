@@ -301,6 +301,8 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
         # Subset historical data for these IDs (includes ALL dates including analysis date)
         ds_historical_subset = ds_historical_full.sel(id_geohash=id_list)
 
+        # CRITICAL FIX: Reorder dimensions to match expected order (date first)
+        # This prevents the column overlap bug in calculate_break
         try:
             ds_historical_subset = ds_historical_subset.transpose('date', 'id_geohash')
             logger.debug(f"Reordered dimensions to: {list(ds_historical_subset.dims)}")
@@ -311,17 +313,9 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
         # This already contains the time series up to and including ANALYSIS_DATE
         dwds = DWDataset(ds_historical_subset)
 
-        # Debug: Check the structure
-        print("=== DEBUGGING ===")
-        print(f"Dataset structure: {ds_historical_subset}")
-        print(f"Water column: {dwds.water_column}")
-        print(f"Date in ds_merged: {'date' in ds_historical_subset.dims}")
-        print(f"Date as coordinate: {'date' in ds_historical_subset.coords}")
-
-        # Check what the breakpoint method sees
-        test_df = ds_historical_subset[dwds.water_column].to_dataframe()
-        print(f"Water DataFrame index: {test_df.index.names}")
-        print(f"Water DataFrame columns: {test_df.columns.tolist()}")
+        # Optional debug (remove after confirming fix)
+        logger.debug(f"Dataset dims after reorder: {ds_historical_subset.dims}")
+        logger.debug(f"Water DataFrame index: {ds_historical_subset[dwds.water_column].to_dataframe().index.names}")
 
         # Calculate breakpoints - this will use the full time series
         breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
@@ -371,8 +365,8 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
 #
 #     # Parse command line arguments for region and date
 #     if len(sys.argv) >= 3:
-#         REGION = sys.argv[2] if len(sys.argv) > 2 else "TEST"
-#         ANALYSIS_DATE = sys.argv[1] if len(sys.argv) > 1 else "2024-06"
+#         ANALYSIS_DATE = sys.argv[1]
+#         REGION = sys.argv[2]
 #     else:
 #         # Default values if not provided
 #         REGION = "TEST"
