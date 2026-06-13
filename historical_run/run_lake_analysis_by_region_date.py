@@ -301,6 +301,12 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
         # Subset historical data for these IDs (includes ALL dates including analysis date)
         ds_historical_subset = ds_historical_full.sel(id_geohash=id_list)
 
+        try:
+            ds_historical_subset = ds_historical_subset.transpose('date', 'id_geohash')
+            logger.debug(f"Reordered dimensions to: {list(ds_historical_subset.dims)}")
+        except ValueError as e:
+            logger.warning(f"Could not reorder dimensions: {e}")
+
         # Create DWDataset directly from the historical subset
         # This already contains the time series up to and including ANALYSIS_DATE
         dwds = DWDataset(ds_historical_subset)
