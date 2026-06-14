@@ -8,9 +8,14 @@ import sys
 from pathlib import Path
 
 # Add project root to Python path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+PROJECT_ROOT = Path("/home/ext_tcnichol_illinois_edu/water-timeseries-v2")
+SRC_PATH = PROJECT_ROOT / "src"
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
+
 
 def get_dates(start_year, end_year):
     """
@@ -46,7 +51,7 @@ def main():
 
     REGION = os.getenv("REGION", "EURASIA3")
     start_year = int(os.getenv("START_YEAR", 2017))
-    end_year = int(os.getenv("END_YEAR", 2020))
+    end_year = int(os.getenv("END_YEAR", 2019))
 
 
     logger.debug(f"Historical dates are")
