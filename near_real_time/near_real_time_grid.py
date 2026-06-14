@@ -125,7 +125,15 @@ def merge_zarr_chunked(ds_historical, combined_ds, output_path, chunk_size=250):
     return output_path
 
 
-def main():
+def near_real_time_region(region: str = "TEST", env_path: str = None):
+    """
+    Run near-real-time breakpoint analysis for a specific region.
+
+    Args:
+        region: Region name (e.g., "TEST", "AFRICA", "SOUTH_AMERICA")
+               Defaults to "TEST"
+        env_path: Optional path to .env file. If None, uses default .env
+    """
     # Set thread limits
     # os.environ['OMP_NUM_THREADS'] = '1'
     # os.environ['MKL_NUM_THREADS'] = '1'
@@ -139,15 +147,15 @@ def main():
     start = datetime.datetime.now()
     logger.debug(f"Current time: {datetime.datetime.now()}")
 
-    if len(sys.argv) > 1:
-        env_path = sys.argv[1]
+    # Load environment variables
+    if env_path:
         load_dotenv(dotenv_path=env_path)
         logger.info(f"Loading environment from: {env_path}")
     else:
         load_dotenv()
         logger.info("Loading environment from default .env file")
 
-    REGION_NAME = os.getenv("region_name", "TEST")
+    REGION_NAME = region
 
     output_dir = os.environ['output_dir']
     output_dir = os.path.join(output_dir, REGION_NAME)
@@ -174,7 +182,7 @@ def main():
 
     if not all_dynamic_world_files:
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
-        sys.exit(1)
+        return False
 
     logger.debug(f"Region name is {REGION_NAME}")
 
@@ -195,7 +203,7 @@ def main():
 
     missing_dates = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(most_recent_dynamic_world_file)
 
-    # ========== NEW LOGIC: Handle missing dates ==========
+    # ========== Handle missing dates ==========
     if missing_dates:
         logger.warning(f"Found {len(missing_dates)} missing dates in historical data")
         for date in missing_dates:
@@ -212,7 +220,7 @@ def main():
     path_historical_dw = most_recent_dynamic_world_file
     path_lake_vector = vector_lake_file
 
-    # DO DATES HERE
+    # Process each missing date
     for date in missing_dates:
         ANALYSIS_DATE = date.strftime("%Y-%m")
 
@@ -228,7 +236,7 @@ def main():
 
         bp = NRTBreakpoint()
 
-        current_breakpoint_dir = Path(output_dir)  / f'breakpoint_{ANALYSIS_DATE}'
+        current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
         current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
         logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
@@ -266,9 +274,16 @@ def main():
         ds_historical_check.close()
         logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
 
+        # Define expected output columns for empty results
+        expected_columns = [
+            'date', 'water_observed', 'water_predicted', 'water_residual',
+            'water_predicted_lower_90', 'water_predicted_upper_90',
+            'water_historical_mean', 'water_historical_median', 'water_historical_std',
+            'water_historical_min', 'water_historical_max', 'drainage_confidence'
+        ]
+
         # run loop
         logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
-        ANALYSIS_DATE = date.strftime("%Y-%m")
         for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
             logger.debug(f"Processing {i}/{total} grid tiles.")
             bbox_west = int(lon)
@@ -311,28 +326,46 @@ def main():
                 # Also filter the gdf_subset to only keep valid IDs
                 gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
 
-            # ========== NEW LOGIC: Handle download vs no-download cases ==========
+            # ========== Handle download vs no-download cases ==========
+            ds_dl = None
+            download_successful = False
+
             if DOWNLOAD_REQUIRED:
                 # Download or load existing file
                 if not outfile_download.exists():
                     try:
-                        ds_dl = downloader.download_dw_monthly(gdf=gdf_subset, max_total_requests=2000, n_parallel=2,
-                                                               date_list=[ANALYSIS_DATE], save_to_file=outfile_download)
+                        ds_dl = downloader.download_dw_monthly(
+                            gdf=gdf_subset,
+                            max_total_requests=2000,
+                            n_parallel=2,
+                            date_list=[ANALYSIS_DATE],
+                            save_to_file=outfile_download
+                        )
+                        download_successful = True
+                        print(f'Successfully downloaded data for {bbox_west} {bbox_south}')
                     except ValueError as e:
                         if "No data was extracted" in str(e):
-                            print(f"No data for {bbox_west} {bbox_south}")
-                            continue
+                            print(f'WARNING: No data available for {bbox_west} {bbox_south} on {ANALYSIS_DATE}')
+                            download_successful = False
                         else:
-                            raise
+                            logger.error(f"Download error for {bbox_west} {bbox_south}: {e}")
+                            download_successful = False
+                    except Exception as e:
+                        logger.error(f"Unexpected error downloading {bbox_west} {bbox_south}: {e}")
+                        download_successful = False
                 else:
                     print(f'Loading existing download for {bbox_west} {bbox_south}')
-                    ds_dl = xr.open_dataset(outfile_download)
+                    try:
+                        ds_dl = xr.open_dataset(outfile_download)
+                        download_successful = True
+                    except Exception as e:
+                        logger.error(f"Error loading existing download file: {e}")
+                        download_successful = False
             else:
-                # No download required - we'll use historical data only
-                # Create a dummy dataset with no new data, or simply use historical only
+                # No download required - use historical data only
                 print(f'No download needed for {bbox_west} {bbox_south} - using historical data only')
-                # Create an empty dataset with the same structure but no new dates
                 ds_dl = None
+                download_successful = False
 
             # Load historical data for this tile
             logger.info(f"Loading historical dataset for tile {i}...")
@@ -346,35 +379,65 @@ def main():
             del ds_historical
             gc.collect()
 
-            # ========== NEW LOGIC: Merge or use historical only ==========
-            if DOWNLOAD_REQUIRED and ds_dl is not None:
-                # Merge historical and new data
-                ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
+            # ========== Merge or use historical only ==========
+            if download_successful and ds_dl is not None:
+                # We have new data to merge
+                ds_dl_dates = pd.to_datetime(ds_dl['date'].values).strftime('%Y-%m')
+                if ANALYSIS_DATE in ds_dl_dates:
+                    ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
+                    print(f'Merged new data for {ANALYSIS_DATE} with historical record')
+                else:
+                    print(f'WARNING: Downloaded file for {bbox_west} {bbox_south} does not contain {ANALYSIS_DATE}')
+                    ds_merged = ds_historical_subset
+                    download_successful = False
+
                 # Clean up download dataset
-                ds_dl.close()
-                del ds_dl
+                if ds_dl is not None:
+                    ds_dl.close()
+                    del ds_dl
             else:
                 # Use only historical data
                 logger.info(f"No new data to merge for grid {bbox_west} {bbox_south} - using historical data only")
                 ds_merged = ds_historical_subset
 
-            # Create dataset and calculate breakpoints
-            dwds = DWDataset(ds_merged)
-            # Debug: Check the structure
-            print("=== DEBUGGING ===")
-            print(f"Dataset structure: {ds_merged}")
-            print(f"Water column: {dwds.water_column}")
-            print(f"Date in ds_merged: {'date' in ds_merged.dims}")
-            print(f"Date as coordinate: {'date' in ds_merged.coords}")
+            # ========== Calculate breakpoints with error handling ==========
+            try:
+                # Create dataset
+                dwds = DWDataset(ds_merged)
 
-            # Check what the breakpoint method sees
-            test_df = ds_merged[dwds.water_column].to_dataframe()
-            print(f"Water DataFrame index: {test_df.index.names}")
-            print(f"Water DataFrame columns: {test_df.columns.tolist()}")
+                # Check if analysis date exists in the dataset
+                if ANALYSIS_DATE not in dwds.dates_:
+                    logger.warning(
+                        f"Analysis date {ANALYSIS_DATE} not in dataset dates for grid {bbox_west} {bbox_south}")
+                    # Create empty result with expected columns
+                    empty_result = pd.DataFrame(columns=expected_columns)
+                    empty_result.to_parquet(outfile_breaks)
+                    breaks_list.append(empty_result)
+                    print(f'Created empty result for {bbox_west} {bbox_south} - analysis date not in data')
+                else:
+                    # Calculate breakpoints
+                    breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
+                    breaks.to_parquet(outfile_breaks)
+                    breaks_list.append(breaks)
+                    print(f'Successfully calculated breakpoints for {bbox_west} {bbox_south}')
 
-            breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
-            breaks.to_parquet(outfile_breaks)
-            breaks_list.append(breaks)
+            except ValueError as e:
+                if "not available in the dataset" in str(e):
+                    logger.warning(
+                        f"Analysis date {ANALYSIS_DATE} not available for grid {bbox_west} {bbox_south}: {e}")
+                    empty_result = pd.DataFrame(columns=expected_columns)
+                    empty_result.to_parquet(outfile_breaks)
+                    breaks_list.append(empty_result)
+                else:
+                    logger.error(f"ValueError calculating breakpoints for {bbox_west} {bbox_south}: {e}")
+                    empty_result = pd.DataFrame(columns=expected_columns)
+                    empty_result.to_parquet(outfile_breaks)
+                    breaks_list.append(empty_result)
+            except Exception as e:
+                logger.error(f"Unexpected error calculating breakpoints for {bbox_west} {bbox_south}: {e}")
+                empty_result = pd.DataFrame(columns=expected_columns)
+                empty_result.to_parquet(outfile_breaks)
+                breaks_list.append(empty_result)
 
             # Clean up
             ds_historical_subset.close()
@@ -385,23 +448,35 @@ def main():
             # Periodic save
             if len(breaks_list) >= 10:
                 logger.info(f"Saving intermediate results...")
-                breaks_merged = pd.concat(breaks_list, ignore_index=True)
-                joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
-                partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
-                joined.to_parquet(partial_file)
+                non_empty_breaks = [df for df in breaks_list if not df.empty]
+                if non_empty_breaks:
+                    breaks_merged = pd.concat(non_empty_breaks, ignore_index=True)
+                    joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+                    partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
+                    joined.to_parquet(partial_file)
+                else:
+                    logger.warning("No non-empty breakpoint results to save in partial file")
                 breaks_list = []
                 gc.collect()
 
-            # Final save
+        # Final save for this date
         if breaks_list:
-            breaks_merged = pd.concat(breaks_list, ignore_index=True)
-            joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
-            path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
-            joined.to_parquet(path_to_joined_file)
-            logger.info(f"Final combined file saved to {path_to_joined_file}")
+            non_empty_breaks = [df for df in breaks_list if not df.empty]
+            if non_empty_breaks:
+                breaks_merged = pd.concat(non_empty_breaks, ignore_index=True)
+                joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+                path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+                joined.to_parquet(path_to_joined_file)
+                logger.info(f"Final combined file saved to {path_to_joined_file}")
+            else:
+                logger.warning(f"No valid breakpoint results found for date {ANALYSIS_DATE}")
+                empty_result = pd.DataFrame(columns=expected_columns)
+                path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+                empty_result.to_parquet(path_to_joined_file)
+                logger.info(f"Created empty result file for {ANALYSIS_DATE}")
 
         end = datetime.datetime.now()
-        logger.debug(f"Finished processing in {end - start}")
+        logger.debug(f"Finished processing date {ANALYSIS_DATE} in {end - start}")
 
         logger.info("Combining into Zarr file...")
 
@@ -443,8 +518,36 @@ def main():
             merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
             ds_historical.close()
 
-    logger.info("Script completed successfully")
+    logger.info(f"Near-real-time processing completed for region: {REGION_NAME}")
+    return True
 
 
-if __name__ == '__main__':
-    main()
+def main():
+    """
+    Main entry point for command-line usage.
+    Accepts region as first argument and optional env file as second argument.
+
+    Usage:
+        python script.py [REGION] [ENV_PATH]
+
+    Examples:
+        python script.py TEST
+        python script.py AFRICA /path/to/.env
+        python script.py                     # Uses default TEST region
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Run near-real-time breakpoint analysis for a region')
+    parser.add_argument('region', nargs='?', default='TEST',
+                        help='Region name (default: TEST)')
+    parser.add_argument('env_path', nargs='?', default=None,
+                        help='Optional path to .env file')
+
+    args = parser.parse_args()
+
+    success = near_real_time_region(region=args.region, env_path=args.env_path)
+    sys.exit(0 if success else 1)
+
+
+# if __name__ == '__main__':
+#     main()
