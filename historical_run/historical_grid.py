@@ -7,6 +7,40 @@ import os
 import sys
 from pathlib import Path
 
+# Add this at the VERY TOP of your script, before any imports
+import sys
+import os
+from pathlib import Path
+
+print("=== DIAGNOSTIC INFO ===")
+print(f"Script location: {__file__}")
+print(f"Current working directory: {os.getcwd()}")
+print(f"Python executable: {sys.executable}")
+print(f"Python path: {sys.path[:3]}...")
+
+# Try to find the project root dynamically
+script_path = Path(__file__).resolve()
+print(f"Resolved script path: {script_path}")
+
+# Look for water_timeseries directory
+for parent in [script_path.parent] + list(script_path.parents):
+    print(f"Checking: {parent}")
+    if (parent / "water_timeseries").exists():
+        print(f"✓ Found water_timeseries at: {parent / 'water_timeseries'}")
+        if str(parent) not in sys.path:
+            sys.path.insert(0, str(parent))
+            print(f"Added {parent} to sys.path")
+        break
+    if (parent / "src" / "water_timeseries").exists():
+        print(f"✓ Found water_timeseries at: {parent / 'src' / 'water_timeseries'}")
+        src_path = parent / "src"
+        if str(src_path) not in sys.path:
+            sys.path.insert(0, str(src_path))
+            print(f"Added {src_path} to sys.path")
+        break
+
+print("=== END DIAGNOSTIC ===\n")
+
 # Add project root to Python path
 PROJECT_ROOT = Path("/home/ext_tcnichol_illinois_edu/water-timeseries-v2")
 SRC_PATH = PROJECT_ROOT / "src"
