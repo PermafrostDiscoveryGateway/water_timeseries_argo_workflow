@@ -1,4 +1,58 @@
 import geopandas as gpd
+# !/usr/bin/env python3
+import sys
+from pathlib import Path
+
+
+def setup_water_timeseries_path():
+    """
+    Dynamically add water-timeseries-v2 to Python path.
+    Works from any location without hardcoded paths.
+    """
+    # Get the current script's location
+    script_path = Path(__file__).resolve()
+
+    # Look for water-timeseries-v2 by traversing up from script location
+    # and checking common sibling/parent locations
+    candidates = []
+
+    # Add current script's directory and parents
+    for parent in [script_path.parent] + list(script_path.parents):
+        candidates.append(parent / "water-timeseries-v2")
+        candidates.append(parent.parent / "water-timeseries-v2")
+        candidates.append(parent / "../water-timeseries-v2")
+
+    # Add common locations relative to home
+    candidates.append(Path.home() / "water-timeseries-v2")
+
+    # Check if the package is already importable
+    try:
+        import water_timeseries
+        print(f"✓ water_timeseries already available at: {water_timeseries.__file__}")
+        return True
+    except ImportError:
+        pass
+
+    # Try each candidate
+    for candidate in candidates:
+        src_path = candidate.resolve() / "src"
+        if src_path.exists() and (src_path / "water_timeseries").exists():
+            print(f"✓ Found water_timeseries at: {src_path}")
+            sys.path.insert(0, str(src_path))
+            return True
+
+    print("⚠️  WARNING: Could not find water-timeseries-v2")
+    print("   Searched in:")
+    for c in candidates[:5]:
+        print(f"     - {c}")
+    return False
+
+
+# Run the setup
+if not setup_water_timeseries_path():
+    print("ERROR: water_timeseries package not found. Please check installation.")
+    sys.exit(1)
+
 import xarray as xr
 import pandas as pd
 import numpy as np
