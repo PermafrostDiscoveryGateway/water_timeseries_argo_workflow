@@ -23,7 +23,7 @@ import gc
 import psutil
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
 from water_timeseries.dataset import DWDataset
-from water_timeseries.breakpoint import NRTBreakpoint
+from water_timeseries.breakpoint import BeastBreakpoint  # Changed from NRTBreakpoint
 import datetime
 from utils.region_boundaries import get_region_boundaries
 import json
@@ -235,7 +235,18 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
     print('created grid')
     log_memory_usage("After creating grid")
 
-    bp = NRTBreakpoint()
+    # Changed: Use BeastBreakpoint with default threshold of 0.5
+    # Default kwargs: trendMaxOrder=0, trendMinSepDist=1, break_threshold=0.5
+    bp = BeastBreakpoint()  # Using default 0.5 threshold
+
+    # Optional: If you want to be explicit about the threshold:
+    # bp = BeastBreakpoint(break_threshold=0.5)
+
+    # Optional: Adjust for historical analysis - allow more breaks:
+    # bp = BeastBreakpoint(
+    #     kwargs_break=dict(trendMaxOrder=0, trendMinSepDist=1),
+    #     break_threshold=0.5
+    # )
 
     current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
@@ -317,32 +328,52 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
         logger.debug(f"Dataset dims after reorder: {ds_historical_subset.dims}")
         logger.debug(f"Water DataFrame index: {ds_historical_subset[dwds.water_column].to_dataframe().index.names}")
 
-        # Calculate breakpoints - this will use the full time series
-        breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
-        breaks.to_parquet(outfile_breaks)
-        breaks_list.append(breaks)
+        # Calculate breakpoints using BeastBreakpoint
+        # Note: BeastBreakpoint.calculate_break takes (dataset, object_id) not analysis_date
+        # So we need to loop through each object_id individually
+        for object_id in id_list:
+            try:
+                # Calculate break for this specific lake
+                break_result = bp.calculate_break(dataset=dwds, object_id=object_id)
+
+                # Add to results if break was found (not empty)
+                if not break_result.empty:
+                    breaks_list.append(break_result)
+
+            except Exception as e:
+                logger.error(f"Error calculating break for lake {object_id}: {e}")
+                continue
+
+        # Save intermediate results periodically
+        if len(breaks_list) >= 10:
+            logger.info(f"Saving intermediate results...")
+            if breaks_list:
+                breaks_merged = pd.concat(breaks_list, ignore_index=True)
+                # Remove the index name to avoid conflicts
+                breaks_merged = breaks_merged.reset_index(drop=True)
+                joined = gdf.set_index('id_geohash').join(breaks_merged.set_index('id_geohash'),
+                                                          how='inner').reset_index()
+                partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
+                joined.to_parquet(partial_file)
+                logger.info(f"Saved {len(breaks_list)} breaks to partial file")
+                breaks_list = []
+                gc.collect()
 
         # Clean up
         close_and_clean(ds_historical_subset, f"historical_subset_{i}")
         gc.collect()
 
-        # Periodic save
-        if len(breaks_list) >= 10:
-            logger.info(f"Saving intermediate results...")
-            breaks_merged = pd.concat(breaks_list, ignore_index=True)
-            joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
-            partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
-            joined.to_parquet(partial_file)
-            breaks_list = []
-            gc.collect()
-
     # Final save
     if breaks_list:
         breaks_merged = pd.concat(breaks_list, ignore_index=True)
-        joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+        # Remove the index name to avoid conflicts
+        breaks_merged = breaks_merged.reset_index(drop=True)
+        joined = gdf.set_index('id_geohash').join(breaks_merged.set_index('id_geohash'), how='inner').reset_index()
         path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
         joined.to_parquet(path_to_joined_file)
-        logger.info(f"Final combined file saved to {path_to_joined_file}")
+        logger.info(f"Final combined file saved to {path_to_joined_file} with {len(breaks_list)} total breaks")
+    else:
+        logger.warning("No breakpoints found for any lakes!")
 
     # Close the full historical dataset
     close_and_clean(ds_historical_full, "ds_historical_full")
