@@ -293,6 +293,8 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
         if n_lakes == 0:
             print(f'No lakes for grid {bbox_west} {bbox_south}. Skipping!')
             continue
+        else:
+            logger.debug(f"We have lakes to process {n_lakes} grids")
 
         # Filter IDs to only those that exist in historical data
         original_count = len(id_list)
