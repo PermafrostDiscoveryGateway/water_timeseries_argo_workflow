@@ -1,4 +1,4 @@
-import run_lake_analysis_by_region_date
+
 import sys
 from loguru import logger
 from datetime import date
@@ -40,7 +40,7 @@ for parent in [script_path.parent] + list(script_path.parents):
         break
 
 print("=== END DIAGNOSTIC ===\n")
-
+import run_lake_analysis_by_region_date
 # Add project root to Python path
 PROJECT_ROOT = Path("/home/ext_tcnichol_illinois_edu/water-timeseries-v2")
 SRC_PATH = PROJECT_ROOT / "src"
