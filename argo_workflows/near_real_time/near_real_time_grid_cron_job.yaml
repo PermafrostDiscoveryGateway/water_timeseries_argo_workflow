@@ -87,7 +87,7 @@ spec:
       inputs: {}
       outputs: {}
       container:
-        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:19-download-and-process-over-grid-tiles
+        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:27-create-near-real-time-cron-jobs
         imagePullPolicy: Always
         resources:
           requests:
