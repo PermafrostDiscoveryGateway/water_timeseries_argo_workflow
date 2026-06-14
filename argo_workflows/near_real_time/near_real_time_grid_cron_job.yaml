@@ -207,7 +207,7 @@ spec:
           echo "=== RUNNING SCRIPT ==="
           cd /app
           
-          python /app/near_real_time/near_real_time_grid.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
+          python /app/near_real_time/run_all_near_real_time.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
           
           SCRIPT_EXIT_CODE=${PIPESTATUS[0]}
           
