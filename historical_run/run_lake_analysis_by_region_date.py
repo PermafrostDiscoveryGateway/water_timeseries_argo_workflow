@@ -160,10 +160,6 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250
 def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
     """
     Run the water timeseries analysis for a specific region and analysis date.
-
-    Args:
-        REGION: Region name (e.g., "TEST")
-        ANALYSIS_DATE: Analysis date in YYYY-MM format (e.g., "2026-05")
     """
     log_memory_usage("Program start")
 
@@ -227,6 +223,7 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
 
     gdf = gpd.read_parquet(path_lake_vector)
     log_memory_usage("After loading lake vectors")
+    logger.info(f"Total lakes in vector file: {len(gdf)}")
 
     bbox_size_lon = 1
     bbox_size_lat = 1
@@ -235,18 +232,8 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
     print('created grid')
     log_memory_usage("After creating grid")
 
-    # Changed: Use BeastBreakpoint with default threshold of 0.5
-    # Default kwargs: trendMaxOrder=0, trendMinSepDist=1, break_threshold=0.5
-    bp = BeastBreakpoint()  # Using default 0.5 threshold
-
-    # Optional: If you want to be explicit about the threshold:
-    # bp = BeastBreakpoint(break_threshold=0.5)
-
-    # Optional: Adjust for historical analysis - allow more breaks:
-    # bp = BeastBreakpoint(
-    #     kwargs_break=dict(trendMaxOrder=0, trendMinSepDist=1),
-    #     break_threshold=0.5
-    # )
+    # Use BeastBreakpoint with default threshold of 0.5
+    bp = BeastBreakpoint()
 
     current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
@@ -261,12 +248,12 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
     valid_historical_ids = set(ds_historical_full['id_geohash'].values)
     logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
 
-    # The historical dataset already contains all dates including the analysis date
-    # So we don't need to extract or merge anything - just use it as is
     logger.info(f"Historical dataset includes date {ANALYSIS_DATE} and all previous dates")
-
-    # run loop - using the full historical dataset
     logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
+
+    # Track statistics
+    total_breaks_found = 0
+    lakes_with_breaks = 0
 
     for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
         logger.debug(f"Processing {i}/{total} grid tiles.")
@@ -281,7 +268,10 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
 
         if outfile_breaks.exists():
             print(f'Breakpoints already calculated! Skipping {bbox_west} {bbox_south}')
-            breaks_list.append(pd.read_parquet(outfile_breaks))
+            df_existing = pd.read_parquet(outfile_breaks)
+            breaks_list.append(df_existing)
+            total_breaks_found += len(df_existing)
+            lakes_with_breaks += df_existing['id_geohash'].nunique() if 'id_geohash' in df_existing.columns else 0
             continue
 
         gdf_subset = filter_gdf_by_bbox(gdf=gdf, bbox_west=lon, bbox_east=lon + bbox_size_lon, bbox_south=lat,
@@ -311,36 +301,49 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
             # Also filter the gdf_subset to only keep valid IDs
             gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
 
-        # Subset historical data for these IDs (includes ALL dates including analysis date)
+        # Subset historical data for these IDs
         ds_historical_subset = ds_historical_full.sel(id_geohash=id_list)
 
-        # CRITICAL FIX: Reorder dimensions to match expected order (date first)
-        # This prevents the column overlap bug in calculate_break
+        # Reorder dimensions
         try:
             ds_historical_subset = ds_historical_subset.transpose('date', 'id_geohash')
             logger.debug(f"Reordered dimensions to: {list(ds_historical_subset.dims)}")
         except ValueError as e:
             logger.warning(f"Could not reorder dimensions: {e}")
 
-        # Create DWDataset directly from the historical subset
-        # This already contains the time series up to and including ANALYSIS_DATE
+        # Create DWDataset
         dwds = DWDataset(ds_historical_subset)
 
-        # Optional debug (remove after confirming fix)
         logger.debug(f"Dataset dims after reorder: {ds_historical_subset.dims}")
         logger.debug(f"Water DataFrame index: {ds_historical_subset[dwds.water_column].to_dataframe().index.names}")
 
-        # Calculate breakpoints using BeastBreakpoint
-        # Note: BeastBreakpoint.calculate_break takes (dataset, object_id) not analysis_date
-        # So we need to loop through each object_id individually
+        # Calculate breakpoints for each lake
         for object_id in id_list:
             try:
-                # Calculate break for this specific lake
                 break_result = bp.calculate_break(dataset=dwds, object_id=object_id)
 
-                # Add to results if break was found (not empty)
                 if not break_result.empty:
-                    breaks_list.append(break_result)
+                    # Ensure id_geohash is a column, not just an index
+                    if 'id_geohash' not in break_result.columns:
+                        # Reset index to make id_geohash a column
+                        break_result = break_result.reset_index()
+                        logger.debug(f"Reset index for lake {object_id}, now columns: {break_result.columns.tolist()}")
+
+                    # Verify id_geohash column exists and has correct value
+                    if 'id_geohash' in break_result.columns:
+                        # Ensure the id_geohash value is correct
+                        if break_result['id_geohash'].iloc[0] != object_id:
+                            logger.warning(
+                                f"ID mismatch: expected {object_id}, got {break_result['id_geohash'].iloc[0]}")
+                            break_result['id_geohash'] = object_id
+
+                        breaks_list.append(break_result)
+                        total_breaks_found += len(break_result)
+                        lakes_with_breaks += 1
+                        logger.debug(f"Found {len(break_result)} break(s) for lake {object_id}")
+                    else:
+                        logger.error(f"id_geohash column still missing after reset_index for lake {object_id}")
+                        logger.error(f"Available columns: {break_result.columns.tolist()}")
 
             except Exception as e:
                 logger.error(f"Error calculating break for lake {object_id}: {e}")
@@ -348,16 +351,38 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
 
         # Save intermediate results periodically
         if len(breaks_list) >= 10:
-            logger.info(f"Saving intermediate results...")
+            logger.info(f"Saving intermediate results with {len(breaks_list)} break DataFrames...")
             if breaks_list:
                 breaks_merged = pd.concat(breaks_list, ignore_index=True)
-                # Remove the index name to avoid conflicts
-                breaks_merged = breaks_merged.reset_index(drop=True)
-                joined = gdf.set_index('id_geohash').join(breaks_merged.set_index('id_geohash'),
-                                                          how='inner').reset_index()
-                partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
-                joined.to_parquet(partial_file)
-                logger.info(f"Saved {len(breaks_list)} breaks to partial file")
+                logger.info(f"Merged {len(breaks_merged)} break records")
+
+                # Log column info for debugging
+                logger.debug(f"breaks_merged columns: {breaks_merged.columns.tolist()}")
+                logger.debug(f"breaks_merged index: {breaks_merged.index.name}")
+
+                # Check if id_geohash column exists
+                if 'id_geohash' not in breaks_merged.columns:
+                    logger.error("id_geohash column missing from breaks_merged!")
+                    logger.error(f"Available columns: {breaks_merged.columns.tolist()}")
+                    # Try to recover by resetting index if id_geohash is the index
+                    if breaks_merged.index.name == 'id_geohash':
+                        breaks_merged = breaks_merged.reset_index()
+                        logger.info("Recovered by resetting index")
+
+                # Now join with gdf
+                if 'id_geohash' in breaks_merged.columns:
+                    joined = gdf.set_index('id_geohash').join(
+                        breaks_merged.set_index('id_geohash'),
+                        how='inner'
+                    ).reset_index()
+
+                    partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
+                    joined.to_parquet(partial_file)
+                    logger.info(f"Saved {len(joined)} lakes with breaks to partial file")
+                else:
+                    logger.error("Cannot save partial file - missing id_geohash column")
+                    logger.error(f"breaks_merged head:\n{breaks_merged.head()}")
+
                 breaks_list = []
                 gc.collect()
 
@@ -366,14 +391,49 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
         gc.collect()
 
     # Final save
+    logger.info(
+        f"Processing complete. Total breaks found: {total_breaks_found}, Lakes with breaks: {lakes_with_breaks}")
+
     if breaks_list:
+        logger.info(f"Final save with {len(breaks_list)} break DataFrames...")
         breaks_merged = pd.concat(breaks_list, ignore_index=True)
-        # Remove the index name to avoid conflicts
-        breaks_merged = breaks_merged.reset_index(drop=True)
-        joined = gdf.set_index('id_geohash').join(breaks_merged.set_index('id_geohash'), how='inner').reset_index()
-        path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
-        joined.to_parquet(path_to_joined_file)
-        logger.info(f"Final combined file saved to {path_to_joined_file} with {len(breaks_list)} total breaks")
+        logger.info(f"Final merged {len(breaks_merged)} break records")
+
+        # Log column info for debugging
+        logger.debug(f"Final breaks_merged columns: {breaks_merged.columns.tolist()}")
+
+        # Ensure id_geohash is a column
+        if 'id_geohash' not in breaks_merged.columns:
+            logger.warning("id_geohash column missing, attempting to reset index")
+            if breaks_merged.index.name == 'id_geohash':
+                breaks_merged = breaks_merged.reset_index()
+                logger.info("Reset index successfully")
+            else:
+                logger.error(f"Cannot recover - index name is {breaks_merged.index.name}")
+                logger.error(f"breaks_merged head:\n{breaks_merged.head()}")
+
+        # Join with gdf if id_geohash column exists
+        if 'id_geohash' in breaks_merged.columns:
+            joined = gdf.set_index('id_geohash').join(
+                breaks_merged.set_index('id_geohash'),
+                how='inner'
+            ).reset_index()
+
+            path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+            joined.to_parquet(path_to_joined_file)
+            logger.info(
+                f"Final combined file saved to {path_to_joined_file} with {len(joined)} lakes and {len(breaks_merged)} total breaks")
+
+            # Also save just the breakpoints without geometry for easier analysis
+            breaks_only_file = current_breakpoint_dir / f'breakpoints_only_{ANALYSIS_DATE}.parquet'
+            breaks_merged.to_parquet(breaks_only_file)
+            logger.info(f"Breakpoints-only file saved to {breaks_only_file}")
+        else:
+            logger.error("Cannot save final file - missing id_geohash column")
+            # Save raw breaks for debugging
+            debug_file = current_breakpoint_dir / f'debug_breaks_{ANALYSIS_DATE}.parquet'
+            breaks_merged.to_parquet(debug_file)
+            logger.info(f"Saved raw breaks to {debug_file} for debugging")
     else:
         logger.warning("No breakpoints found for any lakes!")
 
