@@ -228,7 +228,7 @@ def main():
 
         bp = NRTBreakpoint()
 
-        current_breakpoint_dir = Path(output_dir)  / f'breakpoint_{ANALYSIS_DATE}'
+        current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
         current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
         logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
@@ -265,6 +265,14 @@ def main():
         valid_historical_ids = set(ds_historical_check['id_geohash'].values)
         ds_historical_check.close()
         logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
+
+        # Define expected output columns for empty results
+        expected_columns = [
+            'date', 'water_observed', 'water_predicted', 'water_residual',
+            'water_predicted_lower_90', 'water_predicted_upper_90',
+            'water_historical_mean', 'water_historical_median', 'water_historical_std',
+            'water_historical_min', 'water_historical_max', 'drainage_confidence'
+        ]
 
         # run loop
         logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
@@ -311,28 +319,47 @@ def main():
                 # Also filter the gdf_subset to only keep valid IDs
                 gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
 
-            # ========== NEW LOGIC: Handle download vs no-download cases ==========
+            # ========== IMPROVED HANDLING FOR NO DATA ==========
+            ds_dl = None
+            download_successful = False
+
             if DOWNLOAD_REQUIRED:
                 # Download or load existing file
                 if not outfile_download.exists():
                     try:
-                        ds_dl = downloader.download_dw_monthly(gdf=gdf_subset, max_total_requests=2000, n_parallel=2,
-                                                               date_list=[ANALYSIS_DATE], save_to_file=outfile_download)
+                        ds_dl = downloader.download_dw_monthly(
+                            gdf=gdf_subset,
+                            max_total_requests=2000,
+                            n_parallel=2,
+                            date_list=[ANALYSIS_DATE],
+                            save_to_file=outfile_download
+                        )
+                        download_successful = True
+                        print(f'Successfully downloaded data for {bbox_west} {bbox_south}')
                     except ValueError as e:
                         if "No data was extracted" in str(e):
-                            print(f"No data for {bbox_west} {bbox_south}")
-                            continue
+                            print(f'WARNING: No data available for {bbox_west} {bbox_south} on {ANALYSIS_DATE}')
+                            # Don't continue - we'll try to use historical data only
+                            download_successful = False
                         else:
-                            raise
+                            logger.error(f"Download error for {bbox_west} {bbox_south}: {e}")
+                            download_successful = False
+                    except Exception as e:
+                        logger.error(f"Unexpected error downloading {bbox_west} {bbox_south}: {e}")
+                        download_successful = False
                 else:
                     print(f'Loading existing download for {bbox_west} {bbox_south}')
-                    ds_dl = xr.open_dataset(outfile_download)
+                    try:
+                        ds_dl = xr.open_dataset(outfile_download)
+                        download_successful = True
+                    except Exception as e:
+                        logger.error(f"Error loading existing download file: {e}")
+                        download_successful = False
             else:
-                # No download required - we'll use historical data only
-                # Create a dummy dataset with no new data, or simply use historical only
+                # No download required - use historical data only
                 print(f'No download needed for {bbox_west} {bbox_south} - using historical data only')
-                # Create an empty dataset with the same structure but no new dates
                 ds_dl = None
+                download_successful = False
 
             # Load historical data for this tile
             logger.info(f"Loading historical dataset for tile {i}...")
@@ -346,23 +373,70 @@ def main():
             del ds_historical
             gc.collect()
 
-            # ========== NEW LOGIC: Merge or use historical only ==========
-            if DOWNLOAD_REQUIRED and ds_dl is not None:
-                # Merge historical and new data
-                ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
+            # ========== IMPROVED MERGE LOGIC ==========
+            if download_successful and ds_dl is not None:
+                # We have new data to merge
+                # Check if ds_dl actually contains data for the analysis date
+                ds_dl_dates = pd.to_datetime(ds_dl['date'].values).strftime('%Y-%m')
+                if ANALYSIS_DATE in ds_dl_dates:
+                    ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
+                    print(f'Merged new data for {ANALYSIS_DATE} with historical record')
+                else:
+                    print(f'WARNING: Downloaded file for {bbox_west} {bbox_south} does not contain {ANALYSIS_DATE}')
+                    ds_merged = ds_historical_subset
+                    download_successful = False
+
                 # Clean up download dataset
-                ds_dl.close()
-                del ds_dl
+                if ds_dl is not None:
+                    ds_dl.close()
+                    del ds_dl
             else:
-                # Use only historical data
+                # Use only historical data (no new data available)
                 logger.info(f"No new data to merge for grid {bbox_west} {bbox_south} - using historical data only")
                 ds_merged = ds_historical_subset
 
-            # Create dataset and calculate breakpoints
-            dwds = DWDataset(ds_merged)
-            breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
-            breaks.to_parquet(outfile_breaks)
-            breaks_list.append(breaks)
+            # ========== IMPROVED BREAKPOINT CALCULATION WITH TRY-EXCEPT ==========
+            try:
+                # Create dataset
+                dwds = DWDataset(ds_merged)
+
+                # Check if analysis date exists in the dataset
+                analysis_date_str = ANALYSIS_DATE
+                if analysis_date_str not in dwds.dates_:
+                    logger.warning(
+                        f"Analysis date {analysis_date_str} not in dataset dates for grid {bbox_west} {bbox_south}")
+                    # Create empty result with expected columns
+                    empty_result = pd.DataFrame(columns=expected_columns)
+                    empty_result.to_parquet(outfile_breaks)
+                    breaks_list.append(empty_result)
+                    print(f'Created empty result for {bbox_west} {bbox_south} - analysis date not in data')
+                else:
+                    # Calculate breakpoints
+                    breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
+                    breaks.to_parquet(outfile_breaks)
+                    breaks_list.append(breaks)
+                    print(f'Successfully calculated breakpoints for {bbox_west} {bbox_south}')
+
+            except ValueError as e:
+                if "not available in the dataset" in str(e):
+                    logger.warning(
+                        f"Analysis date {ANALYSIS_DATE} not available for grid {bbox_west} {bbox_south}: {e}")
+                    # Create empty result and continue
+                    empty_result = pd.DataFrame(columns=expected_columns)
+                    empty_result.to_parquet(outfile_breaks)
+                    breaks_list.append(empty_result)
+                else:
+                    logger.error(f"ValueError calculating breakpoints for {bbox_west} {bbox_south}: {e}")
+                    # Create empty result to avoid breaking the pipeline
+                    empty_result = pd.DataFrame(columns=expected_columns)
+                    empty_result.to_parquet(outfile_breaks)
+                    breaks_list.append(empty_result)
+            except Exception as e:
+                logger.error(f"Unexpected error calculating breakpoints for {bbox_west} {bbox_south}: {e}")
+                # Create empty result to avoid breaking the pipeline
+                empty_result = pd.DataFrame(columns=expected_columns)
+                empty_result.to_parquet(outfile_breaks)
+                breaks_list.append(empty_result)
 
             # Clean up
             ds_historical_subset.close()
@@ -373,20 +447,36 @@ def main():
             # Periodic save
             if len(breaks_list) >= 10:
                 logger.info(f"Saving intermediate results...")
-                breaks_merged = pd.concat(breaks_list, ignore_index=True)
-                joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
-                partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
-                joined.to_parquet(partial_file)
+                # Filter out empty dataframes before concatenating
+                non_empty_breaks = [df for df in breaks_list if not df.empty]
+                if non_empty_breaks:
+                    breaks_merged = pd.concat(non_empty_breaks, ignore_index=True)
+                    joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+                    partial_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}_partial.parquet'
+                    joined.to_parquet(partial_file)
+                else:
+                    logger.warning("No non-empty breakpoint results to save in partial file")
                 breaks_list = []
                 gc.collect()
 
-            # Final save
+        # Final save
         if breaks_list:
-            breaks_merged = pd.concat(breaks_list, ignore_index=True)
-            joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
-            path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
-            joined.to_parquet(path_to_joined_file)
-            logger.info(f"Final combined file saved to {path_to_joined_file}")
+            # Filter out empty dataframes before concatenating
+            non_empty_breaks = [df for df in breaks_list if not df.empty]
+            if non_empty_breaks:
+                breaks_merged = pd.concat(non_empty_breaks, ignore_index=True)
+                joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+                path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+                joined.to_parquet(path_to_joined_file)
+                logger.info(
+                    f"Final combined file saved to {path_to_joined_file} with {len(breaks_merged)} breakpoint records")
+            else:
+                logger.warning(f"No valid breakpoint results found for date {ANALYSIS_DATE}")
+                # Create empty file to indicate processing was attempted
+                empty_result = pd.DataFrame(columns=expected_columns)
+                path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+                empty_result.to_parquet(path_to_joined_file)
+                logger.info(f"Created empty result file for {ANALYSIS_DATE}")
 
         end = datetime.datetime.now()
         logger.debug(f"Finished processing in {end - start}")
@@ -409,8 +499,15 @@ def main():
                 batch_datasets = []
 
                 for nc_file in batch_files:
-                    ds = xr.open_dataset(nc_file)
-                    batch_datasets.append(ds)
+                    try:
+                        ds = xr.open_dataset(nc_file)
+                        batch_datasets.append(ds)
+                    except Exception as e:
+                        logger.error(f"Error opening {nc_file}: {e}")
+                        continue
+
+                if not batch_datasets:
+                    continue
 
                 batch_combined = xr.concat(batch_datasets, dim='id_geohash')
                 _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
@@ -430,6 +527,8 @@ def main():
         if combined is not None and ds_historical is not None:
             merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
             ds_historical.close()
+        else:
+            logger.warning(f"No downloaded files to combine for {ANALYSIS_DATE}")
 
     logger.info("Script completed successfully")
 
