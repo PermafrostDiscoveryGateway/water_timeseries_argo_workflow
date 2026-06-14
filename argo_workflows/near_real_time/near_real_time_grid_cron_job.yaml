@@ -1,0 +1,314 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: near-real-time-autopilot-cron
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  # Run on the 15th of June, July, August, September at 02:00 UTC
+  schedule: "0 2 15 6,7,8,9 *"
+  # Stop running after September 2026 (optional - remove if you want it to run yearly)
+  # startingDeadlineSeconds: 86400  # 24 hour deadline
+  concurrencyPolicy: "Forbid"  # Don't run if previous run is still running
+  successfulJobsHistoryLimit: 3  # Keep last 3 successful runs
+  failedJobsHistoryLimit: 3      # Keep last 3 failed runs
+
+  workflowSpec:
+    ttlStrategy:
+      secondsAfterCompletion: 86400
+    entrypoint: main
+
+    podResourceRequest:
+      cpu: "100m"
+      memory: "128Mi"
+      ephemeral-storage: "1Gi"
+
+    podSpecPatch: |
+      initContainers:
+      - name: init
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+            ephemeral-storage: "1Gi"
+      containers:
+      - name: wait
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+            ephemeral-storage: "1Gi"
+      - name: main
+        resources:
+          requests:
+            cpu: "8"
+            memory: "32Gi"
+            ephemeral-storage: "8Gi"
+          limits:
+            cpu: "16"
+            memory: "48Gi"
+            ephemeral-storage: "16Gi"
+
+    artifactRepository:
+      pvc:
+        claimName: argo-workflows-share
+        key: artifacts
+
+    artifactGC:
+      strategy: Never
+
+    imagePullSecrets:
+    - name: ghcr-secret
+
+    volumes:
+    - name: lake-drainage-volume
+      persistentVolumeClaim:
+        claimName: argo-workflows-share
+    - name: gcp-creds
+      secret:
+        secretName: personal-gcp-creds
+        items:
+        - key: key.json
+          path: application_default_credentials.json
+    - name: earth-engine-creds
+      secret:
+        secretName: earth-engine-creds
+        items:
+        - key: credentials
+          path: credentials
+
+    templates:
+    - name: main
+      metadata:
+        labels:
+          long-running-job: "true"
+          cron-job: "true"
+      inputs: {}
+      outputs: {}
+      container:
+        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:19-download-and-process-over-grid-tiles
+        imagePullPolicy: Always
+        resources:
+          requests:
+            memory: "32Gi"
+            cpu: "8"
+            ephemeral-storage: "8Gi"
+        command: ["bash", "-c"]
+        args:
+          - |
+            set -e
+            set -x
+            
+            # Get the target month from workflow parameters (or current date if not provided)
+            # For cron jobs, we want to process the previous month (since data is delayed)
+            TARGET_DATE=$(date -d "last month" +%Y-%m)
+            
+            echo "=== STARTING NEAR REAL-TIME BREAKPOINT JOB (CRON - MONTHLY) ==="
+            echo "Current timestamp: $(date)"
+            echo "Processing target month: ${TARGET_DATE}"
+            echo "Pod: ${POD_NAME:-unknown}"
+            
+            # Check if we're in the correct months (June-September)
+            CURRENT_MONTH=$(date +%-m)
+            if [[ $CURRENT_MONTH -ge 6 && $CURRENT_MONTH -le 9 ]]; then
+              echo "Running in allowed month: $CURRENT_MONTH"
+            else
+              echo "Current month $CURRENT_MONTH is outside processing window (June-September)"
+              echo "Exiting early..."
+              exit 0
+            fi
+            
+            # Check resources
+            echo "=== RESOURCE ALLOCATION ==="
+            free -h
+            echo "CPU count: $(nproc)"
+            df -h /
+            df -h /data
+            
+            # Debug Python environment
+            echo "=== PYTHON ENVIRONMENT ==="
+            which python
+            python --version
+            
+            # Fix Earth Engine credentials - copy to writable location and redirect
+            echo "=== FIXING EARTH ENGINE CREDENTIALS ==="
+            
+            # Create a writable directory with the same structure
+            mkdir -p /tmp/home/.config/earthengine
+            
+            # Copy the credentials from the read-only mount to writable location
+            cp -L /root/.config/earthengine/credentials /tmp/home/.config/earthengine/credentials
+            
+            # Set HOME to point to our writable directory
+            export HOME=/tmp/home
+            
+            # Also set explicit token path
+            export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
+            
+            # Create a symlink in the original location that points to our writable file
+            # Since the original location is read-only, we use environment variables instead
+            
+            # For geemap, also set the config directory
+            export EE_CONFIG_DIR=/tmp/home/.config/earthengine
+            
+            # Verify the copied credentials
+            echo "Credentials copied to: $EARTHENGINE_TOKEN"
+            ls -la /tmp/home/.config/earthengine/credentials
+            
+            # Verify JSON is valid
+            python -c "
+            import json
+            with open('$EARTHENGINE_TOKEN', 'r') as f:
+                data = json.load(f)
+                print(f'✓ Credentials valid! Keys: {list(data.keys())}')
+            "
+            
+            # Set other environment variables
+            export EE_CLOUD_PROJECT=pdg-wg-workflow
+            export EE_PROJECT=pdg-project-406720
+            export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+            
+            # Create directories on PVC
+            echo "=== CREATING DIRECTORIES ==="
+            mkdir -p /data/water_timeseries/{dynamic_world_data,split_lakes,input,new_dynamic_world,split_new_dynamic_world,output,checkpoint,temp_netcdf,subsets,breakpoints}
+            mkdir -p /data/water_timeseries/dask_work_space
+            chmod -R 755 /data/water_timeseries
+            
+            # Set environment variables
+            export TMPDIR=/data/water_timeseries/temp_netcdf
+            export TEMP=/data/water_timeseries/temp_netcdf
+            export TMP=/data/water_timeseries/temp_netcdf
+            
+            # Dask-specific environment variables
+            export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
+            export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
+            export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
+            export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
+            export DASK_SCHEDULER=threads
+            export DASK_NUM_THREADS=$(nproc)
+            
+            # Clean PYTHONPATH - use only the venv
+            export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+            
+            echo "=== VERIFYING GEEMAP ==="
+            python << 'EOF'
+            import os
+            import geemap
+            print(f"geemap version: {geemap.__version__}")
+            print(f"Has ee_initialize: {hasattr(geemap, 'ee_initialize')}")
+            print(f"EARTHENGINE_TOKEN: {os.environ.get('EARTHENGINE_TOKEN', 'NOT SET')}")
+            EOF
+            
+            # Check PVC space
+            echo "=== PVC STORAGE ==="
+            df -h /data
+            
+            # Create .env file with region_name as EURASIA3 (or parameterized)
+            echo "=== CREATING .env FILE ==="
+            cat > /data/.env << 'EOF'
+            project=pdg-project-406720
+            vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+            bucket_path=pdg-storage-default/water_timeseries_v2/data/input
+            base_dir=/data/water_timeseries
+            dynamic_world_dir=/data/water_timeseries/dynamic_world_data
+            dynamic_world_data=/data/water_timeseries/dynamic_world_data
+            dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
+            vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+            output_dir=/data/water_timeseries/output
+            region_name=EURASIA3
+            EOF
+            
+            # Optional: Add region override via environment variable
+            if [ -n "$REGION_NAME" ]; then
+              echo "Overriding region_name to: $REGION_NAME"
+              sed -i "s/region_name=.*/region_name=$REGION_NAME/" /data/.env
+            fi
+            
+            # Create debug directory with date
+            DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)"
+            mkdir -p "$DEBUG_DIR"
+            
+            # Save environment info
+            echo "=== SAVING ENVIRONMENT INFO ==="
+            env | sort > "$DEBUG_DIR/environment.txt"
+            pip list > "$DEBUG_DIR/pip_list.txt"
+            
+            # Run the script with target month as argument
+            echo "=== RUNNING SCRIPT for month: ${TARGET_DATE} ==="
+            cd /app
+            
+            # The script should accept the target date as an argument
+            # If your script accepts the date directly, uncomment one of these:
+            
+            # Option 1: Pass date as environment variable
+            export ANALYSIS_DATE="${TARGET_DATE}"
+            
+            # Option 2: Pass date as command-line argument (modify script accordingly)
+            # python /app/near_real_time/run_all_near_real_time.py /data/.env --date ${TARGET_DATE}
+            
+            # Option 3: Script automatically processes all missing dates (current behavior)
+            python /app/near_real_time/run_all_near_real_time.py /data/.env 2>&1 | tee "$DEBUG_DIR/script_output.log"
+            
+            SCRIPT_EXIT_CODE=${PIPESTATUS[0]}
+            
+            echo "=== SCRIPT COMPLETED with exit code: $SCRIPT_EXIT_CODE ==="
+            
+            # Check for output files
+            if [ -d "/data/water_timeseries/output" ]; then
+              echo "Output files:"
+              ls -lh /data/water_timeseries/output/
+              
+              # Count breakpoint files
+              BREAK_COUNT=$(find /data/water_timeseries/output -name "drain_*.parquet" 2>/dev/null | wc -l)
+              echo "Number of breakpoint files: $BREAK_COUNT"
+            fi
+            
+            # Create a marker file for successful completion
+            if [ $SCRIPT_EXIT_CODE -eq 0 ]; then
+              touch "/data/water_timeseries/output/success_${TARGET_DATE}.marker"
+              echo "Created success marker for ${TARGET_DATE}"
+            fi
+            
+            echo "=== DEBUG INFO SAVED TO: $DEBUG_DIR ==="
+            
+            exit $SCRIPT_EXIT_CODE
+        env:
+        - name: lake_chunk_size
+          value: "20000"
+        - name: ENV_FILE_PATH
+          value: "/data/.env"
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /root/.config/gcloud/application_default_credentials.json
+        - name: EE_CLOUD_PROJECT
+          value: "pdg-wg-workflow"
+        - name: EE_PROJECT
+          value: "pdg-project-406720"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: TMPDIR
+          value: "/data/water_timeseries/temp_netcdf"
+        - name: DASK_TEMPORARY_DIRECTORY
+          value: "/data/water_timeseries/dask_work_space"
+        - name: DASK_NUM_THREADS
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.cpu
+              divisor: "1"
+        - name: OMP_NUM_THREADS
+          value: "1"
+        - name: REGION_NAME
+          value: "EURASIA3"  # Change this to your desired region
+        volumeMounts:
+        - name: gcp-creds
+          mountPath: /root/.config/gcloud
+          readOnly: true
+        - name: earth-engine-creds
+          mountPath: /root/.config/earthengine
+          readOnly: true
+        - name: lake-drainage-volume
+          mountPath: /data

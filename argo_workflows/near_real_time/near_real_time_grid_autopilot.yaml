@@ -204,7 +204,7 @@ spec:
           dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           output_dir=/data/water_timeseries/output
-          region_name=TEST
+          region_name=EURASIA3
           EOF
           
           # Save environment info to PVC
