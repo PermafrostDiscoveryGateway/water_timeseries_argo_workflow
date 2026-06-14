@@ -2,7 +2,12 @@ import geopandas as gpd
 # !/usr/bin/env python3
 import sys
 from pathlib import Path
+from pathlib import Path
 
+# Add the parent directory to Python path
+parent_dir = Path(__file__).parent.parent
+if str(parent_dir) not in sys.path:
+    sys.path.insert(0, str(parent_dir))
 
 # def setup_water_timeseries_path():
 #     """
