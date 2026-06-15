@@ -9,6 +9,12 @@ need to whitelist your IP
     --enable-master-authorized-networks \
     --master-authorized-networks $(curl -s ifconfig.me)/32`
 
+or else this command (on some networks)
+
+`gcloud container clusters update autopilot-cluster-2 --region us-west1 \
+    --enable-master-authorized-networks \
+    --master-authorized-networks $(curl  -4 -s ifconfig.me)/32`
+
 # port forward to view the argo UI interface
 
 `kubectl -n argo port-forward deployment/argo-server 2746:2746`

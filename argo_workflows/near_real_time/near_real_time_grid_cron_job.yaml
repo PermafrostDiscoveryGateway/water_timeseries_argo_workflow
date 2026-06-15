@@ -7,7 +7,7 @@ metadata:
     workflows.argoproj.io/pod-keep: "OnCompletion"
 spec:
   # Run on the 15th of June, July, August, September at 02:00 UTC
-  schedule: "0 2 15 6,7,8,9 *"
+  schedule: "0 4 15 6,7,8,9 *"
   # Stop running after September 2026 (optional - remove if you want it to run yearly)
   # startingDeadlineSeconds: 86400  # 24 hour deadline
   concurrencyPolicy: "Forbid"  # Don't run if previous run is still running
