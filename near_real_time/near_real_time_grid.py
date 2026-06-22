@@ -296,6 +296,7 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
             outfile_download = current_download_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}.nc'
             outfile_breaks = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
 
+            # TODO check if this file is zero bytes
             if outfile_breaks.exists():
                 print(f'Breakpoints already calculated! Skipping {bbox_west} {bbox_south}')
                 breaks_list.append(pd.read_parquet(outfile_breaks))
@@ -426,16 +427,19 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
                     logger.warning(
                         f"Analysis date {ANALYSIS_DATE} not available for grid {bbox_west} {bbox_south}: {e}")
                     empty_result = pd.DataFrame(columns=expected_columns)
+                    # TODO do not write empty result
                     empty_result.to_parquet(outfile_breaks)
                     breaks_list.append(empty_result)
                 else:
                     logger.error(f"ValueError calculating breakpoints for {bbox_west} {bbox_south}: {e}")
                     empty_result = pd.DataFrame(columns=expected_columns)
+                    # TODO do not write empty result
                     empty_result.to_parquet(outfile_breaks)
                     breaks_list.append(empty_result)
             except Exception as e:
                 logger.error(f"Unexpected error calculating breakpoints for {bbox_west} {bbox_south}: {e}")
                 empty_result = pd.DataFrame(columns=expected_columns)
+                # TODO do not write empty result
                 empty_result.to_parquet(outfile_breaks)
                 breaks_list.append(empty_result)
 
