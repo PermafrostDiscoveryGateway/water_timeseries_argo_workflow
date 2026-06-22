@@ -85,7 +85,7 @@ cluster creation
 
 `gcloud container clusters create water-cluster \
     --region=us-west1 \
-    --network=pdg-network-1 \
+    --network=pdg-network-2 \
     --subnetwork=pdg-subnet-us-west1 \
     --machine-type=n2-highmem-4 \
     --num-nodes=2 \
@@ -96,12 +96,12 @@ cluster creation
 
 output of `kubectx`
 
-`gke_pdg-project-406720_us-west1_water-cluster
+`gke_pdg-project-406720_us-west1_autopilot-cluster-2
 `
 
 # whitelist cluster
 
-`gcloud container clusters update water-cluster --region us-west1 \
+`gcloud container clusters update autopilot-cluster-2 --region us-west1 \
     --enable-master-authorized-networks \
     --master-authorized-networks $MY_IP/32`
 
