@@ -489,8 +489,10 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
         ds_historical = None
         # TODO
         # create new netcdf file in the same directory as original with original file name plus timestamp
-        # make this file have all the data of the original file
+        # call it historical_data_{current_timestamp}.nc
+        # make this file have all the data of the original file, the most recent netcdf file
         # add all data from the downloaded files to that file
+        # add the data from teh downloaded_files
         if downloaded_files:
             ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
 
