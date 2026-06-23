@@ -300,7 +300,6 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
             outfile_download = current_download_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}.nc'
             outfile_breaks = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
 
-            # TODO check if this file is zero bytes
             if outfile_breaks.exists():
                 print(f'Breakpoints already calculated! Skipping {bbox_west} {bbox_south}')
                 breaks_list.append(pd.read_parquet(outfile_breaks))
@@ -488,6 +487,10 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
 
         combined = None
         ds_historical = None
+        # TODO
+        # create new netcdf file in the same directory as original with original file name plus timestamp
+        # make this file have all the data of the original file
+        # add all data from the downloaded files to that file
         if downloaded_files:
             ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
 
@@ -519,6 +522,8 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
         if combined is not None and ds_historical is not None:
             merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
             ds_historical.close()
+
+        logger.debug(f"End of date block")
 
     logger.info(f"Near-real-time processing completed for region: {REGION_NAME}")
     return True
