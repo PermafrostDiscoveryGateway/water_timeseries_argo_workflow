@@ -368,6 +368,7 @@ def create_merged_netcdf_memory_efficient(ds_historical, combined_ds, output_pat
 
                     # TODO do other tests here
 
+
                 # Clean up
                 final_ds.close()
                 del final_ds
@@ -827,8 +828,71 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
                     chunk_size=50000  # Adjust based on available memory
                 )
 
-                logger.info(f"Original file: {most_recent_dynamic_world_file}")
-                logger.info(f"New file: {new_historical_path}")
+                logger.debug(f"Checking compressions of files")
+                logger.debug(f"Original file: {most_recent_dynamic_world_file}")
+                logger.debug(f"New file: {new_historical_path}")
+                logger.debug("Checking compression of original file...")
+                orig_compression = check_netcdf_compression(most_recent_dynamic_world_file)
+                if orig_compression:
+                    for var_name, info in orig_compression.items():
+                        if info['has_zlib']:
+                            logger.info(f"Original variable {var_name} has compression (level {info['complevel']})")
+                        else:
+                            logger.info(f"Original variable {var_name} has NO compression")
+
+                logger.info("Checking compression of new file...")
+                new_compression = check_netcdf_compression(str(new_historical_path))
+                if new_compression:
+                    for var_name, info in new_compression.items():
+                        if info['has_zlib']:
+                            logger.info(f"New variable {var_name} has compression (level {info['complevel']})")
+                        else:
+                            logger.info(f"New variable {var_name} has NO compression")
+
+                logger.debug(f"Other comparisons")
+                # Compare a few random IDs between the files
+                import random
+
+                # Open both files
+                orig_ds = xr.open_dataset(most_recent_dynamic_world_file)
+                new_ds = xr.open_dataset(str(new_historical_path))
+
+                # Check they have the same number of IDs
+                orig_ids = set(orig_ds['id_geohash'].values)
+                new_ids = set(new_ds['id_geohash'].values)
+
+                logger.debug(f"Original IDs: {len(orig_ids)}")
+                logger.debug(f"New IDs: {len(new_ids)}")
+
+                # Check if all original IDs are in the new file
+                missing_ids = orig_ids - new_ids
+                if missing_ids:
+                    logger.debug(f"Missing {len(missing_ids)} IDs in new file")
+                    # Show first 10 missing IDs
+                    logger.debug(f"First 10 missing IDs: {list(missing_ids)[:10]}")
+                else:
+                    logger.debug("All original IDs are preserved in new file")
+
+                # Check data values for a few random IDs
+                sample_ids = random.sample(list(orig_ids), min(5, len(orig_ids)))
+                for sample_id in sample_ids:
+                    orig_data = orig_ds.sel(id_geohash=sample_id)
+                    new_data = new_ds.sel(id_geohash=sample_id)
+
+                    # Compare a variable
+                    if 'water_observed' in orig_data:
+                        orig_vals = orig_data['water_observed'].values
+                        new_vals = new_data['water_observed'].values
+
+                        # Check if values are close (floating point might have slight differences)
+                        if np.allclose(orig_vals, new_vals, rtol=1e-6):
+                            logger.debug(f"ID {sample_id}: Values match")
+                        else:
+                            max_diff = np.max(np.abs(orig_vals - new_vals))
+                            logger.debug(f"ID {sample_id}: Values differ (max diff: {max_diff})")
+
+                orig_ds.close()
+                new_ds.close()
 
                 # Clean up
                 combined.close()
