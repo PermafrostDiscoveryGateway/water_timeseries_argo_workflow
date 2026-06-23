@@ -282,6 +282,10 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
             'water_historical_min', 'water_historical_max', 'drainage_confidence'
         ]
 
+        # file for grids that failed
+        current_datetime = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        outfile_breaks_failed_file = current_download_dir / f'grid_tiles_failed_{current_datetime}.txt'
+
         # run loop
         logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
         for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
@@ -426,22 +430,16 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
                 if "not available in the dataset" in str(e):
                     logger.warning(
                         f"Analysis date {ANALYSIS_DATE} not available for grid {bbox_west} {bbox_south}: {e}")
-                    empty_result = pd.DataFrame(columns=expected_columns)
-                    # TODO do not write empty result
-                    empty_result.to_parquet(outfile_breaks)
-                    breaks_list.append(empty_result)
+                    with open(outfile_breaks_failed_file, 'a') as f:
+                        f.write(str(outfile_breaks) + '\n')
                 else:
                     logger.error(f"ValueError calculating breakpoints for {bbox_west} {bbox_south}: {e}")
-                    empty_result = pd.DataFrame(columns=expected_columns)
-                    # TODO do not write empty result
-                    empty_result.to_parquet(outfile_breaks)
-                    breaks_list.append(empty_result)
+                    with open(outfile_breaks_failed_file, 'a') as f:
+                        f.write(str(outfile_breaks) + '\n')
             except Exception as e:
                 logger.error(f"Unexpected error calculating breakpoints for {bbox_west} {bbox_south}: {e}")
-                empty_result = pd.DataFrame(columns=expected_columns)
-                # TODO do not write empty result
-                empty_result.to_parquet(outfile_breaks)
-                breaks_list.append(empty_result)
+                with open(outfile_breaks_failed_file, 'a') as f:
+                    f.write(str(outfile_breaks) + '\n')
 
             # Clean up
             ds_historical_subset.close()
