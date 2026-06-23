@@ -739,6 +739,9 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
 
         combined = None
         ds_historical = None
+        if combined is not None and ds_historical is not None:
+            merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
+            ds_historical.close()
 
         # ========== CREATE NEW HISTORICAL NETCDF FILE (MEMORY EFFICIENT) ==========
         if downloaded_files:
@@ -811,9 +814,6 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
                 logger.warning("No combined data to merge")
 
         # Continue with existing merge_zarr_chunked logic
-        if combined is not None and ds_historical is not None:
-            merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
-            ds_historical.close()
 
         logger.debug(f"End of date block for {REGION_NAME} and date {date}")
 
