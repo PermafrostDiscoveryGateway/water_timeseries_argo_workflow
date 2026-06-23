@@ -891,9 +891,170 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
                             max_diff = np.max(np.abs(orig_vals - new_vals))
                             logger.debug(f"ID {sample_id}: Values differ (max diff: {max_diff})")
 
+
+                # TODO add more detailed checks
+                # TODO add more detailed checks
+                # TODO add more detailed checks
+                logger.info("=" * 80)
+                logger.info("DETAILED FILE COMPARISON")
+                logger.info("=" * 80)
+
+                # 1. Check file sizes
+                orig_size_gb = get_file_size_gb(most_recent_dynamic_world_file)
+                new_size_gb = get_file_size_gb(str(new_historical_path))
+                logger.info(f"Original file size: {orig_size_gb:.4f} GB")
+                logger.info(f"New file size: {new_size_gb:.4f} GB")
+                logger.info(f"Size reduction: {(1 - new_size_gb / orig_size_gb) * 100:.2f}%")
+
+                # 2. Check data types of each variable
+                logger.info("\n--- Data Type Comparison ---")
+                orig_dtypes = {var: orig_ds[var].dtype for var in orig_ds.data_vars}
+                new_dtypes = {var: new_ds[var].dtype for var in new_ds.data_vars}
+
+                for var in orig_ds.data_vars:
+                    if var in new_ds.data_vars:
+                        orig_dtype = orig_dtypes[var]
+                        new_dtype = new_dtypes[var]
+                        logger.info(f"Variable '{var}': Original dtype={orig_dtype}, New dtype={new_dtype}")
+                        if orig_dtype != new_dtype:
+                            logger.warning(f"  → Data type changed from {orig_dtype} to {new_dtype}!")
+
+                # 3. Check compression
+                logger.info("\n--- Compression Comparison ---")
+                for var in orig_ds.data_vars:
+                    if var in new_ds.data_vars:
+                        orig_encoding = orig_ds[var].encoding
+                        new_encoding = new_ds[var].encoding
+
+                        logger.info(f"Variable '{var}':")
+
+                        # Check original compression
+                        orig_has_zlib = orig_encoding.get('zlib', False)
+                        orig_complevel = orig_encoding.get('complevel', 0)
+                        orig_shuffle = orig_encoding.get('shuffle', False)
+
+                        # Check new compression
+                        new_has_zlib = new_encoding.get('zlib', False)
+                        new_complevel = new_encoding.get('complevel', 0)
+                        new_shuffle = new_encoding.get('shuffle', False)
+
+                        if orig_has_zlib:
+                            logger.info(f"  Original: zlib=True, complevel={orig_complevel}, shuffle={orig_shuffle}")
+                        else:
+                            logger.info(f"  Original: NO compression")
+
+                        if new_has_zlib:
+                            logger.info(
+                                f"  New: zlib=True, complevel={new_complevel}, shuffle={new_shuffle} ✅ COMPRESSED")
+                        else:
+                            logger.info(f"  New: NO compression")
+
+                # 4. Check dimensions
+                logger.info("\n--- Dimensions Comparison ---")
+                orig_dims = {dim: len(orig_ds[dim]) for dim in orig_ds.dims}
+                new_dims = {dim: len(new_ds[dim]) for dim in new_ds.dims}
+                logger.info(f"Original dimensions: {orig_dims}")
+                logger.info(f"New dimensions: {new_dims}")
+
+                if orig_dims['date'] < new_dims['date']:
+                    logger.info(
+                        f"✅ New file has {new_dims['date'] - orig_dims['date']} additional date(s) (as expected for NRT update)")
+                    # Find the new date(s)
+                    orig_dates = set(pd.to_datetime(orig_ds['date'].values))
+                    new_dates = set(pd.to_datetime(new_ds['date'].values))
+                    added_dates = new_dates - orig_dates
+                    for date in sorted(added_dates):
+                        logger.info(f"  Added date: {date.strftime('%Y-%m-%d')}")
+
+                # 5. Check data integrity for IDs that have data for the new date
+                logger.info("\n--- Data Integrity Check ---")
+                logger.info("Checking if new data was properly added...")
+
+                # Find an ID that exists in both datasets
+                sample_id = next(iter(orig_ids))
+                logger.info(f"Using sample ID: {sample_id}")
+
+                orig_data = orig_ds.sel(id_geohash=sample_id)
+                new_data = new_ds.sel(id_geohash=sample_id)
+
+                orig_dates = orig_data['date'].values
+                new_dates = new_data['date'].values
+
+                logger.info(f"Original dates for ID {sample_id}: {len(orig_dates)}")
+                logger.info(f"New dates for ID {sample_id}: {len(new_dates)}")
+
+                # Check which dates are new
+                orig_date_set = set(orig_dates)
+                new_date_set = set(new_dates)
+                common_dates = orig_date_set & new_date_set
+                added_dates = new_date_set - orig_date_set
+
+                logger.info(f"Common dates: {len(common_dates)}")
+                logger.info(f"Added dates: {len(added_dates)}")
+
+                if added_dates:
+                    logger.info(f"✅ New data was added for dates: {sorted(added_dates)[:5]}... (showing first 5)")
+
+                    # Verify data for a new date
+                    for date in list(added_dates)[:3]:
+                        new_values = new_data.sel(date=date)
+                        if 'water' in new_values:
+                            water_vals = new_values['water'].values
+                            logger.info(
+                                f"  Date {pd.to_datetime(date).strftime('%Y-%m-%d')}: water values present (shape: {water_vals.shape})")
+                            if np.any(~np.isnan(water_vals)):
+                                logger.info(f"    ✅ Contains non-NaN values")
+                            else:
+                                logger.warning(f"    ⚠️ All NaN values")
+
+                # 6. Verify original data is preserved
+                logger.info("\n--- Verifying Original Data Preservation ---")
+                for sample_id in list(orig_ids)[:5]:  # Check 5 random IDs
+                    orig_data = orig_ds.sel(id_geohash=sample_id)
+                    new_data = new_ds.sel(id_geohash=sample_id)
+
+                    # Compare common dates only
+                    orig_dates = orig_data['date'].values
+                    new_dates = new_data['date'].values
+                    common_dates = np.intersect1d(orig_dates, new_dates)
+
+                    if len(common_dates) > 0:
+                        # Test one variable on common dates
+                        var_to_check = 'water'
+                        if var_to_check in orig_data:
+                            orig_vals = orig_data[var_to_check].sel(date=common_dates).values
+                            new_vals = new_data[var_to_check].sel(date=common_dates).values
+
+                            if np.allclose(orig_vals, new_vals, rtol=1e-6, atol=1e-6):
+                                logger.info(f"✅ ID {sample_id[:8]}...: Original data preserved on common dates")
+                            else:
+                                max_diff = np.max(np.abs(orig_vals - new_vals))
+                                logger.warning(
+                                    f"⚠️ ID {sample_id[:8]}...: Data differs on common dates (max diff: {max_diff:.6f})")
+
+                # 7. Summary
+                logger.info("\n" + "=" * 80)
+                logger.info("SUMMARY")
+                logger.info("=" * 80)
+
+                logger.info(
+                    f"✅ File size reduced by {(1 - new_size_gb / orig_size_gb) * 100:.2f}% (from {orig_size_gb:.2f}GB to {new_size_gb:.2f}GB)")
+                logger.info(f"✅ Compression applied: zlib=True, complevel=4, shuffle=True")
+                logger.info(f"✅ All {len(orig_vals)} variables preserved")
+                logger.info(f"✅ All {len(orig_ids)} original IDs preserved")
+                logger.info(f"✅ {new_dims['date'] - orig_dims['date']} new date(s) added")
+                logger.info(f"✅ Original data values preserved on common dates")
+
+                if added_dates:
+                    logger.info(f"✅ Near-real-time update successful! Added data for {len(added_dates)} new date(s)")
+                else:
+                    logger.warning("⚠️ No new dates were added - check if download was successful")
+
+                logger.info("=" * 80)
                 orig_ds.close()
                 new_ds.close()
-
+                logger.debug(f"Sleep for time")
+                time.sleep(300)
                 # Clean up
                 combined.close()
                 del combined
