@@ -37,6 +37,28 @@ import resource
 import tempfile
 
 
+def check_netcdf_compression(file_path):
+    """Check if a NetCDF file has compression enabled"""
+    try:
+        import netCDF4
+        ds = netCDF4.Dataset(file_path)
+
+        compression_info = {}
+        for var_name in ds.variables:
+            var = ds.variables[var_name]
+            compression_info[var_name] = {
+                'has_zlib': hasattr(var, 'zlib') and var.zlib,
+                'complevel': var.complevel if hasattr(var, 'complevel') else None,
+                'shuffle': var.shuffle if hasattr(var, 'shuffle') else None,
+                'chunksizes': var.chunksizes() if hasattr(var, 'chunksizes') else None
+            }
+        ds.close()
+        return compression_info
+    except Exception as e:
+        logger.warning(f"Could not check compression: {e}")
+        return None
+
+
 def log_memory_usage(stage: str):
     """Log current memory usage"""
     process = psutil.Process(os.getpid())
@@ -343,6 +365,8 @@ def create_merged_netcdf_memory_efficient(ds_historical, combined_ds, output_pat
                     test_ds = xr.open_dataset(output_path)
                     logger.info(f"Verification: File has {len(test_ds['id_geohash'])} IDs")
                     test_ds.close()
+
+                    # TODO do other tests here
 
                 # Clean up
                 final_ds.close()
