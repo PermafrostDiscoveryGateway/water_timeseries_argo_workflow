@@ -472,7 +472,9 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
         log_memory_usage("After loading lake vectors")
 
         # getting most recent file (it might have been replaced by a previous run through this loop)
+        logger.debug(f"Current most recent dynamic world file: {most_recent_dynamic_world_file}")
         most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+        logger.debug(f"Most recent dynamic world file: {most_recent_dynamic_world_file} after checking for new files")
         hist_file_size_gb = get_file_size_gb(most_recent_dynamic_world_file)
         logger.info(f"Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
         path_historical_dw = most_recent_dynamic_world_file
@@ -795,7 +797,7 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
                     ds_historical=ds_historical,
                     combined_ds=combined,
                     output_path=new_historical_path,
-                    chunk_size=1000  # Adjust based on available memory
+                    chunk_size=50000  # Adjust based on available memory
                 )
 
                 logger.info(f"Original file: {most_recent_dynamic_world_file}")
