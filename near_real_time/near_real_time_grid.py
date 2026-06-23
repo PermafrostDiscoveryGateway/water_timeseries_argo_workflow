@@ -487,12 +487,13 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
 
         combined = None
         ds_historical = None
+
         # TODO
         # create new netcdf file in the same directory as original with original file name plus timestamp
         # call it historical_data_{current_timestamp}.nc
         # make this file have all the data of the original file, the most recent netcdf file
         # add all data from the downloaded files to that file
-        # add the data from teh downloaded_files
+        # add the data from the downloaded_files
         if downloaded_files:
             ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
 
@@ -521,11 +522,117 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
                     ds.close()
                 gc.collect()
 
-        if combined is not None and ds_historical is not None:
-            merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
-            ds_historical.close()
+            # ========== CREATE NEW HISTORICAL NETCDF FILE ==========
+            if combined is not None and ds_historical is not None:
+                logger.info("Creating new historical NetCDF file with merged data...")
 
-        logger.debug(f"End of date block")
+                # Generate timestamp for the new file
+                current_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                original_path = Path(most_recent_dynamic_world_file)
+                new_historical_path = original_path.parent / f"historical_data_{current_timestamp}.nc"
+
+                logger.info(f"Creating new historical file: {new_historical_path}")
+
+                # Merge historical and combined datasets
+                # First, ensure we have unique IDs in both datasets
+                logger.info(f"Historical dataset has {len(ds_historical['id_geohash'])} IDs")
+                logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs")
+
+                # Get all unique IDs from both datasets
+                all_ids = np.unique(np.concatenate([
+                    ds_historical['id_geohash'].values,
+                    combined['id_geohash'].values
+                ]))
+                logger.info(f"Total unique IDs across both datasets: {len(all_ids)}")
+
+                # Create a new dataset with all IDs and all time periods
+                # First, concatenate along id_geohash dimension
+                merged_ds = xr.concat([ds_historical, combined], dim='id_geohash')
+
+                # Remove duplicates by keeping first occurrence
+                _, unique_indices = np.unique(merged_ds['id_geohash'].values, return_index=True)
+                merged_ds = merged_ds.isel(id_geohash=np.sort(unique_indices))
+
+                # Sort by date and id_geohash for consistency
+                merged_ds = merged_ds.sortby(['date', 'id_geohash'])
+
+                # Log the resulting dataset info
+                logger.info(f"Merged dataset shape: {merged_ds.dims}")
+                logger.info(f"Merged dataset variables: {list(merged_ds.data_vars)}")
+                logger.info(f"Date range: {merged_ds['date'].values.min()} to {merged_ds['date'].values.max()}")
+                logger.info(f"Number of IDs: {len(merged_ds['id_geohash'])}")
+
+                # Save to NetCDF with compression for efficiency
+                logger.info(f"Saving merged dataset to {new_historical_path}...")
+
+                # Use compression to reduce file size
+                compression = {
+                    'zlib': True,
+                    'complevel': 4,
+                    'shuffle': True
+                }
+
+                encoding = {var: compression for var in merged_ds.data_vars}
+
+                # Save with progress tracking
+                try:
+                    # Write in chunks to avoid memory issues
+                    chunk_size = 100  # Process 100 IDs at a time
+                    total_ids = len(merged_ds['id_geohash'])
+
+                    # First, create the file with the first chunk to establish structure
+                    first_chunk = merged_ds.isel(id_geohash=slice(0, min(chunk_size, total_ids)))
+                    first_chunk.to_netcdf(new_historical_path, encoding=encoding)
+
+                    # Then append remaining chunks if needed
+                    if total_ids > chunk_size:
+                        logger.warning("Dataset too large for chunked writing - merging in memory")
+                        # For smaller datasets, just do it in one go
+                        merged_ds.to_netcdf(new_historical_path, encoding=encoding)
+
+                    # Verify the file was created
+                    if new_historical_path.exists():
+                        file_size_gb = get_file_size_gb(str(new_historical_path))
+                        logger.info(f"Successfully created new historical file: {new_historical_path}")
+                        logger.info(f"New file size: {file_size_gb:.2f} GB")
+                    else:
+                        logger.error("Failed to create new historical file")
+
+                except Exception as e:
+                    logger.error(f"Error saving merged dataset: {e}")
+                    # Try alternative save method without compression
+                    try:
+                        logger.info("Retrying save without compression...")
+                        merged_ds.to_netcdf(new_historical_path)
+                        logger.info(f"Successfully created new historical file (no compression): {new_historical_path}")
+                    except Exception as e2:
+                        logger.error(f"Failed to save even without compression: {e2}")
+
+                # Optionally, if you want to replace the original file with the new one
+                # Comment out the following lines if you want to keep both files
+                logger.info(f"Original file: {most_recent_dynamic_world_file}")
+                logger.info(f"New file: {new_historical_path}")
+
+                # Clean up
+                merged_ds.close()
+                del merged_ds
+                gc.collect()
+
+            elif combined is not None:
+                logger.warning("Historical dataset is None, saving only downloaded data...")
+                # Save only the downloaded data
+                current_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                original_path = Path(most_recent_dynamic_world_file)
+                new_historical_path = original_path.parent / f"historical_data_{current_timestamp}.nc"
+                combined.to_netcdf(new_historical_path)
+                logger.info(f"Saved downloaded data only to {new_historical_path}")
+
+            # Continue with existing merge_zarr_chunked logic
+            if combined is not None and ds_historical is not None:
+                merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
+                ds_historical.close()
+
+        logger.debug(f"End of date block for {REGION_NAME} and date {date}")
 
     logger.info(f"Near-real-time processing completed for region: {REGION_NAME}")
     return True
