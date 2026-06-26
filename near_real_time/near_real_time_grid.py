@@ -186,16 +186,9 @@ def append_to_netcdf_chunked(merged_chunk, file_path, first_chunk=False, compres
         )
 
 
-def create_merged_netcdf_memory_efficient(ds_historical, combined_ds, output_path, chunk_size=500):
+def create_merged_netcdf_memory_efficient(ds_historical, combined_ds, output_path, chunk_size=50000):
     """
-    Create a merged NetCDF file in a memory-efficient way by processing chunks sequentially.
-    Uses a safer approach with temporary files and xarray's combine functionality.
-
-    Args:
-        ds_historical: Historical dataset
-        combined_ds: Combined (new) dataset
-        output_path: Path for output NetCDF file
-        chunk_size: Number of IDs to process at once
+    Create a merged NetCDF file efficiently using direct append mode.
     """
     logger.info(f"Creating merged NetCDF file at {output_path}")
     log_memory_usage("Start of merge_netcdf")
@@ -203,7 +196,7 @@ def create_merged_netcdf_memory_efficient(ds_historical, combined_ds, output_pat
     # Get all unique IDs - ensure they are sorted
     hist_ids = set(ds_historical['id_geohash'].values)
     combined_ids = set(combined_ds['id_geohash'].values)
-    all_ids = np.array(sorted(hist_ids | combined_ids))  # Ensure sorted
+    all_ids = np.array(sorted(hist_ids | combined_ids))
 
     logger.info(f"Historical IDs: {len(hist_ids)}, Combined IDs: {len(combined_ids)}")
     logger.info(f"Total unique IDs: {len(all_ids)}")
@@ -212,183 +205,108 @@ def create_merged_netcdf_memory_efficient(ds_historical, combined_ds, output_pat
     num_chunks = (total_ids + chunk_size - 1) // chunk_size
     logger.info(f"Processing {total_ids} IDs in {num_chunks} chunks of {chunk_size}")
 
-    # Store paths to chunk files for later combination
-    chunk_files = []
-    temp_dir = output_path.parent / f"temp_chunks_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    temp_dir.mkdir(exist_ok=True, parents=True)
-    logger.info(f"Using temporary directory: {temp_dir}")
+    # Process first chunk to create file
+    first_chunk = True
 
-    try:
-        for chunk_idx in tqdm(range(num_chunks), desc="Processing chunks"):
-            start_idx = chunk_idx * chunk_size
-            end_idx = min((chunk_idx + 1) * chunk_size, total_ids)
-            chunk_ids = all_ids[start_idx:end_idx]
+    for chunk_idx in tqdm(range(num_chunks), desc="Processing chunks"):
+        start_idx = chunk_idx * chunk_size
+        end_idx = min((chunk_idx + 1) * chunk_size, total_ids)
+        chunk_ids = all_ids[start_idx:end_idx]
 
-            logger.info(f"Processing chunk {chunk_idx + 1}/{num_chunks}: IDs {start_idx} to {end_idx}")
-            log_memory_usage(f"Chunk {chunk_idx + 1} start")
+        logger.info(f"Processing chunk {chunk_idx + 1}/{num_chunks}: IDs {start_idx} to {end_idx}")
+        log_memory_usage(f"Chunk {chunk_idx + 1} start")
 
-            try:
-                # Convert to list for selection
-                chunk_ids_list = chunk_ids.tolist()
+        try:
+            chunk_ids_list = chunk_ids.tolist()
 
-                # Get data for this chunk from historical dataset
-                hist_chunk = None
-                try:
-                    # Filter to only IDs that exist
-                    existing_hist_ids = [id_val for id_val in chunk_ids_list if id_val in hist_ids]
-                    if existing_hist_ids:
-                        hist_chunk = ds_historical.sel(id_geohash=existing_hist_ids)
-                except Exception as e:
-                    logger.warning(f"Error selecting from historical: {e}")
+            # Get data from historical and combined
+            hist_chunk = None
+            existing_hist_ids = [id_val for id_val in chunk_ids_list if id_val in hist_ids]
+            if existing_hist_ids:
+                hist_chunk = ds_historical.sel(id_geohash=existing_hist_ids)
 
-                # Get data for this chunk from combined dataset
-                combined_chunk = None
-                try:
-                    existing_combined_ids = [id_val for id_val in chunk_ids_list if id_val in combined_ids]
-                    if existing_combined_ids:
-                        combined_chunk = combined_ds.sel(id_geohash=existing_combined_ids)
-                except Exception as e:
-                    logger.warning(f"Error selecting from combined: {e}")
+            combined_chunk = None
+            existing_combined_ids = [id_val for id_val in chunk_ids_list if id_val in combined_ids]
+            if existing_combined_ids:
+                combined_chunk = combined_ds.sel(id_geohash=existing_combined_ids)
 
-                # Merge the chunks
-                if hist_chunk is not None and combined_chunk is not None:
-                    # Both have data - merge them
-                    merged_chunk = xr.concat([hist_chunk, combined_chunk], dim='id_geohash')
-                    # Remove duplicate IDs if any
-                    _, unique_indices = np.unique(merged_chunk['id_geohash'].values, return_index=True)
-                    if len(unique_indices) < len(merged_chunk['id_geohash']):
-                        merged_chunk = merged_chunk.isel(id_geohash=np.sort(unique_indices))
-                elif hist_chunk is not None:
-                    # Only historical data
-                    merged_chunk = hist_chunk
-                elif combined_chunk is not None:
-                    # Only combined data
-                    merged_chunk = combined_chunk
-                else:
-                    logger.warning(f"No data found for chunk {chunk_idx + 1}, skipping")
-                    continue
-
-                # Sort for consistency
-                merged_chunk = merged_chunk.sortby(['date', 'id_geohash'])
-
-                # Write this chunk to a temporary file
-                chunk_file = temp_dir / f"chunk_{chunk_idx:06d}.nc"
-
-                # Use compression but simpler encoding
-                encoding = {}
-                for var in merged_chunk.data_vars:
-                    encoding[var] = {
-                        'zlib': True,
-                        'complevel': 2,
-                        'shuffle': True
-                    }
-
-                # Write the chunk file
-                merged_chunk.to_netcdf(chunk_file, encoding=encoding)
-                chunk_files.append(chunk_file)
-
-                logger.info(f"Chunk {chunk_idx + 1} written to {chunk_file} ({len(merged_chunk['id_geohash'])} IDs)")
-
-                # Clean up
-                if hist_chunk is not None:
-                    hist_chunk.close()
-                if combined_chunk is not None:
-                    combined_chunk.close()
-                merged_chunk.close()
-                del merged_chunk
-                if hist_chunk is not None:
-                    del hist_chunk
-                if combined_chunk is not None:
-                    del combined_chunk
-                gc.collect()
-
-                log_memory_usage(f"Chunk {chunk_idx + 1} complete")
-
-            except Exception as e:
-                logger.error(f"Error processing chunk {chunk_idx + 1}: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
+            # Merge the chunks
+            if hist_chunk is not None and combined_chunk is not None:
+                merged_chunk = xr.concat([hist_chunk, combined_chunk], dim='id_geohash')
+                _, unique_indices = np.unique(merged_chunk['id_geohash'].values, return_index=True)
+                if len(unique_indices) < len(merged_chunk['id_geohash']):
+                    merged_chunk = merged_chunk.isel(id_geohash=np.sort(unique_indices))
+            elif hist_chunk is not None:
+                merged_chunk = hist_chunk
+            elif combined_chunk is not None:
+                merged_chunk = combined_chunk
+            else:
+                logger.warning(f"No data found for chunk {chunk_idx + 1}, skipping")
                 continue
 
-        # Combine all chunk files into one
-        if chunk_files:
-            logger.info(f"Combining {len(chunk_files)} chunk files into final NetCDF...")
-            log_memory_usage("Before combining chunks")
+            # Sort for consistency
+            merged_chunk = merged_chunk.sortby(['date', 'id_geohash'])
 
-            # Open all chunk files and combine
-            combined_chunks = []
-            for chunk_file in tqdm(chunk_files, desc="Opening chunk files"):
-                try:
-                    ds = xr.open_dataset(chunk_file)
-                    combined_chunks.append(ds)
-                except Exception as e:
-                    logger.error(f"Error opening chunk file {chunk_file}: {e}")
+            # Write directly to the final file (append mode after first chunk)
+            encoding = {}
+            for var in merged_chunk.data_vars:
+                encoding[var] = {
+                    'zlib': True,
+                    'complevel': 4,
+                    'shuffle': True
+                }
 
-            if combined_chunks:
-                # Concatenate all chunks
-                logger.info("Concatenating chunks...")
-                final_ds = xr.concat(combined_chunks, dim='id_geohash')
-
-                # Remove duplicates (just in case)
-                _, unique_indices = np.unique(final_ds['id_geohash'].values, return_index=True)
-                if len(unique_indices) < len(final_ds['id_geohash']):
-                    final_ds = final_ds.isel(id_geohash=np.sort(unique_indices))
-
-                # Sort by date and id
-                final_ds = final_ds.sortby(['date', 'id_geohash'])
-
-                logger.info(f"Final dataset has {len(final_ds['id_geohash'])} IDs")
-                logger.info(f"Date range: {final_ds['date'].min().values} to {final_ds['date'].max().values}")
-
-                # Write final file
-                logger.info(f"Writing final NetCDF file to {output_path}")
-
-                # Use compression
-                encoding = {}
-                for var in final_ds.data_vars:
-                    encoding[var] = {
-                        'zlib': True,
-                        'complevel': 4,
-                        'shuffle': True
-                    }
-
-                # Write in one go (dataset should be manageable now)
-                final_ds.to_netcdf(output_path, encoding=encoding)
-
-                # Verify
-                if output_path.exists():
-                    file_size_gb = get_file_size_gb(str(output_path))
-                    logger.info(f"Successfully created merged NetCDF file: {output_path}")
-                    logger.info(f"File size: {file_size_gb:.2f} GB")
-
-                    # Verify readability
-                    test_ds = xr.open_dataset(output_path)
-                    logger.info(f"Verification: File has {len(test_ds['id_geohash'])} IDs")
-                    test_ds.close()
-
-                    # TODO do other tests here
-
-
-                # Clean up
-                final_ds.close()
-                del final_ds
-                for ds in combined_chunks:
-                    ds.close()
-                del combined_chunks
-                gc.collect()
+            if first_chunk:
+                # Create the file with unlimited dimension
+                merged_chunk.to_netcdf(
+                    output_path,
+                    mode='w',
+                    encoding=encoding,
+                    unlimited_dims=['id_geohash']
+                )
+                first_chunk = False
+                logger.info(f"Created NetCDF file with first chunk ({len(merged_chunk['id_geohash'])} IDs)")
             else:
-                logger.error("No chunks could be opened")
-        else:
-            logger.error("No chunk files were created")
+                # Append to existing file
+                merged_chunk.to_netcdf(
+                    output_path,
+                    mode='a',
+                    engine='netcdf4',
+                    encoding=encoding
+                )
+                logger.info(f"Appended chunk {chunk_idx + 1} ({len(merged_chunk['id_geohash'])} IDs)")
 
-    finally:
-        # Clean up temporary directory
-        logger.info(f"Cleaning up temporary directory: {temp_dir}")
-        try:
-            shutil.rmtree(temp_dir)
-            logger.info("Temporary directory cleaned up")
+            # Clean up
+            if hist_chunk is not None:
+                hist_chunk.close()
+            if combined_chunk is not None:
+                combined_chunk.close()
+            merged_chunk.close()
+            del merged_chunk
+            if hist_chunk is not None:
+                del hist_chunk
+            if combined_chunk is not None:
+                del combined_chunk
+            gc.collect()
+
+            log_memory_usage(f"Chunk {chunk_idx + 1} complete")
+
         except Exception as e:
-            logger.warning(f"Could not clean up temporary directory: {e}")
+            logger.error(f"Error processing chunk {chunk_idx + 1}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            continue
+
+    # Verify the file
+    if output_path.exists():
+        file_size_gb = get_file_size_gb(str(output_path))
+        logger.info(f"Successfully created merged NetCDF file: {output_path}")
+        logger.info(f"File size: {file_size_gb:.2f} GB")
+
+        # Quick verification
+        test_ds = xr.open_dataset(output_path)
+        logger.info(f"Verification: File has {len(test_ds['id_geohash'])} IDs and {len(test_ds['date'])} dates")
+        test_ds.close()
 
     log_memory_usage("End of merge_netcdf")
     return output_path
@@ -614,6 +532,8 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
             if DOWNLOAD_REQUIRED:
                 # Download or load existing file
                 if not outfile_download.exists():
+                    # TODO use different limit if we are in Canada Eurasia
+                    # TODO use the features in gdf subset
                     try:
                         ds_dl = downloader.download_dw_monthly(
                             gdf=gdf_subset,
@@ -825,7 +745,7 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
                     ds_historical=ds_historical,
                     combined_ds=combined,
                     output_path=new_historical_path,
-                    chunk_size=50000  # Adjust based on available memory
+                    chunk_size=5000  # Adjust based on available memory
                 )
 
                 logger.debug(f"Checking compressions of files")

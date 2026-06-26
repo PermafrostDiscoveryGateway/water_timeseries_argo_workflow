@@ -21,6 +21,7 @@ RUN uv pip install \
 COPY google_cloud_utils/ /app/google_cloud_utils/
 COPY near_real_time /app/near_real_time
 COPY utils /app/utils
+COPY upload_utils /app/upload_utils
 COPY historical_run /app/historical_run
 
 # Add /app to Python path
