@@ -26,11 +26,13 @@ def upload_to_gcs(local_path, bucket_name, cloud_base_path, max_workers=5):
 
     print(f"Uploading to: gs://{bucket_name}/{full_cloud_path}/")
 
-    # Initialize GCS client
+    # Initialize GCS client with explicit project
     try:
-        client = storage.Client()
+        # Hardcode the project ID
+        project_id = "pdg-project-406720"
+        client = storage.Client(project=project_id)
         bucket = client.bucket(bucket_name)
-        print(f"✓ Connected to GCS bucket: {bucket_name}")
+        print(f"✓ Connected to GCS bucket: {bucket_name} (project: {project_id})")
     except Exception as e:
         print(f"✗ Failed to connect to GCS: {e}")
         return False
@@ -102,6 +104,7 @@ def main():
     parser.add_argument('--base-path', default='water_timeseries_v2/test_data/test_output',
                         help='Base path in the bucket')
     parser.add_argument('--workers', type=int, default=5, help='Number of parallel uploads')
+    parser.add_argument('--project', default='pdg-project-406720', help='GCP project ID')
 
     args = parser.parse_args()
 
@@ -110,6 +113,7 @@ def main():
     print(f"  GCS bucket: {args.bucket}")
     print(f"  Cloud base path: {args.base_path}")
     print(f"  Parallel workers: {args.workers}")
+    print(f"  GCP Project: {args.project}")
     print("-" * 50)
 
     success = upload_to_gcs(args.local_path, args.bucket, args.base_path, args.workers)
