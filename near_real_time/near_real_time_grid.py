@@ -532,12 +532,18 @@ def near_real_time_region(region: str = "TEST", env_path: str = None):
             if DOWNLOAD_REQUIRED:
                 # Download or load existing file
                 if not outfile_download.exists():
-                    # TODO use different limit if we are in Canada Eurasia
                     # TODO use the features in gdf subset
+                    n_features = len(gdf_subset)
+                    if n_features > 500:
+                        # For large grids, process in smaller chunks
+                        max_total_requests = min(100, n_features)
+                        logger.debug(f"Grid has {n_features} features, using max_requests={max_total_requests}")
+                    else:
+                        max_total_requests = 1000
                     try:
                         ds_dl = downloader.download_dw_monthly(
                             gdf=gdf_subset,
-                            max_total_requests=2000,
+                            max_total_requests=max_total_requests,
                             n_parallel=2,
                             date_list=[ANALYSIS_DATE],
                             save_to_file=outfile_download
