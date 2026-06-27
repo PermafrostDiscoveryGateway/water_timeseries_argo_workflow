@@ -156,7 +156,7 @@ spec:
           cd /app
           python /app/upload_utils/upload_to_cloud_bucket.py /data/water_timeseries/output \
             --bucket pdg-storage-default \
-            --base-path water_timeseries_v2/test_data/test_output \
+            --base-path water_timeseries_v2/test_data/output \
             --workers 5
           
           UPLOAD_EXIT_CODE=$?
@@ -191,7 +191,7 @@ spec:
           echo "=== SAVING UPLOAD INFORMATION ==="
           echo "Upload completed at: $(date)" > "$DEBUG_DIR/upload_info.txt"
           echo "Upload path: /data/water_timeseries/output" >> "$DEBUG_DIR/upload_info.txt"
-          echo "Destination: gs://pdg-storage-default/water_timeseries_v2/test_data/test_output/$(date +%Y%m%d)/" >> "$DEBUG_DIR/upload_info.txt"
+          echo "Destination: gs://pdg-storage-default/water_timeseries_v2/test_data/output/$(date +%Y%m%d)/" >> "$DEBUG_DIR/upload_info.txt"
           echo "Files uploaded: $FILE_COUNT" >> "$DEBUG_DIR/upload_info.txt"
           
           echo "=== DEBUG INFO SAVED TO: $DEBUG_DIR ==="
