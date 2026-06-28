@@ -33,7 +33,7 @@ def main():
         ANALYSIS_DATE = date.strftime("%Y-%m")
         analysis_dates.append(ANALYSIS_DATE)
 
-    download_near_real_time_region(region="TEST", run_start_label=start_label)
+    # download_near_real_time_region(region="TEST", run_start_label=start_label)
     verify_downloads_complete(region="TEST", run_start_label=start_label, analysis_dates=analysis_dates)
     logger.debug(f"Done for test")
 
