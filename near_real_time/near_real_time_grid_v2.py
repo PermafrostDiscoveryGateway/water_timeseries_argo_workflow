@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import sys
 from pathlib import Path
+from typing import List
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
@@ -2062,9 +2063,11 @@ def main():
     run_start = datetime.datetime.now()
     run_start_label = run_start.strftime("%Y_%m_%d_%H_%M_%S")
 
-    success = near_real_time_region(region=args.region, env_path=args.env_path)
-    sys.exit(0 if success else 1)
+
+    #success = download_near_real_time_region(region=args.region, run_start_label=run_start_label, env_path=args.env_path)
+    # verify_downloads_complete(region=args.region, run_start_label=run_start_label, env_path=args.env_path)
+    # sys.exit(0 if success else 1)
 
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main()
