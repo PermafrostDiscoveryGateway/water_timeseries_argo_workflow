@@ -2586,7 +2586,8 @@ def merge_near_real_time_region(
                 'id_count': verification['id_count'],
                 'date_count': verification['date_count'],
                 'file_size_gb': verification['file_size_gb'],
-                'files_merged': len(all_downloaded_files)
+                'files_merged': len(all_downloaded_files),
+                'result': result_path,
             }
         else:
             logger.error(f"❌ Merge verification failed: {verification.get('error', 'Unknown error')}")
