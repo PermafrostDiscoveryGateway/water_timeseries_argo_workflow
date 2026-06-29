@@ -29,24 +29,28 @@ def main():
 
     analysis_dates = []
     original_missing_dates = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
+    latest_date = max(original_missing_dates)
     for date_idx, date in enumerate(original_missing_dates):
         date_type = type(date)
         print(date_type)
         ANALYSIS_DATE = date.strftime("%Y-%m")
         analysis_dates.append(ANALYSIS_DATE)
 
-    # download_near_real_time_region(region="TEST", run_start_label=start_label)
-    verify_downloads_complete(region="TEST", run_start_label=start_label, analysis_dates=analysis_dates)
+    download_near_real_time_region(region="TEST", run_start_label=start_label)
+    verify_downloads_complete(region="CANADA", run_start_label=start_label, analysis_dates=analysis_dates)
     # merge_near_real_time_region(region="TEST", run_start_label=start_label, dates_to_merge=analysis_dates)
     logger.debug(f"Done for test")
 
-    new_netcdf_file_path = '/Users/helium/Desktop/dynamic_world/data/historical_data_20260629_104025.nc'
-    original_netcdf_file_path = '/Users/helium/Desktop/dynamic_world/data/lakes_dw_V2d.nc'
-    logger.debug(f"Comparing the netcdf files {new_netcdf_file_path} to original {original_netcdf_file_path}")
-    # compare_netcdf_files(original_netcdf_file_path, new_netcdf_file_path)
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    new_most_recent_dynamic_world_file = min(all_dynamic_world_files, key=os.path.getctime)
+
+    # new_netcdf_file_path = '/Users/helium/Desktop/dynamic_world/data/historical_data_20260629_104025.nc'
+    # original_netcdf_file_path = '/Users/helium/Desktop/dynamic_world/data/lakes_dw_V2d.nc'
+    logger.debug(f"Comparing the netcdf files {new_most_recent_dynamic_world_file} to original {original_most_recent_dynamic_world_file}")
+    compare_netcdf_files(original_most_recent_dynamic_world_file, new_most_recent_dynamic_world_file)
     logger.debug(f"Comparison finished")
 
-    process_near_real_time_region_dates(region="TEST", current_analysis_dates=original_missing_dates)
+    process_near_real_time_region_dates(region="CANADA", current_analysis_dates=original_missing_dates)
 
 
 if __name__ == "__main__":

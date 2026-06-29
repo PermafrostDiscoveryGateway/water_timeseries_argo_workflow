@@ -38,6 +38,62 @@ import resource
 import tempfile
 
 
+
+def generate_expected_dates_for_region(
+        region: str = "TEST",
+        env_path: str = None,
+        start_year: int = 2015,
+        months: List[int] = [6, 7, 8, 9]
+):
+    """
+    Generate expected dates for a specific region.
+
+    This is a convenience function that loads the region's historical file
+    and generates dates from start_year to present for June-September.
+
+    Args:
+        region: Region name
+        env_path: Optional path to .env file
+        start_year: Year to start from (default: 2015)
+        months: List of months to include (default: [6, 7, 8, 9])
+
+    Returns:
+        List of pandas Timestamps for expected dates
+    """
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    dynamic_world_data_dir = os.environ['dynamic_world_data']
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+
+    if not all_dynamic_world_files:
+        logger.warning(f"No NetCDF files found in {dynamic_world_data_dir}")
+        return generate_expected_dates(start_year=start_year, months=months)
+
+    # Get the most recent file to check existing dates
+    most_recent_file = max(all_dynamic_world_files, key=os.path.getctime)
+    ds = xr.open_dataset(most_recent_file)
+    existing_dates = set(pd.to_datetime(ds['date'].values))
+    ds.close()
+
+    # Generate all expected dates
+    all_expected = generate_expected_dates(start_year=start_year, months=months)
+
+    # Filter to only dates that exist in the file (or you could return all)
+    # Option 1: Return all expected dates (download will check what's missing)
+    # Option 2: Return only dates that already exist in the file
+    # Option 3: Return both
+
+    logger.info(f"Generated {len(all_expected)} expected dates from {start_year} to present")
+    logger.info(f"File has {len(existing_dates)} existing dates")
+
+    # Return all expected dates - download function will filter out existing ones
+    return all_expected
+
+
 def check_netcdf_compression(file_path):
     """Check if a NetCDF file has compression enabled"""
     try:
@@ -1902,6 +1958,433 @@ def download_near_real_time_region(region: str = "TEST", run_start_label: str = 
     }
 
 
+def generate_expected_dates(
+        start_year: int = 2015,
+        end_year: int = None,
+        end_month: int = None,
+        months: List[int] = [6, 7, 8, 9]  # June, July, August, September
+):
+    """
+    Generate a list of expected dates for specific months (June-September by default).
+
+    Args:
+        start_year: Year to start from (default: 2015)
+        end_year: Year to end at (default: current year)
+        end_month: Month to end at (default: current month)
+        months: List of months to include (default: [6, 7, 8, 9])
+
+    Returns:
+        List of pandas Timestamps for the first of each month in the specified months
+    """
+    if end_year is None:
+        end_year = datetime.datetime.now().year
+    if end_month is None:
+        end_month = datetime.datetime.now().month
+
+    dates = []
+
+    for year in range(start_year, end_year + 1):
+        for month in months:
+            # Skip if year is end_year and month is after end_month
+            if year == end_year and month > end_month:
+                continue
+            # Create date for first of the month
+            dates.append(pd.Timestamp(f"{year}-{month:02d}-01"))
+
+    return dates
+
+
+def download_near_real_time_region_dates(
+        region: str = "TEST",
+        run_start_label: str = None,
+        env_path: str = None,
+        dates_to_download: List[pd.Timestamp] = None
+):
+    """
+    Download near-real-time data for a specific region for specified dates.
+
+    This function ONLY handles downloading - no merging is performed.
+    Downloads are saved to the download directory for later merging.
+
+    Args:
+        region: Region name (e.g., "TEST", "AFRICA", "SOUTH_AMERICA")
+        run_start_label: Optional label for tracking runs
+        env_path: Optional path to .env file
+        dates_to_download: List of pandas Timestamps to download. If None,
+                          generates expected dates from 2015 to present for months 6-9.
+
+    Returns:
+        dict: Status information including success/failure counts per date
+    """
+    log_memory_usage("Download function start")
+
+    region_boundaries = get_region_boundaries()
+
+    start = datetime.datetime.now()
+    logger.debug(f"Current time: {datetime.datetime.now()}")
+
+    # Load environment variables
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
+
+    REGION_NAME = region
+
+    output_dir = os.environ['output_dir']
+    output_dir = os.path.join(output_dir, REGION_NAME)
+    project = os.environ['project']
+    EE_PROJECT_ID = project
+    os.environ["EE_PROJECT"] = EE_PROJECT_ID
+
+    try:
+        ee.Initialize(project=EE_PROJECT_ID)
+        logger.debug("Earth engine successfully initialized")
+    except Exception as e:
+        logger.debug(f"Failed to initialize earth engine: {e}")
+
+    try:
+        geemap.ee_initialize(project=EE_PROJECT_ID)
+        logger.debug("Initialized geemap")
+    except Exception as e:
+        logger.debug(f"Failed to initialize geemap: {e}")
+
+    dynamic_world_data_dir = os.environ['dynamic_world_data']
+    dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
+    dynamic_world_download_dir.mkdir(exist_ok=True, parents=True)
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+
+    if not all_dynamic_world_files:
+        logger.error(f"No .nc files found in {dynamic_world_data_dir}")
+        return {'success': False, 'error': 'No .nc files found'}
+
+    logger.debug(f"Region name is {REGION_NAME}")
+
+    bounding_box_coords = region_boundaries[REGION_NAME]
+
+    logger.debug(f"Bounding box coordinates are {bounding_box_coords}")
+    time.sleep(15)
+
+    X_MIN_START = bounding_box_coords['X_MIN_START']
+    X_MIN_END = bounding_box_coords['X_MIN_END']
+    Y_MIN_START = bounding_box_coords['Y_MIN_START']
+    Y_MIN_END = bounding_box_coords['Y_MIN_END']
+
+    # Get the original historical file
+    original_historical_file = max(all_dynamic_world_files, key=os.path.getctime)
+
+    hist_file_size_gb = get_file_size_gb(original_historical_file)
+    logger.info(f"Original Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
+
+    # ========== DETERMINE WHICH DATES TO DOWNLOAD ==========
+    if dates_to_download is not None:
+        # Use explicitly provided dates
+        all_dates_to_process = dates_to_download
+        logger.info(f"Processing {len(all_dates_to_process)} explicitly provided dates")
+        for d in all_dates_to_process:
+            logger.info(f"  - {d.strftime('%Y-%m-%d')}")
+    else:
+        # Generate expected dates from 2015 to present for June-September
+        all_dates_to_process = generate_expected_dates(start_year=2015)
+        logger.info(f"Generated {len(all_dates_to_process)} expected dates from 2015 to present")
+        logger.info("Months included: June, July, August, September")
+
+    if not all_dates_to_process:
+        logger.info("No dates to process")
+        return {'success': True, 'dates_processed': [], 'message': 'No dates to process'}
+
+    # ========== CHECK WHICH DATES ARE ALREADY IN THE HISTORICAL FILE ==========
+    logger.info("Checking which dates already exist in the historical file...")
+    ds_check = xr.open_dataset(original_historical_file)
+    existing_dates = set(pd.to_datetime(ds_check['date'].values))
+    ds_check.close()
+    logger.info(f"Historical file has {len(existing_dates)} existing dates")
+
+    # Filter to only dates that are missing from the historical file
+    dates_to_download = [d for d in all_dates_to_process if d not in existing_dates]
+
+    if not dates_to_download:
+        logger.info("All expected dates already exist in the historical file. No downloads needed.")
+        return {
+            'success': True,
+            'dates_processed': [],
+            'message': 'All dates already exist in historical file',
+            'all_expected_dates': [d.strftime("%Y-%m") for d in all_dates_to_process],
+            'existing_dates': [d.strftime("%Y-%m") for d in existing_dates]
+        }
+
+    logger.info(f"Found {len(dates_to_download)} dates to download")
+    for d in dates_to_download:
+        logger.info(f"  - {d.strftime('%Y-%m-%d')}")
+
+    vector_lake_file = os.environ['vector_lake_file']
+    path_lake_vector = vector_lake_file
+
+    # Track results for all dates
+    all_results = {}
+    overall_success = True
+
+    # ========== LOAD ORIGINAL VALID IDs ONCE ==========
+    logger.info("Loading original historical dataset to get valid IDs...")
+    ds_original = xr.open_dataset(original_historical_file)
+    original_valid_ids = set(ds_original['id_geohash'].values)
+    ds_original.close()
+    logger.info(f"Found {len(original_valid_ids)} valid IDs in original historical dataset")
+
+    # Load GDF once for the region (same for all dates)
+    gdf = gpd.read_parquet(path_lake_vector)
+    log_memory_usage("After loading lake vectors")
+
+    # Initialize downloader once
+    downloader = EarthEngineDownloader(ee_project=EE_PROJECT_ID)
+
+    # Process each date to download
+    for date_idx, date in enumerate(dates_to_download):
+        ANALYSIS_DATE = date.strftime("%Y-%m")
+        logger.info(f"\n{'=' * 80}")
+        logger.info(f"Processing date {date_idx + 1}/{len(dates_to_download)}: {ANALYSIS_DATE}")
+        logger.info(f"{'=' * 80}")
+
+        date_start = datetime.datetime.now()
+
+        # Track results for this date
+        date_results = {
+            'analysis_date': ANALYSIS_DATE,
+            'success_bbox_downloads': 0,
+            'failed_bbox_downloads': 0,
+            'skipped_bbox_downloads': 0,
+            'expected_downloads': 0,
+            'grid_tiles_processed': [],
+            'successful': False
+        }
+
+        bbox_size_lon = 1
+        bbox_size_lat = 1
+        grid = create_longitude_latitude_grid(
+            lon_range=(X_MIN_START, X_MIN_END),
+            lat_range=(Y_MIN_START, Y_MIN_END),
+            bbox_size_lon=bbox_size_lon,
+            bbox_size_lat=bbox_size_lat
+        )
+        logger.info(f'Created grid with {len(grid)} tiles')
+        log_memory_usage("After creating grid")
+
+        current_download_dir = Path(str(dynamic_world_download_dir), REGION_NAME, f'download_{ANALYSIS_DATE}')
+        current_download_dir.mkdir(exist_ok=True, parents=True)
+        logger.debug(f"Current download directory: {current_download_dir}")
+
+        if not hasattr(geemap, 'ee_initialize'):
+            logger.warning("geemap.ee_initialize missing, adding runtime patch")
+
+            def ee_initialize(project=None, **kwargs):
+                if project:
+                    ee.Initialize(project=project, **kwargs)
+                else:
+                    ee.Initialize(**kwargs)
+
+            geemap.ee_initialize = ee_initialize
+            logger.info("Runtime patch applied to geemap")
+
+        # Create run label for this date
+        if run_start_label is None:
+            date_run_label = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        else:
+            date_run_label = f"{run_start_label}_{ANALYSIS_DATE}"
+
+        # Files for tracking downloads
+        outfile_downloads_failed_file = current_download_dir / f'grid_tiles_download_failed_{date_run_label}.txt'
+        outfile_downloads_success_file = current_download_dir / f'grid_tiles_download_success_{date_run_label}.txt'
+
+        # Track expected grid tiles
+        expected_grid_tiles = []
+
+        total = len(grid[:])
+        logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
+
+        for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc=f"Downloading {ANALYSIS_DATE}")):
+            logger.debug(f"Processing {i}/{total} grid tiles.")
+            bbox_west = int(lon)
+            bbox_east = int(lon + bbox_size_lon)
+            bbox_south = int(lat)
+            bbox_north = int(lat + bbox_size_lat)
+
+            grid_coords = f"{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}"
+            print(f"Processing download for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
+
+            outfile_download = current_download_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}.nc'
+
+            gdf_subset = filter_gdf_by_bbox(
+                gdf=gdf,
+                bbox_west=lon,
+                bbox_east=lon + bbox_size_lon,
+                bbox_south=lat,
+                bbox_north=lat + bbox_size_lat
+            )
+            n_lakes = len(gdf_subset)
+            print('Number of lakes: ', n_lakes)
+
+            id_list = gdf_subset['id_geohash'].values.tolist()
+            if n_lakes == 0:
+                print(f'No lakes for grid {bbox_west} {bbox_south}. Skipping!')
+                continue
+
+            # ========== USE ORIGINAL VALID IDs ==========
+            original_count = len(id_list)
+            id_list = [id_val for id_val in id_list if id_val in original_valid_ids]
+            filtered_count = len(id_list)
+
+            if filtered_count == 0:
+                print(
+                    f'WARNING: No valid historical IDs for grid {bbox_west} {bbox_south} (had {original_count} lakes, none in historical data). Skipping!')
+                continue
+            elif filtered_count < original_count:
+                print(
+                    f'NOTE: Filtered {original_count - filtered_count} lakes not found in historical data. Processing {filtered_count} lakes.')
+                gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
+
+            # This grid tile should be processed
+            expected_grid_tiles.append(grid_coords)
+            date_results['expected_downloads'] += 1
+
+            # Check if download already exists
+            if outfile_download.exists():
+                print(f'Download already exists for {bbox_west} {bbox_south}! Skipping download.')
+                date_results['skipped_bbox_downloads'] += 1
+                with open(outfile_downloads_success_file, 'a') as f:
+                    f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+                date_results['grid_tiles_processed'].append(grid_coords)
+                continue
+
+            # Download data
+            download_successful = False
+            try:
+                n_features = len(gdf_subset)
+                if n_features > 500:
+                    max_total_requests = min(100, n_features)
+                    logger.debug(f"Grid has {n_features} features, using max_requests={max_total_requests}")
+                else:
+                    max_total_requests = 500
+
+                ds_dl = downloader.download_dw_monthly(
+                    gdf=gdf_subset,
+                    max_total_requests=max_total_requests,
+                    n_parallel=2,
+                    date_list=[ANALYSIS_DATE],
+                    save_to_file=outfile_download
+                )
+
+                if ds_dl is not None:
+                    download_successful = True
+                    print(f'Successfully downloaded data for {bbox_west} {bbox_south}')
+                    date_results['success_bbox_downloads'] += 1
+                    with open(outfile_downloads_success_file, 'a') as f:
+                        f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+                    date_results['grid_tiles_processed'].append(grid_coords)
+                else:
+                    print(f'WARNING: No data available for {bbox_west} {bbox_south} on {ANALYSIS_DATE}')
+                    date_results['failed_bbox_downloads'] += 1
+                    with open(outfile_downloads_failed_file, 'a') as f:
+                        f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+
+            except ValueError as e:
+                if "No data was extracted" in str(e):
+                    print(f'WARNING: No data available for {bbox_west} {bbox_south} on {ANALYSIS_DATE}')
+                else:
+                    logger.error(f"Download error for {bbox_west} {bbox_south}: {e}")
+                date_results['failed_bbox_downloads'] += 1
+                with open(outfile_downloads_failed_file, 'a') as f:
+                    f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+            except Exception as e:
+                logger.error(f"Unexpected error downloading {bbox_west} {bbox_south}: {e}")
+                date_results['failed_bbox_downloads'] += 1
+                with open(outfile_downloads_failed_file, 'a') as f:
+                    f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+
+            # Clean up
+            if 'ds_dl' in locals() and ds_dl is not None:
+                ds_dl.close()
+                del ds_dl
+                gc.collect()
+
+        # ========== CREATE MANIFEST FILE FOR THIS DATE ==========
+        manifest_file = current_download_dir / f'download_manifest_{date_run_label}.json'
+        manifest_data = {
+            'region': REGION_NAME,
+            'analysis_date': ANALYSIS_DATE,
+            'run_start_label': date_run_label,
+            'expected_downloads': date_results['expected_downloads'],
+            'successful_downloads': date_results['success_bbox_downloads'] + date_results['skipped_bbox_downloads'],
+            'failed_downloads': date_results['failed_bbox_downloads'],
+            'skipped_downloads': date_results['skipped_bbox_downloads'],
+            'expected_grid_tiles': expected_grid_tiles,
+            'timestamp': datetime.datetime.now().isoformat(),
+            'historical_file': str(original_historical_file)
+        }
+        with open(manifest_file, 'w') as f:
+            json.dump(manifest_data, f, indent=2)
+
+        # Determine if this date's downloads were successful
+        date_results['successful'] = (date_results['failed_bbox_downloads'] == 0 and
+                                      date_results['expected_downloads'] > 0)
+
+        # Create completion marker
+        if date_results['successful']:
+            completion_file = current_download_dir / f'download_complete_{date_run_label}.success'
+            with open(completion_file, 'w') as f:
+                f.write(f"All {date_results['expected_downloads']} downloads completed successfully\n")
+                f.write(f"Timestamp: {datetime.datetime.now().isoformat()}\n")
+            logger.info(f"✅ All downloads completed successfully for {ANALYSIS_DATE}")
+        else:
+            completion_file = current_download_dir / f'download_complete_{date_run_label}.partial'
+            with open(completion_file, 'w') as f:
+                f.write(
+                    f"Downloads completed with {date_results['failed_bbox_downloads']} failures out of {date_results['expected_downloads']}\n")
+                f.write(f"Timestamp: {datetime.datetime.now().isoformat()}\n")
+            logger.warning(
+                f"⚠️ Downloads completed with {date_results['failed_bbox_downloads']} failures for {ANALYSIS_DATE}")
+            overall_success = False
+
+        date_end = datetime.datetime.now()
+        logger.debug(f"Finished download for date {ANALYSIS_DATE} in {date_end - date_start}")
+        logger.info(f"Downloads for {ANALYSIS_DATE}: {date_results['success_bbox_downloads']} successful, "
+                    f"{date_results['failed_bbox_downloads']} failed, "
+                    f"{date_results['skipped_bbox_downloads']} skipped")
+
+        # Store results for this date
+        all_results[ANALYSIS_DATE] = date_results
+
+    # ========== SUMMARY ==========
+    logger.info(f"\n{'=' * 80}")
+    logger.info("DOWNLOAD SUMMARY")
+    logger.info(f"{'=' * 80}")
+
+    # Count successful dates
+    successful_dates = sum(1 for r in all_results.values() if r['successful'])
+    failed_dates = sum(1 for r in all_results.values() if not r['successful'])
+
+    for date, results in all_results.items():
+        status = "✅ SUCCESS" if results['successful'] else "⚠️ PARTIAL"
+        logger.info(f"{date}: {status} - {results['success_bbox_downloads']} successful, "
+                    f"{results['failed_bbox_downloads']} failed, "
+                    f"{results['skipped_bbox_downloads']} skipped")
+
+    logger.info(f"Overall status: {'✅ SUCCESS' if overall_success else '⚠️ PARTIAL FAILURE'}")
+    logger.info(f"Successfully downloaded {successful_dates}/{len(dates_to_download)} dates")
+
+    return {
+        'success': overall_success,
+        'dates_processed': list(all_results.keys()),
+        'date_results': all_results,
+        'total_dates': len(all_results),
+        'successful_dates': successful_dates,
+        'failed_dates': failed_dates,
+        'dates_to_download': [d.strftime("%Y-%m") for d in dates_to_download],
+        'all_expected_dates': [d.strftime("%Y-%m") for d in all_dates_to_process],
+        'existing_dates': [d.strftime("%Y-%m") for d in existing_dates] if 'existing_dates' in locals() else []
+    }
+
 # ========== NEW: MERGE FUNCTION ==========
 def merge_near_real_time_region(
         region: str = "TEST",
@@ -2398,7 +2881,7 @@ def process_near_real_time_region_dates(
         region: str = "TEST",
         run_start_label: str = None,
         env_path: str = None,
-        analysis_dates: List[pd.Timestamp] = None
+        current_analysis_dates: List[pd.Timestamp] = None
 ):
     """
     Process near-real-time breakpoint analysis for specific dates.
@@ -2420,6 +2903,7 @@ def process_near_real_time_region_dates(
     log_memory_usage("Processing function start")
 
     region_boundaries = get_region_boundaries()
+    logger.debug(f"Analysis dates are {current_analysis_dates}")
 
     start = datetime.datetime.now()
     logger.debug(f"Current time: {datetime.datetime.now()}")
@@ -2478,8 +2962,8 @@ def process_near_real_time_region_dates(
     logger.info(f"Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
 
     # Determine which dates to process
-    if analysis_dates is not None:
-        dates_to_process = analysis_dates
+    if current_analysis_dates is not None:
+        dates_to_process = current_analysis_dates
         logger.info(f"Processing {len(dates_to_process)} explicitly provided dates")
         for d in dates_to_process:
             logger.info(f"  - {d.strftime('%Y-%m-%d')}")
