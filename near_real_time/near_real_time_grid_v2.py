@@ -2394,18 +2394,28 @@ def process_near_real_time_region(region: str = "TEST", run_start_label: str = N
     return True
 
 
-def process_near_real_time_region_dates(region: str = "TEST", run_start_label: str = None, env_path: str = None, analysis_dates: List[pd.Timestamp] = None ):
+def process_near_real_time_region_dates(
+        region: str = "TEST",
+        run_start_label: str = None,
+        env_path: str = None,
+        analysis_dates: List[pd.Timestamp] = None
+):
     """
-    Process near-real-time breakpoint analysis for a specific region.
+    Process near-real-time breakpoint analysis for specific dates.
 
-    This function assumes downloads have already been completed by download_near_real_time_region.
-    It reads from the most_recent_dynamic_world_file (historical data) and any downloaded files,
-    then calculates breakpoints for missing dates.
+    This function assumes downloads have already been completed and merged into the
+    historical NetCDF file. It reads directly from the most recent historical file
+    and calculates breakpoints for the specified dates.
 
     Args:
         region: Region name (e.g., "TEST", "AFRICA", "SOUTH_AMERICA")
         run_start_label: Optional label for tracking runs
         env_path: Optional path to .env file
+        analysis_dates: List of pandas Timestamps to process. If None,
+                       automatically detects missing dates from the historical file.
+
+    Returns:
+        bool: True if processing completed successfully
     """
     log_memory_usage("Processing function start")
 
@@ -2443,8 +2453,6 @@ def process_near_real_time_region_dates(region: str = "TEST", run_start_label: s
         logger.debug(f"Failed to initialize geemap: {e}")
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
-    dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
-    dynamic_world_download_dir.mkdir(exist_ok=True, parents=True)
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
 
     if not all_dynamic_world_files:
@@ -2463,44 +2471,72 @@ def process_near_real_time_region_dates(region: str = "TEST", run_start_label: s
     Y_MIN_START = bounding_box_coords['Y_MIN_START']
     Y_MIN_END = bounding_box_coords['Y_MIN_END']
 
+    # Get the most recent historical file (already contains merged data)
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
-
+    logger.info(f"Using historical NetCDF file: {most_recent_dynamic_world_file}")
     hist_file_size_gb = get_file_size_gb(most_recent_dynamic_world_file)
     logger.info(f"Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
 
-    missing_dates = analysis_dates
-
-    if missing_dates:
-        logger.warning(f"Found {len(missing_dates)} missing dates in historical data")
-        for date in missing_dates:
-            missing_date_string = date.strftime("%Y-%m")
-            logger.warning(f"Missing date: {missing_date_string}")
-        logger.info("Will process breakpoints for missing dates using downloaded data")
+    # Determine which dates to process
+    if analysis_dates is not None:
+        dates_to_process = analysis_dates
+        logger.info(f"Processing {len(dates_to_process)} explicitly provided dates")
+        for d in dates_to_process:
+            logger.info(f"  - {d.strftime('%Y-%m-%d')}")
     else:
-        logger.info("No missing dates found in historical data")
-        logger.info("No processing required")
-        return True
+        # Auto-detect missing dates from the historical file
+        missing_dates = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(
+            most_recent_dynamic_world_file)
+        if not missing_dates:
+            logger.info("No missing dates found in historical file - nothing to process")
+            return True
+        dates_to_process = missing_dates
+        logger.info(f"Processing {len(dates_to_process)} automatically detected missing dates")
+        for d in dates_to_process:
+            logger.info(f"  - {d.strftime('%Y-%m-%d')}")
 
     vector_lake_file = os.environ['vector_lake_file']
     path_lake_vector = vector_lake_file
 
-    # Process each missing date
-    for date in missing_dates:
+    # Load GDF once for all dates
+    gdf = gpd.read_parquet(path_lake_vector)
+    log_memory_usage("After loading lake vectors")
+
+    # Load historical dataset once to get valid IDs
+    logger.info("Loading historical dataset to check valid IDs...")
+    ds_historical_check = xr.open_dataset(most_recent_dynamic_world_file)
+    valid_historical_ids = set(ds_historical_check['id_geohash'].values)
+    ds_historical_check.close()
+    logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
+
+    # Create grid once (same for all dates)
+    bbox_size_lon = 1
+    bbox_size_lat = 1
+    grid = create_longitude_latitude_grid(
+        lon_range=(X_MIN_START, X_MIN_END),
+        lat_range=(Y_MIN_START, Y_MIN_END),
+        bbox_size_lon=bbox_size_lon,
+        bbox_size_lat=bbox_size_lat
+    )
+    logger.info(f'Created grid with {len(grid)} tiles')
+    log_memory_usage("After creating grid")
+
+    # Define expected output columns for empty results
+    expected_columns = [
+        'date', 'water_observed', 'water_predicted', 'water_residual',
+        'water_predicted_lower_90', 'water_predicted_upper_90',
+        'water_historical_mean', 'water_historical_median', 'water_historical_std',
+        'water_historical_min', 'water_historical_max', 'drainage_confidence'
+    ]
+
+    # Process each date
+    for date_idx, date in enumerate(dates_to_process):
         ANALYSIS_DATE = date.strftime("%Y-%m")
+        logger.info(f"\n{'=' * 80}")
+        logger.info(f"Processing date {date_idx + 1}/{len(dates_to_process)}: {ANALYSIS_DATE}")
+        logger.info(f"{'=' * 80}")
 
-        gdf = gpd.read_parquet(path_lake_vector)
-        log_memory_usage("After loading lake vectors")
-
-        # Get most recent historical file
-        most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
-        logger.debug(f"Most recent dynamic world file: {most_recent_dynamic_world_file}")
-
-        bbox_size_lon = 1
-        bbox_size_lat = 1
-        grid = create_longitude_latitude_grid(lon_range=(X_MIN_START, X_MIN_END), lat_range=(Y_MIN_START, Y_MIN_END),
-                                              bbox_size_lon=bbox_size_lon, bbox_size_lat=bbox_size_lat)
-        print('created grid')
-        log_memory_usage("After creating grid")
+        date_start = datetime.datetime.now()
 
         bp = NRTBreakpoint()
 
@@ -2508,38 +2544,19 @@ def process_near_real_time_region_dates(region: str = "TEST", run_start_label: s
         current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
         logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
-        current_download_dir = Path(str(dynamic_world_download_dir), REGION_NAME, f'download_{ANALYSIS_DATE}')
-        if not current_download_dir.exists():
-            logger.warning(f"Download directory {current_download_dir} does not exist. Skipping date {ANALYSIS_DATE}")
-            continue
-
         breaks_list = []
         total = len(grid[:])
-
-        # Load historical dataset once to get valid IDs
-        logger.info("Loading historical dataset to check valid IDs...")
-        ds_historical_check = xr.open_dataset(most_recent_dynamic_world_file)
-        valid_historical_ids = set(ds_historical_check['id_geohash'].values)
-        ds_historical_check.close()
-        logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
-
-        # Define expected output columns for empty results
-        expected_columns = [
-            'date', 'water_observed', 'water_predicted', 'water_residual',
-            'water_predicted_lower_90', 'water_predicted_upper_90',
-            'water_historical_mean', 'water_historical_median', 'water_historical_std',
-            'water_historical_min', 'water_historical_max', 'drainage_confidence'
-        ]
 
         # File for failed breakpoint calculations
         if run_start_label is None:
             run_start_label = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
         current_datetime = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        outfile_breaks_failed_file = current_download_dir / f'grid_tiles_failed_{current_datetime}.txt'
+        outfile_breaks_failed_file = current_breakpoint_dir / f'grid_tiles_failed_{current_datetime}.txt'
 
-        # Run loop
+        # Run loop over grid tiles
         logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
-        for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing breakpoints")):
+
+        for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc=f"Processing {ANALYSIS_DATE}")):
             logger.debug(f"Processing {i}/{total} grid tiles.")
             bbox_west = int(lon)
             bbox_east = int(lon + bbox_size_lon)
@@ -2548,21 +2565,22 @@ def process_near_real_time_region_dates(region: str = "TEST", run_start_label: s
 
             print(f"Processing breakpoints for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
 
-            outfile_download = current_download_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}.nc'
             outfile_breaks = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
 
+            # Skip if breakpoints already calculated
             if outfile_breaks.exists():
                 print(f'Breakpoints already calculated! Skipping {bbox_west} {bbox_south}')
                 breaks_list.append(pd.read_parquet(outfile_breaks))
                 continue
 
-            # Check if downloaded file exists
-            if not outfile_download.exists():
-                print(f'Downloaded file not found for {bbox_west} {bbox_south}. Skipping breakpoint calculation.')
-                continue
-
-            gdf_subset = filter_gdf_by_bbox(gdf=gdf, bbox_west=lon, bbox_east=lon + bbox_size_lon, bbox_south=lat,
-                                            bbox_north=lat + bbox_size_lat)
+            # Get lake IDs for this grid tile
+            gdf_subset = filter_gdf_by_bbox(
+                gdf=gdf,
+                bbox_west=lon,
+                bbox_east=lon + bbox_size_lon,
+                bbox_south=lat,
+                bbox_north=lat + bbox_size_lat
+            )
             n_lakes = len(gdf_subset)
             print('Number of lakes: ', n_lakes)
 
@@ -2585,34 +2603,19 @@ def process_near_real_time_region_dates(region: str = "TEST", run_start_label: s
                     f'NOTE: Filtered {original_count - filtered_count} lakes not found in historical data. Processing {filtered_count} lakes.')
                 gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
 
-            # Load data
+            # ========== PROCESS BREAKPOINTS USING HISTORICAL DATA ONLY ==========
             try:
-                # Load historical data
+                # Load historical data for this tile
                 ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
                 ds_historical_subset = ds_historical.sel(id_geohash=id_list)
                 ds_historical.close()
                 del ds_historical
                 gc.collect()
 
-                # Load downloaded data
-                ds_dl = xr.open_dataset(outfile_download)
-                ds_dl_dates = pd.to_datetime(ds_dl['date'].values).strftime('%Y-%m')
+                # Create dataset and calculate breakpoints
+                dwds = DWDataset(ds_historical_subset)
 
-                # Merge data
-                if ANALYSIS_DATE in ds_dl_dates:
-                    ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
-                    print(f'Merged new data for {ANALYSIS_DATE} with historical record')
-                else:
-                    print(f'WARNING: Downloaded file for {bbox_west} {bbox_south} does not contain {ANALYSIS_DATE}')
-                    ds_merged = ds_historical_subset
-
-                ds_dl.close()
-                del ds_dl
-                gc.collect()
-
-                # Calculate breakpoints
-                dwds = DWDataset(ds_merged)
-
+                # Check if analysis date exists in the dataset
                 if ANALYSIS_DATE not in dwds.dates_:
                     logger.warning(
                         f"Analysis date {ANALYSIS_DATE} not in dataset dates for grid {bbox_west} {bbox_south}")
@@ -2621,6 +2624,7 @@ def process_near_real_time_region_dates(region: str = "TEST", run_start_label: s
                     breaks_list.append(empty_result)
                     print(f'Created empty result for {bbox_west} {bbox_south} - analysis date not in data')
                 else:
+                    # Calculate breakpoints
                     breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
                     breaks.to_parquet(outfile_breaks)
                     breaks_list.append(breaks)
@@ -2628,8 +2632,7 @@ def process_near_real_time_region_dates(region: str = "TEST", run_start_label: s
 
                 # Clean up
                 ds_historical_subset.close()
-                ds_merged.close()
-                del ds_historical_subset, ds_merged
+                del ds_historical_subset
                 gc.collect()
 
             except Exception as e:
@@ -2668,12 +2671,11 @@ def process_near_real_time_region_dates(region: str = "TEST", run_start_label: s
                 empty_result.to_parquet(path_to_joined_file)
                 logger.info(f"Created empty result file for {ANALYSIS_DATE}")
 
-        end = datetime.datetime.now()
-        logger.debug(f"Finished processing date {ANALYSIS_DATE} in {end - start}")
+        date_end = datetime.datetime.now()
+        logger.debug(f"Finished processing date {ANALYSIS_DATE} in {date_end - date_start}")
 
     logger.info(f"Processing completed for region: {REGION_NAME}")
     return True
-
 
 def verify_downloads_complete(
         region: str = "TEST",
