@@ -1,5 +1,5 @@
 from near_real_time.near_real_time_grid_v2 import download_near_real_time_region, download_new_dynamic_world_data, \
-    verify_downloads_complete, merge_near_real_time_region
+    verify_downloads_complete, merge_near_real_time_region, compare_netcdf_files
 from near_real_time_grid import near_real_time_region
 import sys
 from loguru import logger
@@ -35,12 +35,14 @@ def main():
 
     # download_near_real_time_region(region="TEST", run_start_label=start_label)
     verify_downloads_complete(region="TEST", run_start_label=start_label, analysis_dates=analysis_dates)
-    merge_near_real_time_region(region="TEST", run_start_label=start_label, dates_to_merge=analysis_dates)
+    # merge_near_real_time_region(region="TEST", run_start_label=start_label, dates_to_merge=analysis_dates)
     logger.debug(f"Done for test")
 
     new_netcdf_file_path = '/Users/helium/Desktop/dynamic_world/data/historical_data_20260629_104025.nc'
-
-    # near_real_time_region(region='TEST')
+    original_netcdf_file_path = '/Users/helium/Desktop/dynamic_world/data/lakes_dw_V2d.nc'
+    logger.debug(f"Comparing the netcdf files {new_netcdf_file_path} to original {original_netcdf_file_path}")
+    compare_netcdf_files(original_netcdf_file_path, new_netcdf_file_path)
+    logger.debug(f"Comparison finished")
 
 
 if __name__ == "__main__":
