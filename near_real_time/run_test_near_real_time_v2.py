@@ -1,5 +1,5 @@
 from near_real_time.near_real_time_grid_v2 import download_near_real_time_region, download_new_dynamic_world_data, \
-    verify_downloads_complete, merge_near_real_time_region, compare_netcdf_files
+    verify_downloads_complete, merge_near_real_time_region, compare_netcdf_files, process_near_real_time_region
 from near_real_time_grid import near_real_time_region
 import sys
 from loguru import logger
@@ -22,7 +22,7 @@ def main():
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-    original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+    original_most_recent_dynamic_world_file = min(all_dynamic_world_files, key=os.path.getctime)
 
     now = datetime.now()
     start_label = now.strftime("%Y%m%d%H%M%S")
@@ -30,6 +30,8 @@ def main():
     analysis_dates = []
     original_missing_dates = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
     for date_idx, date in enumerate(original_missing_dates):
+        date_type = type(date)
+        print(date_type)
         ANALYSIS_DATE = date.strftime("%Y-%m")
         analysis_dates.append(ANALYSIS_DATE)
 
