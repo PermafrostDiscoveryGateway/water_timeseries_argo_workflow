@@ -82,7 +82,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:19-download-and-process-over-grid-tiles
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:27-create-near-real-time-cron-jobs
       imagePullPolicy: Always
       resources:
         requests:
@@ -223,7 +223,7 @@ spec:
           cd /app
           
           # Use python -u for unbuffered output and capture exit code properly
-          python -u /app/near_real_time/near_real_time_grid.py /data/.env
+          python -u /app/near_real_time/run_test_near_real_time_v2.py /data/.env
           SCRIPT_EXIT_CODE=$?
           
           echo "=== SCRIPT COMPLETED with exit code: $SCRIPT_EXIT_CODE ==="
