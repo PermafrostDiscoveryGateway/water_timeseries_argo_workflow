@@ -41,6 +41,7 @@ def main():
     # download_near_real_time_region_dates(region="TEST", run_start_label=start_label, dates_to_download=expected_dates)
     verify_downloads_complete(region="TEST", run_start_label=start_label, analysis_dates=analysis_dates)
     result = merge_near_real_time_region(region="TEST", run_start_label=start_label, dates_to_merge=analysis_dates)
+    logger.debug(result)
     new_file_path = result['result']
     new_file_path_string = str(new_file_path)
     logger.debug(f"Done for test")
@@ -52,7 +53,7 @@ def main():
     logger.debug(f"Comparison finished")
 
     process_near_real_time_region_dates(region="TEST", current_analysis_dates=original_missing_dates)
-
+    logger.debug(f"Finished processing")
 
 if __name__ == "__main__":
     main()
