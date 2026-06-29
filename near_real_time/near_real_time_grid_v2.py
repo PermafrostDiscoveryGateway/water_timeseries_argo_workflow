@@ -445,6 +445,449 @@ def verify_merged_netcdf(file_path, expected_id_count=None, expected_date_count=
         return {'valid': False, 'error': str(e)}
 
 
+def compare_netcdf_files(
+        file1_path: str,
+        file2_path: str,
+        sample_ids: int = 5,
+        variables_to_check: List[str] = None,
+        verbose: bool = True
+):
+    """
+    Compare two NetCDF files in detail and print the results.
+
+    Args:
+        file1_path: Path to the first NetCDF file (e.g., original)
+        file2_path: Path to the second NetCDF file (e.g., merged)
+        sample_ids: Number of random IDs to sample for detailed comparison
+        variables_to_check: List of variable names to check (if None, checks all)
+        verbose: If True, prints detailed information
+
+    Returns:
+        dict: Comparison results
+    """
+
+    def print_section(title, char='='):
+        """Print a section header"""
+        print(f"\n{char * 80}")
+        print(f"{title}")
+        print(f"{char * 80}")
+
+    print_section("NETCDF FILE COMPARISON")
+    print(f"File 1 (Original): {file1_path}")
+    print(f"File 2 (Merged):    {file2_path}")
+    print(f"Sample IDs to check: {sample_ids}")
+    print(f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Open both files
+    logger.info(f"Opening {file1_path}...")
+    ds1 = xr.open_dataset(file1_path)
+    logger.info(f"Opening {file2_path}...")
+    ds2 = xr.open_dataset(file2_path)
+
+    results = {
+        'file1': file1_path,
+        'file2': file2_path,
+        'dimensions': {},
+        'variables': {},
+        'sample_comparisons': [],
+        'summary': {}
+    }
+
+    # ========== 1. BASIC FILE INFORMATION ==========
+    print_section("1. BASIC FILE INFORMATION")
+
+    # File sizes
+    size1 = get_file_size_gb(file1_path)
+    size2 = get_file_size_gb(file2_path)
+    print(f"File 1 size: {size1:.4f} GB")
+    print(f"File 2 size: {size2:.4f} GB")
+    if size1 > 0:
+        print(f"Size change: {((size2 - size1) / size1) * 100:+.2f}%")
+    results['summary']['file1_size_gb'] = size1
+    results['summary']['file2_size_gb'] = size2
+
+    # ========== 2. DIMENSIONS ==========
+    print_section("2. DIMENSIONS")
+
+    for dim in ds1.dims:
+        dim1_len = len(ds1[dim])
+        dim2_len = len(ds2[dim]) if dim in ds2.dims else None
+
+        print(f"Dimension '{dim}':")
+        print(f"  File 1: {dim1_len}")
+        print(f"  File 2: {dim2_len if dim2_len is not None else 'MISSING'}")
+
+        if dim2_len is not None and dim1_len != dim2_len:
+            diff = dim2_len - dim1_len
+            print(f"  Difference: {diff:+d}")
+            if dim == 'date':
+                # Show which dates were added
+                dates1 = set(pd.to_datetime(ds1[dim].values))
+                dates2 = set(pd.to_datetime(ds2[dim].values))
+                added_dates = dates2 - dates1
+                if added_dates:
+                    print(f"  Added dates ({len(added_dates)}):")
+                    for date in sorted(added_dates):
+                        print(f"    - {date.strftime('%Y-%m-%d')}")
+            elif dim == 'id_geohash':
+                # Show ID count change
+                ids1 = set(ds1[dim].values)
+                ids2 = set(ds2[dim].values)
+                added_ids = ids2 - ids1
+                removed_ids = ids1 - ids2
+                if added_ids:
+                    print(f"  Added IDs: {len(added_ids)}")
+                    # Show a few sample added IDs
+                    sample_added = list(added_ids)[:5]
+                    print(f"    Sample added IDs: {sample_added}")
+                if removed_ids:
+                    print(f"  Removed IDs: {len(removed_ids)}")
+                    sample_removed = list(removed_ids)[:5]
+                    print(f"    Sample removed IDs: {sample_removed}")
+
+        results['dimensions'][dim] = {
+            'file1': dim1_len,
+            'file2': dim2_len,
+            'diff': dim2_len - dim1_len if dim2_len is not None else None
+        }
+
+    # ========== 3. VARIABLES ==========
+    print_section("3. VARIABLES")
+
+    # Check which variables exist in both files
+    vars1 = set(ds1.data_vars)
+    vars2 = set(ds2.data_vars)
+
+    common_vars = vars1 & vars2
+    only_in_1 = vars1 - vars2
+    only_in_2 = vars2 - vars1
+
+    print(f"Variables in File 1: {len(vars1)}")
+    print(f"Variables in File 2: {len(vars2)}")
+    print(f"Common variables: {len(common_vars)}")
+
+    if only_in_1:
+        print(f"Only in File 1: {sorted(only_in_1)}")
+    if only_in_2:
+        print(f"Only in File 2: {sorted(only_in_2)}")
+
+    # Check variable properties
+    print("\nVariable details:")
+    for var in sorted(common_vars):
+        print(f"\n  Variable '{var}':")
+
+        # Data types
+        dtype1 = ds1[var].dtype
+        dtype2 = ds2[var].dtype
+        print(f"    dtype: {dtype1} (File 1) vs {dtype2} (File 2)")
+        if dtype1 != dtype2:
+            print(f"    ⚠️  Data type mismatch!")
+
+        # Shapes
+        shape1 = ds1[var].shape
+        shape2 = ds2[var].shape
+        print(f"    shape: {shape1} (File 1) vs {shape2} (File 2)")
+        if shape1 != shape2:
+            print(f"    ⚠️  Shape mismatch!")
+
+        # Encoding/compression
+        encoding1 = ds1[var].encoding
+        encoding2 = ds2[var].encoding
+
+        has_zlib1 = encoding1.get('zlib', False)
+        has_zlib2 = encoding2.get('zlib', False)
+        complevel1 = encoding1.get('complevel', 0)
+        complevel2 = encoding2.get('complevel', 0)
+        shuffle1 = encoding1.get('shuffle', False)
+        shuffle2 = encoding2.get('shuffle', False)
+        chunksizes1 = encoding1.get('chunksizes', None)
+        chunksizes2 = encoding2.get('chunksizes', None)
+
+        print(f"    compression: zlib={has_zlib1}, level={complevel1} (File 1)")
+        print(f"                zlib={has_zlib2}, level={complevel2} (File 2)")
+
+        if has_zlib1 != has_zlib2 or complevel1 != complevel2:
+            print(f"    ⚠️  Compression settings differ!")
+
+        # Chunksizes
+        if chunksizes1 and chunksizes2:
+            print(f"    chunksizes: {chunksizes1} (File 1) vs {chunksizes2} (File 2)")
+        elif chunksizes1:
+            print(f"    chunksizes: {chunksizes1} (File 1) vs None (File 2)")
+        elif chunksizes2:
+            print(f"    chunksizes: None (File 1) vs {chunksizes2} (File 2)")
+
+        # NaN counts (checking a few values)
+        try:
+            data1 = ds1[var].values
+            data2 = ds2[var].values
+            nan1 = np.isnan(data1).sum() if np.issubdtype(data1.dtype, np.number) else 0
+            nan2 = np.isnan(data2).sum() if np.issubdtype(data2.dtype, np.number) else 0
+
+            # Only show for numeric data
+            if np.issubdtype(data1.dtype, np.number):
+                min1, max1 = np.nanmin(data1), np.nanmax(data1)
+                min2, max2 = np.nanmin(data2), np.nanmax(data2)
+                mean1, std1 = np.nanmean(data1), np.nanstd(data1)
+                mean2, std2 = np.nanmean(data2), np.nanstd(data2)
+
+                print(f"    stats (File 1): min={min1:.4f}, max={max1:.4f}, mean={mean1:.4f}, std={std1:.4f}")
+                print(f"    stats (File 2): min={min2:.4f}, max={max2:.4f}, mean={mean2:.4f}, std={std2:.4f}")
+                print(f"    NaN count: {nan1} (File 1) vs {nan2} (File 2)")
+
+                # Check if stats are similar
+                if abs(mean1 - mean2) > 0.01 * abs(mean1):
+                    print(f"    ⚠️  Mean values differ significantly!")
+        except Exception as e:
+            print(f"    Could not compute stats: {e}")
+
+        results['variables'][var] = {
+            'dtype': {'file1': str(dtype1), 'file2': str(dtype2)},
+            'shape': {'file1': shape1, 'file2': shape2},
+            'encoding': {'file1': encoding1, 'file2': encoding2}
+        }
+
+    # ========== 4. SAMPLE ID COMPARISON ==========
+    print_section(f"4. SAMPLE ID COMPARISON (sampling {sample_ids} random IDs)")
+
+    # Get common IDs
+    ids1 = set(ds1['id_geohash'].values)
+    ids2 = set(ds2['id_geohash'].values)
+    common_ids = ids1 & ids2
+
+    if not common_ids:
+        print("⚠️  No common IDs found between the two files!")
+    else:
+        # Sample random IDs
+        sample_id_list = list(np.random.choice(list(common_ids), min(sample_ids, len(common_ids)), replace=False))
+
+        for sample_id in sample_id_list:
+            print(f"\n  ID: {sample_id}")
+            results['sample_comparisons'].append({'id': sample_id})
+
+            # Get data for this ID
+            data1 = ds1.sel(id_geohash=sample_id)
+            data2 = ds2.sel(id_geohash=sample_id)
+
+            # Check dimensions
+            print(f"    dates: {len(data1['date'])} (File 1) vs {len(data2['date'])} (File 2)")
+
+            # Check if dates match
+            dates1 = set(pd.to_datetime(data1['date'].values))
+            dates2 = set(pd.to_datetime(data2['date'].values))
+            common_dates = dates1 & dates2
+            added_dates = dates2 - dates1
+
+            print(f"    common dates: {len(common_dates)}")
+            if added_dates:
+                print(f"    added dates: {len(added_dates)}")
+                for date in sorted(added_dates)[:3]:
+                    print(f"      - {date.strftime('%Y-%m-%d')}")
+
+            # Check variable values
+            all_match = True
+            for var in common_vars:
+                if var in data1 and var in data2:
+                    try:
+                        # Get values for common dates
+                        if len(common_dates) > 0:
+                            common_dates_list = sorted(common_dates)
+                            vals1 = data1[var].sel(date=pd.to_datetime(list(common_dates_list))).values
+                            vals2 = data2[var].sel(date=pd.to_datetime(list(common_dates_list))).values
+
+                            # Check if values match (allow small floating point differences)
+                            if np.issubdtype(vals1.dtype, np.number):
+                                if np.allclose(vals1, vals2, rtol=1e-6, atol=1e-6):
+                                    print(f"    {var}: ✅ matches on common dates")
+                                else:
+                                    max_diff = np.max(np.abs(vals1 - vals2))
+                                    print(f"    {var}: ⚠️  DIFFERS (max diff: {max_diff:.6f})")
+                                    all_match = False
+                            else:
+                                # For non-numeric data, check exact equality
+                                if np.array_equal(vals1, vals2):
+                                    print(f"    {var}: ✅ matches on common dates")
+                                else:
+                                    print(f"    {var}: ⚠️  DIFFERS")
+                                    all_match = False
+                    except Exception as e:
+                        print(f"    {var}: Could not compare - {e}")
+
+            results['sample_comparisons'][-1]['all_match'] = all_match
+
+    # ========== 5. NEW DATA VERIFICATION ==========
+    print_section("5. NEW DATA VERIFICATION")
+
+    # Check if new IDs were added
+    if len(ids2) > len(ids1):
+        new_ids = ids2 - ids1
+        print(f"✅ File 2 has {len(new_ids)} new IDs that weren't in File 1")
+        if len(new_ids) <= 10:
+            print(f"   New IDs: {sorted(new_ids)}")
+        else:
+            print(f"   Sample of new IDs: {list(new_ids)[:10]}...")
+
+        # Verify that new IDs have data for the expected dates
+        for new_id in list(new_ids)[:min(3, len(new_ids))]:
+            new_data = ds2.sel(id_geohash=new_id)
+            date_count = len(new_data['date'])
+            print(f"   ID {new_id}: has {date_count} dates")
+
+        results['summary']['new_ids_added'] = len(new_ids)
+    elif len(ids2) == len(ids1):
+        print("File 2 has the same number of IDs as File 1")
+        # But check if dates were added
+        dates1 = set(pd.to_datetime(ds1['date'].values))
+        dates2 = set(pd.to_datetime(ds2['date'].values))
+        if len(dates2) > len(dates1):
+            added_dates = dates2 - dates1
+            print(f"✅ New dates added: {len(added_dates)}")
+            for date in sorted(added_dates)[:5]:
+                print(f"   - {date.strftime('%Y-%m-%d')}")
+            results['summary']['new_dates_added'] = len(added_dates)
+        else:
+            print("No new IDs or dates were added - files may be identical")
+    else:
+        removed_ids = ids1 - ids2
+        print(f"⚠️  File 2 has FEWER IDs than File 1 ({len(removed_ids)} removed)")
+        results['summary']['ids_removed'] = len(removed_ids)
+
+    # ========== 6. FINAL SUMMARY ==========
+    print_section("6. SUMMARY")
+
+    # Determine if the merge was successful
+    is_successful = True
+    issues = []
+
+    # Check dimensions
+    for dim, dim_info in results['dimensions'].items():
+        if dim_info['file2'] is None:
+            is_successful = False
+            issues.append(f"Dimension '{dim}' missing in File 2")
+        elif dim_info['file1'] != dim_info['file2']:
+            if dim == 'date':
+                # Date dimension increasing is expected
+                if dim_info['file2'] > dim_info['file1']:
+                    print(f"✅ Date dimension increased by {dim_info['diff']} (expected for NRT update)")
+                else:
+                    is_successful = False
+                    issues.append(f"Date dimension decreased unexpectedly")
+            elif dim == 'id_geohash':
+                # ID dimension changing is expected
+                if dim_info['file2'] >= dim_info['file1']:
+                    print(f"✅ ID dimension has {dim_info['diff']} more IDs (expected)")
+                else:
+                    is_successful = False
+                    issues.append(f"ID dimension decreased unexpectedly")
+            else:
+                is_successful = False
+                issues.append(f"Dimension '{dim}' changed from {dim_info['file1']} to {dim_info['file2']}")
+
+    # Check if original IDs were preserved
+    missing_original_ids = ids1 - ids2
+    if missing_original_ids:
+        print(f"⚠️  {len(missing_original_ids)} original IDs are missing from the new file!")
+        is_successful = False
+        issues.append(f"Missing original IDs: {len(missing_original_ids)}")
+    else:
+        print("✅ All original IDs are preserved in the new file")
+
+    # Check if any variables were lost
+    missing_vars = vars1 - vars2
+    if missing_vars:
+        print(f"⚠️  Variables missing in File 2: {sorted(missing_vars)}")
+        is_successful = False
+        issues.append(f"Missing variables: {sorted(missing_vars)}")
+    else:
+        print("✅ All variables are preserved in the new file")
+
+    # Check compression
+    compression_changed = False
+    for var in common_vars:
+        enc1 = ds1[var].encoding
+        enc2 = ds2[var].encoding
+        if enc1.get('zlib', False) != enc2.get('zlib', False):
+            compression_changed = True
+            break
+    if compression_changed:
+        print("✅ Compression settings were updated (improved)")
+    else:
+        print("ℹ️  Compression settings unchanged")
+
+    # Final verdict
+    print_section("FINAL VERDICT", '=')
+    if is_successful:
+        print("✅ MERGE SUCCESSFUL - All checks passed!")
+        print(f"   - Original file: {size1:.2f} GB")
+        print(f"   - New file: {size2:.2f} GB")
+        print(f"   - Size change: {((size2 - size1) / size1) * 100:+.1f}%")
+
+        # Calculate compression ratio
+        if size1 > 0:
+            compression_ratio = size1 / size2
+            if compression_ratio > 1:
+                print(f"   - Compression ratio: {compression_ratio:.2f}x (new file is smaller)")
+            else:
+                print(f"   - Compression ratio: {compression_ratio:.2f}x (new file is larger)")
+    else:
+        print("❌ MERGE HAS ISSUES:")
+        for issue in issues:
+            print(f"   - {issue}")
+
+    results['summary']['successful'] = is_successful
+    results['summary']['issues'] = issues
+
+    # Close datasets
+    ds1.close()
+    ds2.close()
+
+    return results
+
+
+def print_comparison_summary(comparison_results):
+    """
+    Print a concise summary of the comparison results.
+    """
+    print("\n" + "=" * 80)
+    print("QUICK SUMMARY")
+    print("=" * 80)
+
+    # File sizes
+    size1 = comparison_results['summary']['file1_size_gb']
+    size2 = comparison_results['summary']['file2_size_gb']
+    print(f"File sizes: {size1:.4f} GB → {size2:.4f} GB ({(size2 / size1 - 1) * 100:+.1f}%)")
+
+    # Dimensions
+    print("\nDimensions:")
+    for dim, info in comparison_results['dimensions'].items():
+        diff = info['diff'] if info['diff'] is not None else '?'
+        print(f"  {dim}: {info['file1']} → {info['file2']} ({diff:+d})")
+
+    # Variables
+    print(f"\nVariables: {len(comparison_results['variables'])} common variables")
+
+    # Sample comparison
+    if comparison_results['sample_comparisons']:
+        all_match = all(s.get('all_match', False) for s in comparison_results['sample_comparisons'])
+        print(
+            f"\nSample IDs ({len(comparison_results['sample_comparisons'])} sampled): {'✅ All match' if all_match else '⚠️ Some mismatches found'}")
+
+    # New data
+    new_ids = comparison_results['summary'].get('new_ids_added', 0)
+    new_dates = comparison_results['summary'].get('new_dates_added', 0)
+    if new_ids > 0:
+        print(f"\nNew IDs added: {new_ids}")
+    if new_dates > 0:
+        print(f"New dates added: {new_dates}")
+
+    # Success status
+    if comparison_results['summary']['successful']:
+        print("\n✅ Overall: MERGE SUCCESSFUL")
+    else:
+        print("\n❌ Overall: MERGE HAS ISSUES")
+        for issue in comparison_results['summary']['issues']:
+            print(f"  - {issue}")
+
 def near_real_time_region(region: str = "TEST", env_path: str = None):
     """
     Run near-real-time breakpoint analysis for a specific region.
