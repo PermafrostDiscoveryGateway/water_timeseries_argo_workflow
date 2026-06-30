@@ -39,6 +39,8 @@ def main():
 
     expected_dates = generate_expected_dates(start_year=2026)
 
+    dates_to_run = generate_expected_dates(start_year=2026)
+
     download_near_real_time_region_dates(region="CANADA", run_start_label=start_label, dates_to_download=expected_dates)
     verify_downloads_complete(region="CANADA", run_start_label=start_label, analysis_dates=analysis_dates)
     result = merge_near_real_time_region(region="CANADA", run_start_label=start_label, dates_to_merge=analysis_dates)
