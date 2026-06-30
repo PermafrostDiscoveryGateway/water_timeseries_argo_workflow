@@ -37,7 +37,7 @@ def main():
         ANALYSIS_DATE = date.strftime("%Y-%m")
         analysis_dates.append(ANALYSIS_DATE)
 
-    expected_dates = generate_expected_dates(start_year=2025)
+    expected_dates = generate_expected_dates(start_year=2026)
 
     download_near_real_time_region_dates(region="CANADA", run_start_label=start_label, dates_to_download=expected_dates)
     verify_downloads_complete(region="CANADA", run_start_label=start_label, analysis_dates=analysis_dates)

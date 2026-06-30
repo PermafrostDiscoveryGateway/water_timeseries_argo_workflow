@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  name: near-real-time-autopilot
+  name: near-real-time-autopilot-canada
   namespace: argo
   annotations:
     workflows.argoproj.io/pod-keep: "OnCompletion"
