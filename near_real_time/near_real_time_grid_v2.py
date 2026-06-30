@@ -3162,6 +3162,374 @@ def process_near_real_time_region_dates(
     logger.info(f"Processing completed for region: {REGION_NAME}")
     return True
 
+
+def process_near_real_time_region_dates_zarr(
+        region: str = "TEST",
+        run_start_label: str = None,
+        env_path: str = None,
+        current_analysis_dates: List[pd.Timestamp] = None,
+        zarr_compression_level: int = 4
+):
+    """
+    Process near-real-time breakpoint analysis for specific dates and save to Zarr.
+
+    This function assumes downloads have already been completed and merged into the
+    historical NetCDF file. It reads directly from the most recent historical file
+    and calculates breakpoints for the specified dates, saving results as Zarr datasets
+    (one per date).
+
+    Args:
+        region: Region name (e.g., "TEST", "AFRICA", "SOUTH_AMERICA")
+        run_start_label: Optional label for tracking runs
+        env_path: Optional path to .env file
+        current_analysis_dates: List of pandas Timestamps to process. If None,
+                               automatically detects missing dates from the historical file.
+        zarr_compression_level: Compression level for Zarr (0-9, higher = more compression)
+
+    Returns:
+        bool: True if processing completed successfully
+    """
+    log_memory_usage("Processing function start")
+
+    region_boundaries = get_region_boundaries()
+    logger.debug(f"Analysis dates are {current_analysis_dates}")
+
+    start = datetime.datetime.now()
+    logger.debug(f"Current time: {datetime.datetime.now()}")
+
+    # Load environment variables
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
+
+    REGION_NAME = region
+
+    output_dir = os.environ['output_dir']
+    output_dir = os.path.join(output_dir, REGION_NAME)
+    project = os.environ['project']
+    EE_PROJECT_ID = project
+    os.environ["EE_PROJECT"] = EE_PROJECT_ID
+
+    try:
+        ee.Initialize(project=EE_PROJECT_ID)
+        logger.debug("Earth engine successfully initialized")
+    except Exception as e:
+        logger.debug(f"Failed to initialize earth engine: {e}")
+
+    try:
+        geemap.ee_initialize(project=EE_PROJECT_ID)
+        logger.debug("Initialized geemap")
+    except Exception as e:
+        logger.debug(f"Failed to initialize geemap: {e}")
+
+    dynamic_world_data_dir = os.environ['dynamic_world_data']
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+
+    if not all_dynamic_world_files:
+        logger.error(f"No .nc files found in {dynamic_world_data_dir}")
+        return False
+
+    logger.debug(f"Region name is {REGION_NAME}")
+
+    bounding_box_coords = region_boundaries[REGION_NAME]
+
+    logger.debug(f"Bounding box coordinates are {bounding_box_coords}")
+    time.sleep(15)
+
+    X_MIN_START = bounding_box_coords['X_MIN_START']
+    X_MIN_END = bounding_box_coords['X_MIN_END']
+    Y_MIN_START = bounding_box_coords['Y_MIN_START']
+    Y_MIN_END = bounding_box_coords['Y_MIN_END']
+
+    # Get the most recent historical file (already contains merged data)
+    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+    logger.info(f"Using historical NetCDF file: {most_recent_dynamic_world_file}")
+    hist_file_size_gb = get_file_size_gb(most_recent_dynamic_world_file)
+    logger.info(f"Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
+
+    # Determine which dates to process
+    if current_analysis_dates is not None:
+        dates_to_process = current_analysis_dates
+        logger.info(f"Processing {len(dates_to_process)} explicitly provided dates")
+        for d in dates_to_process:
+            logger.info(f"  - {d.strftime('%Y-%m-%d')}")
+    else:
+        # Auto-detect missing dates from the historical file
+        missing_dates = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(
+            most_recent_dynamic_world_file)
+        if not missing_dates:
+            logger.info("No missing dates found in historical file - nothing to process")
+            return True
+        dates_to_process = missing_dates
+        logger.info(f"Processing {len(dates_to_process)} automatically detected missing dates")
+        for d in dates_to_process:
+            logger.info(f"  - {d.strftime('%Y-%m-%d')}")
+
+    vector_lake_file = os.environ['vector_lake_file']
+    path_lake_vector = vector_lake_file
+
+    # Load GDF once for all dates
+    gdf = gpd.read_parquet(path_lake_vector)
+    log_memory_usage("After loading lake vectors")
+
+    # Load historical dataset once to get valid IDs
+    logger.info("Loading historical dataset to check valid IDs...")
+    ds_historical_check = xr.open_dataset(most_recent_dynamic_world_file)
+    valid_historical_ids = set(ds_historical_check['id_geohash'].values)
+    ds_historical_check.close()
+    logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
+
+    # Create grid once (same for all dates)
+    bbox_size_lon = 1
+    bbox_size_lat = 1
+    grid = create_longitude_latitude_grid(
+        lon_range=(X_MIN_START, X_MIN_END),
+        lat_range=(Y_MIN_START, Y_MIN_END),
+        bbox_size_lon=bbox_size_lon,
+        bbox_size_lat=bbox_size_lat
+    )
+    logger.info(f'Created grid with {len(grid)} tiles')
+    log_memory_usage("After creating grid")
+
+    # Define expected output columns for empty results
+    expected_columns = [
+        'date', 'water_observed', 'water_predicted', 'water_residual',
+        'water_predicted_lower_90', 'water_predicted_upper_90',
+        'water_historical_mean', 'water_historical_median', 'water_historical_std',
+        'water_historical_min', 'water_historical_max', 'drainage_confidence'
+    ]
+
+    # Process each date
+    for date_idx, date in enumerate(dates_to_process):
+        ANALYSIS_DATE = date.strftime("%Y-%m")
+        logger.info(f"\n{'=' * 80}")
+        logger.info(f"Processing date {date_idx + 1}/{len(dates_to_process)}: {ANALYSIS_DATE}")
+        logger.info(f"{'=' * 80}")
+
+        date_start = datetime.datetime.now()
+
+        bp = NRTBreakpoint()
+
+        # Create Zarr output directory
+        zarr_output_dir = Path(output_dir) / 'breakpoint_zarr'
+        zarr_output_dir.mkdir(exist_ok=True, parents=True)
+
+        # Zarr file path for this date
+        zarr_path = zarr_output_dir / f'breakpoints_{ANALYSIS_DATE}.zarr'
+
+        # Also keep a backup Parquet file for compatibility if needed
+        current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
+        current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
+
+        logger.debug(f"Zarr output path: {zarr_path}")
+        logger.debug(f"Parquet backup directory: {current_breakpoint_dir}")
+
+        breaks_list = []
+        total = len(grid[:])
+
+        # File for failed breakpoint calculations
+        if run_start_label is None:
+            run_start_label = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        current_datetime = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        outfile_breaks_failed_file = current_breakpoint_dir / f'grid_tiles_failed_{current_datetime}.txt'
+
+        # Run loop over grid tiles
+        logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
+
+        for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc=f"Processing {ANALYSIS_DATE}")):
+            logger.debug(f"Processing {i}/{total} grid tiles.")
+            bbox_west = int(lon)
+            bbox_east = int(lon + bbox_size_lon)
+            bbox_south = int(lat)
+            bbox_north = int(lat + bbox_size_lat)
+
+            print(f"Processing breakpoints for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
+
+            outfile_breaks_parquet = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
+
+            # Skip if breakpoints already calculated
+            if outfile_breaks_parquet.exists():
+                print(f'Breakpoints already calculated! Skipping {bbox_west} {bbox_south}')
+                breaks_list.append(pd.read_parquet(outfile_breaks_parquet))
+                continue
+
+            # Get lake IDs for this grid tile
+            gdf_subset = filter_gdf_by_bbox(
+                gdf=gdf,
+                bbox_west=lon,
+                bbox_east=lon + bbox_size_lon,
+                bbox_south=lat,
+                bbox_north=lat + bbox_size_lat
+            )
+            n_lakes = len(gdf_subset)
+            print('Number of lakes: ', n_lakes)
+
+            id_list = gdf_subset['id_geohash'].values.tolist()
+            if n_lakes == 0:
+                print(f'No lakes for grid {bbox_west} {bbox_south}. Skipping!')
+                continue
+
+            # Filter IDs to only those that exist in historical data
+            original_count = len(id_list)
+            id_list = [id_val for id_val in id_list if id_val in valid_historical_ids]
+            filtered_count = len(id_list)
+
+            if filtered_count == 0:
+                print(
+                    f'WARNING: No valid historical IDs for grid {bbox_west} {bbox_south} (had {original_count} lakes, none in historical data). Skipping!')
+                continue
+            elif filtered_count < original_count:
+                print(
+                    f'NOTE: Filtered {original_count - filtered_count} lakes not found in historical data. Processing {filtered_count} lakes.')
+                gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
+
+            # ========== PROCESS BREAKPOINTS USING HISTORICAL DATA ONLY ==========
+            try:
+                # Load historical data for this tile
+                ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
+                ds_historical_subset = ds_historical.sel(id_geohash=id_list)
+                ds_historical.close()
+                del ds_historical
+                gc.collect()
+
+                # Create dataset and calculate breakpoints
+                dwds = DWDataset(ds_historical_subset)
+
+                # Check if analysis date exists in the dataset
+                if ANALYSIS_DATE not in dwds.dates_:
+                    logger.warning(
+                        f"Analysis date {ANALYSIS_DATE} not in dataset dates for grid {bbox_west} {bbox_south}")
+                    empty_result = pd.DataFrame(columns=expected_columns)
+                    empty_result.to_parquet(outfile_breaks_parquet)
+                    breaks_list.append(empty_result)
+                    print(f'Created empty result for {bbox_west} {bbox_south} - analysis date not in data')
+                else:
+                    # Calculate breakpoints
+                    breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
+                    breaks.to_parquet(outfile_breaks_parquet)
+                    breaks_list.append(breaks)
+                    print(f'Successfully calculated breakpoints for {bbox_west} {bbox_south}')
+
+                # Clean up
+                ds_historical_subset.close()
+                del ds_historical_subset
+                gc.collect()
+
+            except Exception as e:
+                logger.error(f"Error processing breakpoints for {bbox_west} {bbox_south}: {e}")
+                with open(outfile_breaks_failed_file, 'a') as f:
+                    f.write(str(outfile_breaks_parquet) + '\n')
+                continue
+
+            # Periodic save to Zarr (every 10 tiles)
+            if len(breaks_list) >= 10:
+                logger.info(f"Saving intermediate results to Zarr...")
+                non_empty_breaks = [df for df in breaks_list if not df.empty]
+                if non_empty_breaks:
+                    breaks_merged = pd.concat(non_empty_breaks, ignore_index=True)
+                    joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+
+                    # Convert to xarray and save as Zarr
+                    ds_breaks = joined.set_index('id_geohash').to_xarray()
+
+                    # Add attributes
+                    ds_breaks.attrs.update({
+                        'region': REGION_NAME,
+                        'analysis_date': ANALYSIS_DATE,
+                        'created_at': datetime.datetime.now().isoformat(),
+                        'compression_level': zarr_compression_level,
+                        'partial': True
+                    })
+
+                    # Configure Zarr encoding with compression
+                    encoding = {}
+                    for var_name in ds_breaks.data_vars:
+                        encoding[var_name] = {
+                            'compressor': zarr.Blosc(cname='zstd', clevel=zarr_compression_level, shuffle=2)
+                        }
+
+                    # Save to Zarr (overwrite partial)
+                    ds_breaks.to_zarr(zarr_path, mode='w', encoding=encoding)
+                    logger.info(f"Partial Zarr saved to {zarr_path}")
+
+                else:
+                    logger.warning("No non-empty breakpoint results to save to Zarr")
+                breaks_list = []
+                gc.collect()
+
+        # Final save for this date to Zarr
+        if breaks_list:
+            non_empty_breaks = [df for df in breaks_list if not df.empty]
+            if non_empty_breaks:
+                breaks_merged = pd.concat(non_empty_breaks, ignore_index=True)
+                joined = gdf.set_index('id_geohash').join(breaks_merged, how='inner').reset_index()
+
+                # Convert to xarray
+                ds_breaks = joined.set_index('id_geohash').to_xarray()
+
+                # Add attributes
+                ds_breaks.attrs.update({
+                    'region': REGION_NAME,
+                    'analysis_date': ANALYSIS_DATE,
+                    'created_at': datetime.datetime.now().isoformat(),
+                    'compression_level': zarr_compression_level,
+                    'complete': True
+                })
+
+                # Configure Zarr encoding with compression
+                encoding = {}
+                for var_name in ds_breaks.data_vars:
+                    if 'drainage_confidence' in var_name:
+                        # Use integer compression for confidence values
+                        encoding[var_name] = {
+                            'compressor': zarr.Blosc(cname='zstd', clevel=zarr_compression_level, shuffle=1),
+                            'dtype': 'int32'
+                        }
+                    else:
+                        encoding[var_name] = {
+                            'compressor': zarr.Blosc(cname='zstd', clevel=zarr_compression_level, shuffle=2)
+                        }
+
+                # Save to Zarr
+                ds_breaks.to_zarr(zarr_path, mode='w', encoding=encoding)
+
+                # Also save a copy as Parquet for backward compatibility
+                path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+                joined.to_parquet(path_to_joined_file)
+                logger.info(f"Final Zarr saved to {zarr_path}")
+                logger.info(f"Final Parquet backup saved to {path_to_joined_file}")
+
+                # Log Zarr file size
+                zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
+                logger.info(f"Zarr file size: {zarr_size_gb:.2f} GB")
+
+            else:
+                logger.warning(f"No valid breakpoint results found for date {ANALYSIS_DATE}")
+                empty_result = pd.DataFrame(columns=expected_columns)
+                path_to_joined_file = current_breakpoint_dir / f'drain_{ANALYSIS_DATE}.parquet'
+                empty_result.to_parquet(path_to_joined_file)
+
+                # Create empty Zarr dataset too
+                empty_ds = empty_result.to_xarray()
+                empty_ds.attrs.update({
+                    'region': REGION_NAME,
+                    'analysis_date': ANALYSIS_DATE,
+                    'created_at': datetime.datetime.now().isoformat(),
+                    'complete': False,
+                    'empty': True
+                })
+                empty_ds.to_zarr(zarr_path, mode='w')
+                logger.info(f"Created empty Zarr file for {ANALYSIS_DATE}")
+
+        date_end = datetime.datetime.now()
+        logger.debug(f"Finished processing date {ANALYSIS_DATE} in {date_end - date_start}")
+
+    logger.info(f"Processing completed for region: {REGION_NAME}")
+    return True
+
 def verify_downloads_complete(
         region: str = "TEST",
         analysis_dates: List[str] = None,
