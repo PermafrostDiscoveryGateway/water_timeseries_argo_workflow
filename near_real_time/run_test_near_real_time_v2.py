@@ -38,7 +38,7 @@ def main():
 
     expected_dates = generate_expected_dates(start_year=2025)
 
-    # download_near_real_time_region_dates(region="TEST", run_start_label=start_label, dates_to_download=expected_dates)
+    download_near_real_time_region_dates(region="TEST", run_start_label=start_label, dates_to_download=expected_dates)
     verify_downloads_complete(region="TEST", run_start_label=start_label, analysis_dates=analysis_dates)
     result = merge_near_real_time_region(region="TEST", run_start_label=start_label, dates_to_merge=analysis_dates)
     logger.debug(result)
