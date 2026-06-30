@@ -24,6 +24,7 @@ def main():
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     original_most_recent_dynamic_world_file = min(all_dynamic_world_files, key=os.path.getctime)
+    logger.debug(f"Original most recent dynamic world file: {original_most_recent_dynamic_world_file}")
 
     now = datetime.now()
     start_label = now.strftime("%Y%m%d%H%M%S")
