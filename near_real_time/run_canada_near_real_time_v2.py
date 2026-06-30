@@ -42,7 +42,6 @@ def main():
     download_near_real_time_region_dates(region="CANADA", run_start_label=start_label, dates_to_download=expected_dates)
     verify_downloads_complete(region="CANADA", run_start_label=start_label, analysis_dates=analysis_dates)
     result = merge_near_real_time_region(region="CANADA", run_start_label=start_label, dates_to_merge=analysis_dates)
-    logger.debug(result)
     if result is not None and 'result' in result:
         new_file_path = result['result']
         new_file_path_string = str(new_file_path)
