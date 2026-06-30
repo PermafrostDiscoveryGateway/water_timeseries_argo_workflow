@@ -5,7 +5,7 @@ import numpy as np
 import sys
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-
+import zarr
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
