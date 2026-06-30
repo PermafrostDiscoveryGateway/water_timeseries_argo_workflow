@@ -2006,6 +2006,9 @@ def download_near_real_time_region_dates(
     This function ONLY handles downloading - no merging is performed.
     Downloads are saved to the download directory for later merging.
 
+    Downloads are skipped only if the file already exists AND has content (> 0 bytes).
+    Empty or corrupted files will be overwritten.
+
     Args:
         region: Region name (e.g., "TEST", "AFRICA", "SOUTH_AMERICA")
         run_start_label: Optional label for tracking runs
@@ -2054,11 +2057,6 @@ def download_near_real_time_region_dates(
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
     dynamic_world_download_dir.mkdir(exist_ok=True, parents=True)
-    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-
-    if not all_dynamic_world_files:
-        logger.error(f"No .nc files found in {dynamic_world_data_dir}")
-        return {'success': False, 'error': 'No .nc files found'}
 
     logger.debug(f"Region name is {REGION_NAME}")
 
@@ -2072,52 +2070,22 @@ def download_near_real_time_region_dates(
     Y_MIN_START = bounding_box_coords['Y_MIN_START']
     Y_MIN_END = bounding_box_coords['Y_MIN_END']
 
-    # Get the original historical file
-    original_historical_file = max(all_dynamic_world_files, key=os.path.getctime)
-
-    hist_file_size_gb = get_file_size_gb(original_historical_file)
-    logger.info(f"Original Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
-
     # ========== DETERMINE WHICH DATES TO DOWNLOAD ==========
     if dates_to_download is not None:
         # Use explicitly provided dates
-        all_dates_to_process = dates_to_download
-        logger.info(f"Processing {len(all_dates_to_process)} explicitly provided dates")
-        for d in all_dates_to_process:
+        dates_to_download = dates_to_download
+        logger.info(f"Processing {len(dates_to_download)} explicitly provided dates")
+        for d in dates_to_download:
             logger.info(f"  - {d.strftime('%Y-%m-%d')}")
     else:
         # Generate expected dates from 2015 to present for June-September
-        all_dates_to_process = generate_expected_dates(start_year=2015)
-        logger.info(f"Generated {len(all_dates_to_process)} expected dates from 2015 to present")
+        dates_to_download = generate_expected_dates(start_year=2015)
+        logger.info(f"Generated {len(dates_to_download)} expected dates from 2015 to present")
         logger.info("Months included: June, July, August, September")
 
-    if not all_dates_to_process:
+    if not dates_to_download:
         logger.info("No dates to process")
         return {'success': True, 'dates_processed': [], 'message': 'No dates to process'}
-
-    # ========== CHECK WHICH DATES ARE ALREADY IN THE HISTORICAL FILE ==========
-    logger.info("Checking which dates already exist in the historical file...")
-    ds_check = xr.open_dataset(original_historical_file)
-    existing_dates = set(pd.to_datetime(ds_check['date'].values))
-    ds_check.close()
-    logger.info(f"Historical file has {len(existing_dates)} existing dates")
-
-    # Filter to only dates that are missing from the historical file
-    dates_to_download = [d for d in all_dates_to_process if d not in existing_dates]
-
-    if not dates_to_download:
-        logger.info("All expected dates already exist in the historical file. No downloads needed.")
-        return {
-            'success': True,
-            'dates_processed': [],
-            'message': 'All dates already exist in historical file',
-            'all_expected_dates': [d.strftime("%Y-%m") for d in all_dates_to_process],
-            'existing_dates': [d.strftime("%Y-%m") for d in existing_dates]
-        }
-
-    logger.info(f"Found {len(dates_to_download)} dates to download")
-    for d in dates_to_download:
-        logger.info(f"  - {d.strftime('%Y-%m-%d')}")
 
     vector_lake_file = os.environ['vector_lake_file']
     path_lake_vector = vector_lake_file
@@ -2127,6 +2095,13 @@ def download_near_real_time_region_dates(
     overall_success = True
 
     # ========== LOAD ORIGINAL VALID IDs ONCE ==========
+    # Get the most recent historical file to get valid IDs
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    if not all_dynamic_world_files:
+        logger.error(f"No .nc files found in {dynamic_world_data_dir}")
+        return {'success': False, 'error': 'No .nc files found'}
+
+    original_historical_file = max(all_dynamic_world_files, key=os.path.getctime)
     logger.info("Loading original historical dataset to get valid IDs...")
     ds_original = xr.open_dataset(original_historical_file)
     original_valid_ids = set(ds_original['id_geohash'].values)
@@ -2155,6 +2130,7 @@ def download_near_real_time_region_dates(
             'success_bbox_downloads': 0,
             'failed_bbox_downloads': 0,
             'skipped_bbox_downloads': 0,
+            'overwritten_bbox_downloads': 0,
             'expected_downloads': 0,
             'grid_tiles_processed': [],
             'successful': False
@@ -2196,6 +2172,7 @@ def download_near_real_time_region_dates(
         # Files for tracking downloads
         outfile_downloads_failed_file = current_download_dir / f'grid_tiles_download_failed_{date_run_label}.txt'
         outfile_downloads_success_file = current_download_dir / f'grid_tiles_download_success_{date_run_label}.txt'
+        outfile_downloads_overwritten_file = current_download_dir / f'grid_tiles_download_overwritten_{date_run_label}.txt'
 
         # Track expected grid tiles
         expected_grid_tiles = []
@@ -2248,16 +2225,38 @@ def download_near_real_time_region_dates(
             expected_grid_tiles.append(grid_coords)
             date_results['expected_downloads'] += 1
 
-            # Check if download already exists
+            # ========== CHECK IF FILE EXISTS AND HAS CONTENT ==========
+            should_download = True
+            should_overwrite = False
+
             if outfile_download.exists():
-                print(f'Download already exists for {bbox_west} {bbox_south}! Skipping download.')
-                date_results['skipped_bbox_downloads'] += 1
-                with open(outfile_downloads_success_file, 'a') as f:
-                    f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
-                date_results['grid_tiles_processed'].append(grid_coords)
+                # Check if file has content (not empty)
+                file_size = outfile_download.stat().st_size
+                if file_size > 0:
+                    # File exists and has content - skip download
+                    print(
+                        f'Download already exists with content ({file_size} bytes) for {bbox_west} {bbox_south}! Skipping download.')
+                    date_results['skipped_bbox_downloads'] += 1
+                    with open(outfile_downloads_success_file, 'a') as f:
+                        f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+                    date_results['grid_tiles_processed'].append(grid_coords)
+                    should_download = False
+                else:
+                    # File exists but is empty - overwrite it
+                    print(f'Download file exists but is empty (0 bytes) for {bbox_west} {bbox_south}. Will overwrite.')
+                    date_results['overwritten_bbox_downloads'] += 1
+                    should_overwrite = True
+                    # Remove the empty file before downloading
+                    try:
+                        outfile_download.unlink()
+                        print(f'Removed empty file: {outfile_download}')
+                    except Exception as e:
+                        logger.warning(f"Could not remove empty file {outfile_download}: {e}")
+
+            if not should_download:
                 continue
 
-            # Download data
+            # Download data (either new or overwriting)
             download_successful = False
             try:
                 n_features = len(gdf_subset)
@@ -2277,7 +2276,12 @@ def download_near_real_time_region_dates(
 
                 if ds_dl is not None:
                     download_successful = True
-                    print(f'Successfully downloaded data for {bbox_west} {bbox_south}')
+                    if should_overwrite:
+                        print(f'Successfully re-downloaded data for {bbox_west} {bbox_south} (overwrote empty file)')
+                        with open(outfile_downloads_overwritten_file, 'a') as f:
+                            f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+                    else:
+                        print(f'Successfully downloaded data for {bbox_west} {bbox_south}')
                     date_results['success_bbox_downloads'] += 1
                     with open(outfile_downloads_success_file, 'a') as f:
                         f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
@@ -2315,12 +2319,12 @@ def download_near_real_time_region_dates(
             'analysis_date': ANALYSIS_DATE,
             'run_start_label': date_run_label,
             'expected_downloads': date_results['expected_downloads'],
-            'successful_downloads': date_results['success_bbox_downloads'] + date_results['skipped_bbox_downloads'],
+            'successful_downloads': date_results['success_bbox_downloads'],
             'failed_downloads': date_results['failed_bbox_downloads'],
             'skipped_downloads': date_results['skipped_bbox_downloads'],
+            'overwritten_downloads': date_results['overwritten_bbox_downloads'],
             'expected_grid_tiles': expected_grid_tiles,
-            'timestamp': datetime.datetime.now().isoformat(),
-            'historical_file': str(original_historical_file)
+            'timestamp': datetime.datetime.now().isoformat()
         }
         with open(manifest_file, 'w') as f:
             json.dump(manifest_data, f, indent=2)
@@ -2350,7 +2354,8 @@ def download_near_real_time_region_dates(
         logger.debug(f"Finished download for date {ANALYSIS_DATE} in {date_end - date_start}")
         logger.info(f"Downloads for {ANALYSIS_DATE}: {date_results['success_bbox_downloads']} successful, "
                     f"{date_results['failed_bbox_downloads']} failed, "
-                    f"{date_results['skipped_bbox_downloads']} skipped")
+                    f"{date_results['skipped_bbox_downloads']} skipped, "
+                    f"{date_results['overwritten_bbox_downloads']} overwritten")
 
         # Store results for this date
         all_results[ANALYSIS_DATE] = date_results
@@ -2368,7 +2373,8 @@ def download_near_real_time_region_dates(
         status = "✅ SUCCESS" if results['successful'] else "⚠️ PARTIAL"
         logger.info(f"{date}: {status} - {results['success_bbox_downloads']} successful, "
                     f"{results['failed_bbox_downloads']} failed, "
-                    f"{results['skipped_bbox_downloads']} skipped")
+                    f"{results['skipped_bbox_downloads']} skipped, "
+                    f"{results['overwritten_bbox_downloads']} overwritten")
 
     logger.info(f"Overall status: {'✅ SUCCESS' if overall_success else '⚠️ PARTIAL FAILURE'}")
     logger.info(f"Successfully downloaded {successful_dates}/{len(dates_to_download)} dates")
@@ -2380,9 +2386,7 @@ def download_near_real_time_region_dates(
         'total_dates': len(all_results),
         'successful_dates': successful_dates,
         'failed_dates': failed_dates,
-        'dates_to_download': [d.strftime("%Y-%m") for d in dates_to_download],
-        'all_expected_dates': [d.strftime("%Y-%m") for d in all_dates_to_process],
-        'existing_dates': [d.strftime("%Y-%m") for d in existing_dates] if 'existing_dates' in locals() else []
+        'dates_to_download': [d.strftime("%Y-%m") for d in dates_to_download]
     }
 
 # ========== NEW: MERGE FUNCTION ==========
@@ -2391,7 +2395,9 @@ def merge_near_real_time_region(
         run_start_label: str = None,
         env_path: str = None,
         dates_to_merge: List[str] = None,
-        verify_downloads_first: bool = True
+        verify_downloads_first: bool = True,
+        check_duplicates: bool = True,
+        strict_duplicate_check: bool = False
 ):
     """
     Merge downloaded near-real-time data for a specific region.
@@ -2405,6 +2411,8 @@ def merge_near_real_time_region(
         env_path: Optional path to .env file
         dates_to_merge: Optional list of dates to merge (if None, merges all)
         verify_downloads_first: If True, verifies downloads are complete before merging
+        check_duplicates: If True, checks for duplicate dates/IDs before merging
+        strict_duplicate_check: If True, raises error on duplicates; if False, logs warning and continues
 
     Returns:
         dict: Status information about the merge
@@ -2448,6 +2456,140 @@ def merge_near_real_time_region(
             logger.warning(f"No matching dates found in {dates_to_merge}")
             return {'success': False, 'error': 'No matching dates found'}
 
+    # ========== DUPLICATE CHECK: Check if any missing dates already have files ==========
+    if check_duplicates:
+        logger.info("=" * 80)
+        logger.info("CHECKING FOR DUPLICATES BEFORE MERGE")
+        logger.info("=" * 80)
+
+        # Load historical dataset to get existing dates and IDs
+        logger.info("Loading historical dataset for duplicate checking...")
+        ds_historical_check = xr.open_dataset(original_historical_file)
+        existing_dates = set(pd.to_datetime(ds_historical_check['date'].values))
+        existing_ids = set(ds_historical_check['id_geohash'].values)
+        ds_historical_check.close()
+
+        logger.info(f"Historical file has {len(existing_dates)} dates and {len(existing_ids)} IDs")
+
+        # Check for duplicate dates
+        duplicate_dates = []
+        for date in missing_dates:
+            ANALYSIS_DATE = date.strftime("%Y-%m")
+            date_ts = pd.Timestamp(f"{ANALYSIS_DATE}-01")
+            if date_ts in existing_dates:
+                duplicate_dates.append(ANALYSIS_DATE)
+                logger.warning(f"⚠️ Date {ANALYSIS_DATE} is already in the historical file!")
+
+        if duplicate_dates:
+            logger.warning(f"Found {len(duplicate_dates)} duplicate dates: {duplicate_dates}")
+            if strict_duplicate_check:
+                return {
+                    'success': False,
+                    'error': f'Duplicate dates found: {duplicate_dates}',
+                    'duplicate_dates': duplicate_dates
+                }
+            else:
+                logger.info("Removing duplicate dates from merge list...")
+                missing_dates = [d for d in missing_dates if d.strftime("%Y-%m") not in duplicate_dates]
+                if not missing_dates:
+                    logger.info("No new dates to merge after removing duplicates")
+                    return {
+                        'success': True,
+                        'message': 'No new dates to merge (duplicates removed)',
+                        'duplicate_dates_removed': duplicate_dates
+                    }
+                logger.info(f"Proceeding with {len(missing_dates)} non-duplicate dates")
+
+        # Check for duplicate IDs in downloaded files
+        logger.info("Checking for duplicate IDs in downloaded files...")
+        duplicate_id_warnings = []
+
+        for date in missing_dates:
+            ANALYSIS_DATE = date.strftime("%Y-%m")
+            current_download_dir = Path(str(dynamic_world_download_dir), REGION_NAME, f'download_{ANALYSIS_DATE}')
+
+            if current_download_dir.exists():
+                downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{ANALYSIS_DATE}_*.nc')))
+                if downloaded_files:
+                    # Check for duplicate IDs within files for this date
+                    all_ids_for_date = []
+                    for nc_file in downloaded_files:
+                        try:
+                            ds = xr.open_dataset(nc_file)
+                            ids = ds['id_geohash'].values.tolist()
+                            all_ids_for_date.extend(ids)
+                            ds.close()
+                        except Exception as e:
+                            logger.warning(f"Could not read {nc_file}: {e}")
+
+                    # Check for duplicates
+                    unique_ids = set(all_ids_for_date)
+                    if len(all_ids_for_date) != len(unique_ids):
+                        duplicate_count = len(all_ids_for_date) - len(unique_ids)
+                        duplicate_id_warnings.append({
+                            'date': ANALYSIS_DATE,
+                            'total_ids': len(all_ids_for_date),
+                            'unique_ids': len(unique_ids),
+                            'duplicate_count': duplicate_count
+                        })
+                        logger.warning(
+                            f"⚠️ Date {ANALYSIS_DATE}: Found {duplicate_count} duplicate IDs across {len(downloaded_files)} files")
+
+        if duplicate_id_warnings:
+            logger.warning(f"Found duplicate ID issues in {len(duplicate_id_warnings)} dates")
+            if strict_duplicate_check:
+                return {
+                    'success': False,
+                    'error': 'Duplicate IDs found in downloaded files',
+                    'duplicate_details': duplicate_id_warnings
+                }
+
+        # Check for files that might be duplicates (same date, overlapping IDs)
+        logger.info("Checking for overlapping files...")
+        overlapping_warnings = []
+
+        # Group downloaded files by date
+        date_file_map = {}
+        for date in missing_dates:
+            ANALYSIS_DATE = date.strftime("%Y-%m")
+            current_download_dir = Path(str(dynamic_world_download_dir), REGION_NAME, f'download_{ANALYSIS_DATE}')
+            if current_download_dir.exists():
+                downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{ANALYSIS_DATE}_*.nc')))
+                if downloaded_files:
+                    date_file_map[ANALYSIS_DATE] = downloaded_files
+
+        # Check for files that might be duplicates (same bbox pattern)
+        for date, files in date_file_map.items():
+            bbox_patterns = []
+            for file_path in files:
+                # Extract bbox from filename
+                filename = Path(file_path).stem
+                parts = filename.split('_')
+                if len(parts) >= 5:
+                    # Format: DW_YYYY-MM_west_east_south_north
+                    bbox = '_'.join(parts[2:6])
+                    bbox_patterns.append(bbox)
+
+            # Check for duplicate bbox patterns
+            unique_bboxes = set(bbox_patterns)
+            if len(bbox_patterns) != len(unique_bboxes):
+                duplicate_bboxes = [b for b in bbox_patterns if bbox_patterns.count(b) > 1]
+                unique_duplicates = list(set(duplicate_bboxes))
+                overlapping_warnings.append({
+                    'date': date,
+                    'duplicate_bboxes': unique_duplicates
+                })
+                logger.warning(f"⚠️ Date {date}: Found duplicate grid tiles: {unique_duplicates}")
+
+        if overlapping_warnings and strict_duplicate_check:
+            return {
+                'success': False,
+                'error': 'Overlapping grid tiles found',
+                'overlapping_details': overlapping_warnings
+            }
+
+        logger.info("✅ Duplicate checks completed successfully")
+
     # If verify_downloads_first, check that all downloads are complete
     if verify_downloads_first:
         logger.info("Verifying downloads are complete before merging...")
@@ -2473,6 +2615,8 @@ def merge_near_real_time_region(
 
     # Collect all downloaded files
     all_downloaded_files = []
+    date_file_counts = {}
+
     for date in missing_dates:
         ANALYSIS_DATE = date.strftime("%Y-%m")
         current_download_dir = Path(str(dynamic_world_download_dir), REGION_NAME, f'download_{ANALYSIS_DATE}')
@@ -2482,6 +2626,7 @@ def merge_near_real_time_region(
             if downloaded_files:
                 logger.info(f"Date {ANALYSIS_DATE}: Found {len(downloaded_files)} downloaded files")
                 all_downloaded_files.extend(downloaded_files)
+                date_file_counts[ANALYSIS_DATE] = len(downloaded_files)
             else:
                 logger.warning(f"Date {ANALYSIS_DATE}: No downloaded files found in {current_download_dir}")
         else:
@@ -2493,10 +2638,13 @@ def merge_near_real_time_region(
         return {'success': False, 'error': 'No downloaded files found'}
 
     logger.info(f"Found {len(all_downloaded_files)} total downloaded files to merge")
+    logger.info(f"Date breakdown: {date_file_counts}")
 
     # Process downloaded files in batches to build combined dataset
     BATCH_SIZE = 10
     combined = None
+    processed_files = []
+    failed_files = []
 
     for batch_idx in tqdm(range(0, len(all_downloaded_files), BATCH_SIZE), desc="Processing batches"):
         batch_files = all_downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
@@ -2505,37 +2653,119 @@ def merge_near_real_time_region(
         for nc_file in batch_files:
             try:
                 ds = xr.open_dataset(nc_file)
-                batch_datasets.append(ds)
+                # Verify the file has data
+                if len(ds['id_geohash']) > 0:
+                    batch_datasets.append(ds)
+                    processed_files.append(nc_file)
+                else:
+                    logger.warning(f"File {nc_file} has no IDs, skipping")
+                    failed_files.append(nc_file)
             except Exception as e:
                 logger.error(f"Error opening {nc_file}: {e}")
+                failed_files.append(nc_file)
                 continue
 
         if batch_datasets:
             try:
+                # Combine batch datasets
                 batch_combined = xr.concat(batch_datasets, dim='id_geohash')
+
+                # Remove duplicate IDs within this batch
                 _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
-                batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
+                if len(unique_idx) < len(batch_combined['id_geohash']):
+                    logger.debug(
+                        f"Removed {len(batch_combined['id_geohash']) - len(unique_idx)} duplicate IDs in batch")
+                    batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
 
                 if combined is None:
                     combined = batch_combined
                 else:
+                    # Combine with existing
                     combined = xr.concat([combined, batch_combined], dim='id_geohash')
+
+                    # Remove duplicate IDs from combined dataset
                     _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
-                    combined = combined.isel(id_geohash=np.sort(unique_idx))
+                    if len(unique_idx) < len(combined['id_geohash']):
+                        logger.debug(
+                            f"Removed {len(combined['id_geohash']) - len(unique_idx)} duplicate IDs from combined")
+                        combined = combined.isel(id_geohash=np.sort(unique_idx))
+
             except Exception as e:
                 logger.error(f"Error combining batch: {e}")
+                failed_files.extend(batch_files)
 
             # Clean up batch datasets
             for ds in batch_datasets:
                 ds.close()
             gc.collect()
 
+    # Report on failed files
+    if failed_files:
+        logger.warning(f"Failed to process {len(failed_files)} files")
+        if len(failed_files) > 10:
+            logger.warning(f"First 10 failed files: {failed_files[:10]}")
+        else:
+            logger.warning(f"Failed files: {failed_files}")
+
     if combined is None:
         logger.error("No combined dataset created!")
         ds_historical.close()
         return {'success': False, 'error': 'No combined dataset created'}
 
-    logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs")
+    logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
+
+    # ========== FINAL DUPLICATE CHECK ON COMBINED DATA ==========
+    if check_duplicates:
+        logger.info("Performing final duplicate check on combined data...")
+
+        # Check for duplicate dates in combined data
+        combined_dates = set(pd.to_datetime(combined['date'].values))
+        existing_dates = set(pd.to_datetime(ds_historical['date'].values))
+        overlapping_dates = combined_dates & existing_dates
+
+        if overlapping_dates:
+            logger.warning(f"⚠️ Found {len(overlapping_dates)} overlapping dates between historical and combined data")
+            logger.warning(f"Overlapping dates: {sorted(overlapping_dates)}")
+
+            if strict_duplicate_check:
+                ds_historical.close()
+                combined.close()
+                return {
+                    'success': False,
+                    'error': f'Overlapping dates found: {overlapping_dates}',
+                    'overlapping_dates': [d.strftime('%Y-%m-%d') for d in overlapping_dates]
+                }
+            else:
+                logger.info("Removing overlapping dates from combined data...")
+                combined = combined.where(~combined['date'].isin(pd.to_datetime(list(overlapping_dates))), drop=True)
+                logger.info(f"Combined data now has {len(combined['date'])} dates")
+
+                if len(combined['date']) == 0:
+                    logger.warning("No new dates to merge after removing overlaps")
+                    ds_historical.close()
+                    combined.close()
+                    return {
+                        'success': True,
+                        'message': 'No new dates to merge (overlaps removed)',
+                        'overlapping_dates_removed': [d.strftime('%Y-%m-%d') for d in overlapping_dates]
+                    }
+
+        # Check for duplicate IDs within combined data
+        combined_ids = combined['id_geohash'].values
+        unique_ids, counts = np.unique(combined_ids, return_counts=True)
+        duplicate_ids = unique_ids[counts > 1]
+
+        if len(duplicate_ids) > 0:
+            logger.warning(f"⚠️ Found {len(duplicate_ids)} duplicate IDs in combined data")
+            if len(duplicate_ids) <= 10:
+                logger.warning(f"Duplicate IDs: {duplicate_ids}")
+            else:
+                logger.warning(f"First 10 duplicate IDs: {duplicate_ids[:10]}")
+
+            # Remove duplicates (keep first occurrence)
+            _, unique_idx = np.unique(combined_ids, return_index=True)
+            combined = combined.isel(id_geohash=np.sort(unique_idx))
+            logger.info(f"Removed duplicates, now have {len(combined['id_geohash'])} unique IDs")
 
     # Generate timestamp for the new file
     current_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2560,10 +2790,30 @@ def merge_near_real_time_region(
         # Verify the new file
         verification = verify_merged_netcdf(result_path)
 
+        # Additional verification for duplicates in the final file
+        if verification['valid'] and check_duplicates:
+            logger.info("Verifying final file for duplicates...")
+            ds_final = xr.open_dataset(result_path)
+
+            # Check for duplicate dates
+            final_dates = set(pd.to_datetime(ds_final['date'].values))
+            if len(final_dates) != len(ds_final['date']):
+                logger.warning("⚠️ Final file has duplicate dates!")
+                verification['has_duplicate_dates'] = True
+
+            # Check for duplicate IDs
+            final_ids = ds_final['id_geohash'].values
+            if len(set(final_ids)) != len(final_ids):
+                logger.warning("⚠️ Final file has duplicate IDs!")
+                verification['has_duplicate_ids'] = True
+
+            ds_final.close()
+
         if verification['valid']:
             logger.info(
                 f"✅ Merge successful! New file has {verification['id_count']} IDs, {verification['date_count']} dates")
             logger.info(f"   File size: {verification['file_size_gb']:.2f} GB")
+            logger.info(f"   Files merged: {len(processed_files)} successful, {len(failed_files)} failed")
 
             # Create merged marker
             if run_start_label:
@@ -2574,10 +2824,14 @@ def merge_near_real_time_region(
                                      REGION_NAME) / f'merged_complete_{current_timestamp}.success'
 
             with open(merged_marker, 'w') as f:
-                f.write(f"Merged {len(all_downloaded_files)} files into historical NetCDF\n")
+                f.write(f"Merged {len(processed_files)} files into historical NetCDF\n")
                 f.write(f"New file: {result_path}\n")
                 f.write(f"ID count: {verification['id_count']}\n")
                 f.write(f"Date count: {verification['date_count']}\n")
+                f.write(f"Files processed: {len(processed_files)}\n")
+                f.write(f"Files failed: {len(failed_files)}\n")
+                if failed_files:
+                    f.write(f"Failed files: {failed_files}\n")
                 f.write(f"Timestamp: {datetime.datetime.now().isoformat()}\n")
 
             return {
@@ -2586,8 +2840,12 @@ def merge_near_real_time_region(
                 'id_count': verification['id_count'],
                 'date_count': verification['date_count'],
                 'file_size_gb': verification['file_size_gb'],
-                'files_merged': len(all_downloaded_files),
+                'files_merged': len(processed_files),
+                'files_failed': len(failed_files),
+                'failed_files': failed_files if failed_files else None,
                 'result': result_path,
+                'duplicate_check': check_duplicates,
+                'date_file_counts': date_file_counts
             }
         else:
             logger.error(f"❌ Merge verification failed: {verification.get('error', 'Unknown error')}")
@@ -2595,7 +2853,6 @@ def merge_near_real_time_region(
     else:
         logger.error("❌ Merge failed! No output file created.")
         return {'success': False, 'error': 'Merge failed - no output file'}
-
 
 def process_near_real_time_region(region: str = "TEST", run_start_label: str = None, env_path: str = None):
     """
