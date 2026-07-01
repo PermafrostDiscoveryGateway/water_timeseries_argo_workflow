@@ -59,13 +59,17 @@ def main():
         ANALYSIS_DATE = date.strftime("%Y-%m")
         analysis_dates.append(ANALYSIS_DATE)
 
+    expected_dates = generate_expected_dates(start_year=2025)
+    expected_dates= expected_dates[:-2]
     # TODO check if the downloads are done
+    verify_downloads =verify_downloads_complete(region="EURASIA3", run_start_label=start_label, analysis_dates=expected_dates)
 
 
     # TODO check if processing is done
+    verify_process = verify_process_complete(region='EURASIA3', analysis_dates=expected_dates)
 
-    expected_dates = generate_expected_dates(start_year=2025)
-    expected_dates= expected_dates[:-2]
+
+
     # download_near_real_time_region_dates(region="TEST", run_start_label=start_label, dates_to_download=expected_dates)
     logger.debug(f"Expected dates: {expected_dates}")
     verify_results =verify_downloads_complete(region="TEST", run_start_label=start_label, analysis_dates=expected_dates)
