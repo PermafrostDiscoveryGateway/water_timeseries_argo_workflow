@@ -76,7 +76,12 @@ def main():
     verify_process = verify_process_complete(region='EURASIA3', analysis_dates=expected_dates)
     all_process_complete = verify_process['complete']
     logger.debug(f"All download complete: {all_downloads_complete} and all process complete: {all_process_complete}")
-
+    if SHOULD_RUN:
+        if not all_downloads_complete:
+            RUN_DOWNLOAD = True
+        if not all_process_complete:
+            SHOULD_RUN = True
+    logger.debug(f"Should run {SHOULD_RUN} and should download {RUN_PROCESS} and process {RUN_DOWNLOAD}")
     # download_near_real_time_region_dates(region="TEST", run_start_label=start_label, dates_to_download=expected_dates)
     logger.debug(f"Expected dates: {expected_dates}")
     verify_results =verify_downloads_complete(region="TEST", run_start_label=start_label, analysis_dates=expected_dates)
