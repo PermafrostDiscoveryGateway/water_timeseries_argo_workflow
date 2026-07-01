@@ -1,3 +1,6 @@
+from h5py.h5z import FLAG_SKIP_EDC
+from networkx import all_simple_edge_paths
+
 from near_real_time.near_real_time_grid_v2 import download_near_real_time_region, download_new_dynamic_world_data, \
     verify_downloads_complete, merge_near_real_time_region, compare_netcdf_files, process_near_real_time_region_dates, \
     generate_expected_dates, download_near_real_time_region_dates, process_near_real_time_region_dates_zarr, verify_process_complete
@@ -20,6 +23,10 @@ def main():
     else:
         load_dotenv()
         logger.info("Loading environment from default .env file")
+
+    SHOULD_RUN = False
+    RUN_DOWNLOAD = False
+    RUN_PROCESS = False
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
@@ -46,6 +53,7 @@ def main():
     if last_date_year == current_year and last_date_month == current_month and current_day > 3:
         logger.debug(f"We should run the previous month now")
         analysis_dates.remove(last_date)
+        SHOULD_RUN = True
     else:
         logger.debug(f"We should not run")
     logger.debug(f"Analysis dates: {analysis_dates}")
@@ -63,12 +71,11 @@ def main():
     expected_dates= expected_dates[:-2]
     # TODO check if the downloads are done
     verify_downloads =verify_downloads_complete(region="EURASIA3", run_start_label=start_label, analysis_dates=expected_dates)
-
-
+    all_downloads_complete = verify_downloads['complete']
     # TODO check if processing is done
     verify_process = verify_process_complete(region='EURASIA3', analysis_dates=expected_dates)
-
-
+    all_process_complete = verify_process['complete']
+    logger.debug(f"All download complete: {all_downloads_complete} and all process complete: {all_process_complete}")
 
     # download_near_real_time_region_dates(region="TEST", run_start_label=start_label, dates_to_download=expected_dates)
     logger.debug(f"Expected dates: {expected_dates}")
@@ -76,7 +83,7 @@ def main():
     logger.debug(f"Verify results")
     logger.debug(verify_results)
 
-    verify_process = verify_process_complete(region='TEST', analysis_dates=expected_dates)
+    # verify_process = verify_process_complete(region='TEST', analysis_dates=expected_dates)
 
     result = merge_near_real_time_region(region="TEST", run_start_label=start_label, dates_to_merge=analysis_dates)
 

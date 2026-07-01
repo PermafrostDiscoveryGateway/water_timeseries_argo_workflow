@@ -4088,6 +4088,10 @@ def verify_process_complete(
             fail_count += 1
             logger.debug(f"This zarr dataset {current_zarr_dataset} does not exist")
     logger.debug(f"Success count: {success_count} and fail count {fail_count}")
+    if fail_count > 0:
+        return {'complete': False}
+    else:
+        return {'complete': True}
 
 
 def verify_and_trigger_processing(
