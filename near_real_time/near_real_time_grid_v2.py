@@ -3787,6 +3787,7 @@ def process_near_real_time_region_dates_zarr(
     logger.info(f"Processing completed for region: {REGION_NAME}")
     return True
 
+
 def verify_downloads_complete(
         region: str = "TEST",
         analysis_dates: List[str] = None,
@@ -3821,8 +3822,34 @@ def verify_downloads_complete(
     REGION_NAME = region
     dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
 
-    # Discover dates if requested
-    if auto_discover_dates or analysis_dates is None:
+    # Normalize analysis_dates to string format "YYYY-MM"
+    normalized_dates = []
+    if analysis_dates is not None:
+        for date in analysis_dates:
+            if isinstance(date, pd.Timestamp):
+                normalized_dates.append(date.strftime("%Y-%m"))
+            elif isinstance(date, datetime.datetime):
+                normalized_dates.append(date.strftime("%Y-%m"))
+            elif isinstance(date, str):
+                # Try to parse and reformat
+                try:
+                    # If it's already in YYYY-MM format
+                    if len(date) == 7 and date[4] == '-':
+                        normalized_dates.append(date)
+                    else:
+                        # Try to parse as datetime
+                        dt = pd.to_datetime(date)
+                        normalized_dates.append(dt.strftime("%Y-%m"))
+                except:
+                    logger.warning(f"Could not parse date: {date}")
+            else:
+                logger.warning(f"Unrecognized date type: {type(date)} for {date}")
+
+    # Use normalized dates or discover
+    if normalized_dates:
+        analysis_dates = normalized_dates
+    elif auto_discover_dates:
+        # Discover dates from download directories
         download_pattern = str(dynamic_world_download_dir / REGION_NAME / 'download_*')
         download_dirs = glob.glob(download_pattern)
 
@@ -3832,19 +3859,14 @@ def verify_downloads_complete(
             dir_name = Path(dir_path).name
             if dir_name.startswith('download_'):
                 date_str = dir_name.replace('download_', '')
-                # Validate date format
+                # Validate date format (should be YYYY-MM)
                 try:
                     datetime.datetime.strptime(date_str, '%Y-%m')
                     discovered_dates.append(date_str)
                 except ValueError:
                     continue
 
-        if analysis_dates is None:
-            analysis_dates = sorted(discovered_dates)
-        else:
-            # Combine provided dates with discovered dates
-            all_dates = set(analysis_dates) | set(discovered_dates)
-            analysis_dates = sorted(all_dates)
+        analysis_dates = sorted(discovered_dates)
 
         if not analysis_dates:
             return {
@@ -3853,6 +3875,13 @@ def verify_downloads_complete(
                 'discovered_dates': discovered_dates,
                 'date_results': {}
             }
+    else:
+        # No dates provided and auto_discover is False
+        return {
+            'complete': False,
+            'reason': 'No dates provided for verification',
+            'date_results': {}
+        }
 
     logger.info(f"Verifying downloads for region '{REGION_NAME}' for {len(analysis_dates)} date(s): {analysis_dates}")
 
@@ -3865,6 +3894,7 @@ def verify_downloads_complete(
         logger.info(f"Verifying date: {analysis_date}")
         logger.info(f"{'=' * 60}")
 
+        # Use the date directly (already in YYYY-MM format)
         current_download_dir = dynamic_world_download_dir / REGION_NAME / f'download_{analysis_date}'
 
         date_result = {

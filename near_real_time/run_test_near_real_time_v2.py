@@ -38,9 +38,12 @@ def main():
         analysis_dates.append(ANALYSIS_DATE)
 
     expected_dates = generate_expected_dates(start_year=2025)
-
-    download_near_real_time_region_dates(region="TEST", run_start_label=start_label, dates_to_download=expected_dates)
-    verify_downloads_complete(region="TEST", run_start_label=start_label, analysis_dates=analysis_dates)
+    expected_dates= expected_dates[:-2]
+    # download_near_real_time_region_dates(region="TEST", run_start_label=start_label, dates_to_download=expected_dates)
+    logger.debug(f"Expected dates: {expected_dates}")
+    verify_results =verify_downloads_complete(region="TEST", run_start_label=start_label, analysis_dates=expected_dates)
+    logger.debug(f"Verify results")
+    logger.debug(verify_results)
     result = merge_near_real_time_region(region="TEST", run_start_label=start_label, dates_to_merge=analysis_dates)
 
     if result is not None and 'result' in result:
