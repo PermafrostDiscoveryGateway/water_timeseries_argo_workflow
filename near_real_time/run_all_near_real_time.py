@@ -1,9 +1,10 @@
 from near_real_time_grid import near_real_time_region
 import sys
 from loguru import logger
-from datetime import date
+from datetime import date, datetime
 from dotenv import load_dotenv
 import os
+import pandas as pd
 import utils.region_boundaries
 from pathlib import Path
 # Add project root to Python path
@@ -24,9 +25,23 @@ def main():
     REGIONS = utils.region_boundaries.get_region_boundaries()
     REGION_NAMES = list(REGIONS.keys())
 
-    # TODO get today's date
-    # TODO run last month if it is a summer month, and today is after the third
+    SHOULD_RUN = False
 
+    summer_months = [6, 7, 8, 9]
+
+    TODAY =  datetime.now()
+    TODAY_MONTH = TODAY.month
+    if TODAY_MONTH - 1 in summer_months:
+        logger.debug(f"TODAY MONTH: {TODAY_MONTH}")
+        logger.debug(f"Last month: {TODAY.month - 1} checking to see if we should run")
+        TODAY_DAY = TODAY.day
+        if TODAY_DAY > 3:
+            SHOULD_RUN = True
+            logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
+
+    # TODO get timestamp value of last month
+    timestamp_to_run = pd.Timestamp(date(datetime.now().year, TODAY_MONTH -1, 1))
+    logger.debug(f"timestamp_to_run: {timestamp_to_run}")
     for REGION in REGION_NAMES:
         # TODO check if this region has been downloaded
         # TODO download here
