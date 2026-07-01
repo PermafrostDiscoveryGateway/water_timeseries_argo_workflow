@@ -1,11 +1,12 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region , \
-    process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates
+    process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, merge_near_real_time_region_v2
 import sys
 from loguru import logger
 from datetime import date, datetime
 from dotenv import load_dotenv
 import os
 import glob
+import time
 import pandas as pd
 import utils.region_boundaries
 from pathlib import Path
@@ -52,6 +53,13 @@ def main():
     timestamp_to_run = [pd.Timestamp(date(datetime.now().year, TODAY_MONTH -1, 1))]
     date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
     logger.debug(f"timestamp_to_run: {timestamp_to_run}")
+    try:
+        result = merge_near_real_time_region_v2(region='EURASIA3', dates_to_merge=expected_dates)
+    except Exception as e:
+        logger.debug(e)
+
+    time.sleep()
+
     for REGION in REGION_NAMES:
         dynamic_world_data_dir = os.environ['dynamic_world_data']
         all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
@@ -63,7 +71,7 @@ def main():
         else:
             logger.debug(f"downloads_complete: {downloads_complete}")
             logger.debug(f"downloading data for   REGION: {REGION}")
-            download_near_real_time_region_dates(region=REGION, dates_to_download=expected_dates)
+            # download_near_real_time_region_dates(region=REGION, dates_to_download=expected_dates)
             logger.debug(f"Finished downloading data for   REGION: {REGION}")
             # TODO does this work
             try:
