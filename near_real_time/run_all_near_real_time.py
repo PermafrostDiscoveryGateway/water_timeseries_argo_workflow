@@ -24,9 +24,18 @@ def main():
     REGIONS = utils.region_boundaries.get_region_boundaries()
     REGION_NAMES = list(REGIONS.keys())
 
+    # TODO get today's date
+    # TODO run last month if it is a summer month, and today is after the third
 
     for REGION in REGION_NAMES:
+        # TODO check if this region has been downloaded
+        # TODO download here
         near_real_time_region(region=REGION)
+    for REGION in REGION_NAMES:
+        logger.debug(f"Processing region {REGION}")
+        # TODO check if we should process
+
+    logger.debug("Finished NRT for all regions")
 
 
 if __name__ == "__main__":
