@@ -29,13 +29,21 @@ def main():
     now = datetime.now()
     start_label = now.strftime("%Y%m%d%H%M%S")
 
+
     analysis_dates = []
     original_missing_dates = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
+
+    # TODO get rid of the last date, if today is within the same month
+
     for date_idx, date in enumerate(original_missing_dates):
         date_type = type(date)
         print(date_type)
         ANALYSIS_DATE = date.strftime("%Y-%m")
         analysis_dates.append(ANALYSIS_DATE)
+
+    # TODO check if the downloads are done
+
+    # TODO check if processing is done
 
     expected_dates = generate_expected_dates(start_year=2025)
     expected_dates= expected_dates[:-2]
