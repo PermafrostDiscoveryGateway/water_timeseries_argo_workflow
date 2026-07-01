@@ -1,5 +1,5 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region , \
-    process_near_real_time_region_dates_zarr, download_near_real_time_region_dates
+    process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates
 import sys
 from loguru import logger
 from datetime import date, datetime
@@ -27,9 +27,16 @@ def main():
     REGIONS = utils.region_boundaries.get_region_boundaries()
     REGION_NAMES = list(REGIONS.keys())
 
+    # TODO remove later
+    REGION_NAMES = ['TEST', 'EURASIA3']
+
     SHOULD_RUN = False
 
     summer_months = [6, 7, 8, 9]
+
+    # TODO remove later
+    expected_dates = generate_expected_dates(start_year=2025)
+    expected_dates = expected_dates[:-2]
 
     TODAY =  datetime.now()
     TODAY_MONTH = TODAY.month
@@ -49,21 +56,34 @@ def main():
         dynamic_world_data_dir = os.environ['dynamic_world_data']
         all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
         most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
-        downloads_complete = verify_downloads_complete(region=REGION, analysis_dates=date_to_run)
+        logger.debug(f"most_recent_dynamic_world_file: {most_recent_dynamic_world_file}")
+        downloads_complete = verify_downloads_complete(region=REGION, analysis_dates=expected_dates)
         if downloads_complete['complete']:
             logger.debug(f"Downloads already complete for region {REGION}")
         else:
             logger.debug(f"downloads_complete: {downloads_complete}")
             logger.debug(f"downloading data for   REGION: {REGION}")
-            download_near_real_time_region_dates(region=REGION, dates_to_download=timestamp_to_run)
+            download_near_real_time_region_dates(region=REGION, dates_to_download=expected_dates)
             logger.debug(f"Finished downloading data for   REGION: {REGION}")
-            result = merge_near_real_time_region(region="TEST", dates_to_merge=date_to_run)
+            # TODO does this work
+            try:
+                result = merge_near_real_time_region(region=REGION, dates_to_merge=expected_dates)
+            except Exception as e:
+                logger.debug(f"Failed to merge for region {REGION} and {expected_dates}")
+                logger.debug(e)
             logger.debug(f"Merging finished for region : {REGION}")
     for REGION in REGION_NAMES:
         logger.debug(f"Processing region {REGION}")
-        # TODO check if we should process
+        verify_process = verify_process_complete(region=REGION, analysis_dates=date_to_run)
+        if verify_process['complete']:
+            logger.debug(f"Process complete for region {REGION} and {date_to_run}")
+        else:
+            logger.debug(f"Need to run region {REGION}")
+            process_near_real_time_region_dates_zarr(region=REGION, current_analysis_dates=timestamp_to_run )
+            logger.debug(f"Finished processing region {REGION} and {timestamp_to_run}")
 
-    logger.debug("Finished NRT for all regions")
+
+    logger.debug(f"Finished NRT for all regions {REGION_NAMES}")
 
 
 if __name__ == "__main__":
