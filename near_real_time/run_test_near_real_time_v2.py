@@ -32,8 +32,15 @@ def main():
 
     analysis_dates = []
     original_missing_dates = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
-
+    last_date = max(original_missing_dates)
+    logger.debug(f"Last date: {last_date} of type {type(last_date)}")
     # TODO get rid of the last date, if today is within the same month
+    last_date_year = last_date.year
+    last_date_month = last_date.month
+    last_date_day = last_date.day
+
+    # if year and month are not less than today
+    # and if today is not after the 4th of the month
 
     for date_idx, date in enumerate(original_missing_dates):
         date_type = type(date)
