@@ -4043,6 +4043,52 @@ def verify_downloads_complete(
     }
 
 
+def verify_process_complete(
+        region: str = "TEST",
+        analysis_dates: List[str] = None,
+        env_path : str = None,
+):
+    logger.debug("Verifying if processing is complete")
+
+    output_dir = os.environ['output_dir']
+    output_zarr_dir = os.path.join(output_dir, region, 'breakpoint_zarr')
+
+    normalized_dates = []
+    if analysis_dates is not None:
+        for date in analysis_dates:
+            if isinstance(date, pd.Timestamp):
+                normalized_dates.append(date.strftime("%Y-%m"))
+            elif isinstance(date, datetime.datetime):
+                normalized_dates.append(date.strftime("%Y-%m"))
+            elif isinstance(date, str):
+                # Try to parse and reformat
+                try:
+                    # If it's already in YYYY-MM format
+                    if len(date) == 7 and date[4] == '-':
+                        normalized_dates.append(date)
+                    else:
+                        # Try to parse as datetime
+                        dt = pd.to_datetime(date)
+                        normalized_dates.append(dt.strftime("%Y-%m"))
+                except:
+                    logger.warning(f"Could not parse date: {date}")
+            else:
+                logger.warning(f"Unrecognized date type: {type(date)} for {date}")
+
+    analysis_dates = normalized_dates
+    success_count = 0
+    fail_count = 0
+    for analysis_date in analysis_dates:
+        current_zarr_dataset = f'breakpoints_{analysis_date}.zarr'
+        path_to_zarr_dataset = os.path.join(output_zarr_dir, current_zarr_dataset)
+        if os.path.exists(path_to_zarr_dataset):
+            success_count += 1
+            logger.debug(f"Found zarr dataset {current_zarr_dataset}")
+        else:
+            fail_count += 1
+            logger.debug(f"This zarr dataset {current_zarr_dataset} does not exist")
+    logger.debug(f"Success count: {success_count} and fail count {fail_count}")
+
 
 def verify_and_trigger_processing(
         region: str = "TEST",

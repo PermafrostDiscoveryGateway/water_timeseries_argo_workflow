@@ -1,6 +1,6 @@
 from near_real_time.near_real_time_grid_v2 import download_near_real_time_region, download_new_dynamic_world_data, \
     verify_downloads_complete, merge_near_real_time_region, compare_netcdf_files, process_near_real_time_region_dates, \
-    generate_expected_dates, download_near_real_time_region_dates, process_near_real_time_region_dates_zarr
+    generate_expected_dates, download_near_real_time_region_dates, process_near_real_time_region_dates_zarr, verify_process_complete
 from near_real_time_grid import near_real_time_region
 import sys
 from loguru import logger
@@ -44,6 +44,9 @@ def main():
     verify_results =verify_downloads_complete(region="TEST", run_start_label=start_label, analysis_dates=expected_dates)
     logger.debug(f"Verify results")
     logger.debug(verify_results)
+
+    verify_process = verify_process_complete(region='TEST', analysis_dates=expected_dates)
+
     result = merge_near_real_time_region(region="TEST", run_start_label=start_label, dates_to_merge=analysis_dates)
 
     if result is not None and 'result' in result:
