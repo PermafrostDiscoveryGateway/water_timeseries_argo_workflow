@@ -3270,6 +3270,312 @@ def merge_near_real_time_region_v2(
         logger.error("❌ Merge V2 failed! No output file created.")
         return {'success': False, 'error': 'Merge failed - no output file'}
 
+
+def merge_near_real_time_region_v3_simple(
+        region: str = "TEST",
+        run_start_label: str = None,
+        env_path: str = None,
+        dates_to_merge: List[str] = None,
+        historical_file_path: str = None,
+        verify_downloads_first: bool = True,
+        force_merge: bool = True
+):
+    """
+    SIMPLE V3: Always combine historical + new data.
+    No date checking - just merge everything.
+    """
+    log_memory_usage("Merge V3 Simple function start")
+
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
+
+    REGION_NAME = region
+    dynamic_world_data_dir = os.environ['dynamic_world_data']
+    dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
+
+    # ========== VALIDATE INPUT ==========
+    if not dates_to_merge:
+        logger.error("No dates provided to merge.")
+        return {'success': False, 'error': 'No dates provided to merge'}
+
+    # Normalize dates
+    normalized_dates = []
+    for date in dates_to_merge:
+        if isinstance(date, pd.Timestamp):
+            normalized_dates.append(date.strftime("%Y-%m"))
+        elif isinstance(date, datetime.datetime):
+            normalized_dates.append(date.strftime("%Y-%m"))
+        elif isinstance(date, str):
+            try:
+                if len(date) == 7 and date[4] == '-':
+                    normalized_dates.append(date)
+                else:
+                    dt = pd.to_datetime(date)
+                    normalized_dates.append(dt.strftime("%Y-%m"))
+            except:
+                logger.warning(f"Could not parse date: {date}")
+        else:
+            logger.warning(f"Unrecognized date type: {type(date)} for {date}")
+
+    if not normalized_dates:
+        logger.error("No valid dates provided")
+        return {'success': False, 'error': 'No valid dates provided'}
+
+    dates_to_merge = sorted(normalized_dates)
+    logger.info(f"Will merge {len(dates_to_merge)} date(s): {dates_to_merge}")
+
+    # ========== GET HISTORICAL FILE ==========
+    if historical_file_path and os.path.exists(historical_file_path):
+        original_historical_file = historical_file_path
+        logger.info(f"Using specified historical file: {original_historical_file}")
+    else:
+        all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+        if not all_dynamic_world_files:
+            logger.error(f"No .nc files found in {dynamic_world_data_dir}")
+            return {'success': False, 'error': 'No .nc files found'}
+        original_historical_file = max(all_dynamic_world_files, key=os.path.getctime)
+        logger.info(f"Using most recent historical file: {original_historical_file}")
+
+    # ========== LOAD HISTORICAL DATA ==========
+    logger.info("Loading historical dataset...")
+    ds_historical = xr.open_dataset(original_historical_file)
+    logger.info(f"Historical file has {len(ds_historical['date'])} dates and {len(ds_historical['id_geohash'])} IDs")
+
+    # ========== VERIFY DOWNLOADS ==========
+    if verify_downloads_first:
+        logger.info("Verifying downloads are complete before merging...")
+        verification = verify_downloads_complete(
+            region=region,
+            analysis_dates=dates_to_merge,
+            env_path=env_path,
+            strict_mode=True
+        )
+
+        if not verification['complete']:
+            logger.error("❌ Downloads verification failed - cannot proceed with merge")
+            ds_historical.close()
+            return {
+                'success': False,
+                'error': 'Downloads incomplete',
+                'verification': verification
+            }
+        logger.info("✅ All downloads verified successfully!")
+
+    # ========== COLLECT DOWNLOADED FILES ==========
+    all_downloaded_files = []
+    date_file_counts = {}
+    missing_dates = []
+
+    for date_str in dates_to_merge:
+        current_download_dir = Path(str(dynamic_world_download_dir), REGION_NAME, f'download_{date_str}')
+
+        if current_download_dir.exists():
+            downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{date_str}_*.nc')))
+            if downloaded_files:
+                logger.info(f"Date {date_str}: Found {len(downloaded_files)} downloaded files")
+                all_downloaded_files.extend(downloaded_files)
+                date_file_counts[date_str] = len(downloaded_files)
+            else:
+                logger.warning(f"Date {date_str}: No downloaded files found")
+                missing_dates.append(date_str)
+        else:
+            logger.warning(f"Date {date_str}: Download directory does not exist")
+            missing_dates.append(date_str)
+
+    if not all_downloaded_files:
+        logger.error("No downloaded files found to merge!")
+        ds_historical.close()
+        return {
+            'success': False,
+            'error': 'No downloaded files found',
+            'missing_dates': missing_dates
+        }
+
+    if missing_dates:
+        logger.warning(f"Missing download files for {len(missing_dates)} date(s): {missing_dates}")
+
+    logger.info(f"Found {len(all_downloaded_files)} total downloaded files to merge")
+
+    # ========== PROCESS DOWNLOADED FILES ==========
+    logger.info("Starting merge to NetCDF...")
+    log_memory_usage("Before merge")
+
+    # Build combined dataset of all new data
+    combined = None
+    processed_files = []
+    failed_files = []
+
+    # Process files in batches
+    BATCH_SIZE = 20
+    total_files = len(all_downloaded_files)
+
+    for batch_idx in tqdm(range(0, total_files, BATCH_SIZE), desc="Processing files"):
+        batch_files = all_downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
+        batch_datasets = []
+
+        for file_path in batch_files:
+            try:
+                ds = xr.open_dataset(file_path)
+                if len(ds['id_geohash']) > 0:
+                    batch_datasets.append(ds)
+                    processed_files.append(file_path)
+                else:
+                    logger.warning(f"File {file_path} has no IDs, skipping")
+                    failed_files.append(file_path)
+            except Exception as e:
+                logger.error(f"Error opening {file_path}: {e}")
+                failed_files.append(file_path)
+            finally:
+                gc.collect()
+
+        if batch_datasets:
+            try:
+                # Combine batch
+                batch_combined = xr.concat(batch_datasets, dim='id_geohash')
+
+                # Remove duplicate IDs within this batch
+                _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
+                if len(unique_idx) < len(batch_combined['id_geohash']):
+                    batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
+
+                if combined is None:
+                    combined = batch_combined
+                else:
+                    combined = xr.concat([combined, batch_combined], dim='id_geohash')
+                    _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
+                    if len(unique_idx) < len(combined['id_geohash']):
+                        combined = combined.isel(id_geohash=np.sort(unique_idx))
+
+            except Exception as e:
+                logger.error(f"Error combining batch: {e}")
+                failed_files.extend(batch_files)
+
+            # Clean up batch datasets
+            for ds in batch_datasets:
+                ds.close()
+            gc.collect()
+
+    if combined is None:
+        logger.error("No combined dataset created!")
+        ds_historical.close()
+        return {
+            'success': False,
+            'error': 'No combined dataset created',
+            'dates_requested': dates_to_merge
+        }
+
+    logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
+
+    # ========== MERGE HISTORICAL + COMBINED ==========
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    new_file = Path(original_historical_file).parent / f"historical_data_{timestamp}.nc"
+
+    logger.info(f"Creating merged file: {new_file}")
+    logger.info(f"Historical: {len(ds_historical['id_geohash'])} IDs, {len(ds_historical['date'])} dates")
+    logger.info(f"New data: {len(combined['id_geohash'])} IDs, {len(combined['date'])} dates")
+
+    # ========== MERGE: Combine both datasets ==========
+    # Use merge() to handle different date dimensions
+    logger.info("Combining historical and new data...")
+
+    try:
+        # Merge the two datasets
+        final_combined = xr.merge([ds_historical, combined], compat='override')
+
+        # Sort by date and id
+        final_combined = final_combined.sortby(['date', 'id_geohash'])
+
+        # Remove duplicate IDs (just in case)
+        _, unique_idx = np.unique(final_combined['id_geohash'].values, return_index=True)
+        if len(unique_idx) < len(final_combined['id_geohash']):
+            logger.info(f"Removing {len(final_combined['id_geohash']) - len(unique_idx)} duplicate IDs")
+            final_combined = final_combined.isel(id_geohash=np.sort(unique_idx))
+
+        # Write with compression
+        logger.info(
+            f"Writing final file with {len(final_combined['id_geohash'])} IDs and {len(final_combined['date'])} dates...")
+
+        encoding = {}
+        for var in final_combined.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True
+            }
+
+        try:
+            final_combined.to_netcdf(new_file, encoding=encoding)
+        except Exception as e:
+            logger.error(f"Error writing with compression: {e}")
+            logger.info("Retrying without compression...")
+            final_combined.to_netcdf(new_file)
+
+    except Exception as e:
+        logger.error(f"Error merging datasets: {e}")
+        # Fallback: try concat instead of merge
+        logger.info("Trying concat instead...")
+        try:
+            final_combined = xr.concat([ds_historical, combined], dim='id_geohash')
+            final_combined = final_combined.sortby(['date', 'id_geohash'])
+            final_combined.to_netcdf(new_file)
+        except Exception as e2:
+            logger.error(f"Error with concat fallback: {e2}")
+            ds_historical.close()
+            combined.close()
+            return {'success': False, 'error': f'Merge failed: {e2}'}
+
+    # Clean up
+    ds_historical.close()
+    combined.close()
+    if 'final_combined' in locals():
+        final_combined.close()
+    gc.collect()
+
+    # ========== VERIFY ==========
+    if os.path.exists(new_file):
+        file_size_gb = get_file_size_gb(str(new_file))
+        logger.info(f"✅ Merged file created: {new_file}")
+        logger.info(f"   File size: {file_size_gb:.2f} GB")
+
+        # Verify
+        verification = verify_merged_netcdf(str(new_file))
+
+        # ========== SUMMARY ==========
+        logger.info(f"\n{'=' * 80}")
+        logger.info("MERGE V3 SUMMARY")
+        logger.info(f"{'=' * 80}")
+
+        result = {
+            'success': verification['valid'],
+            'mode': 'simple-merge',
+            'region': REGION_NAME,
+            'dates_requested': dates_to_merge,
+            'missing_dates': missing_dates,
+            'files_processed': len(processed_files),
+            'files_failed': len(failed_files),
+            'final_file': str(new_file),
+            'verification': verification
+        }
+
+        if verification['valid']:
+            logger.info(f"✅ Merge V3 successful!")
+            logger.info(f"   Final file: {new_file}")
+            logger.info(f"   IDs: {verification['id_count']}")
+            logger.info(f"   Dates: {verification['date_count']}")
+            logger.info(f"   File size: {verification['file_size_gb']:.2f} GB")
+        else:
+            logger.error("❌ Merge V3 verification failed!")
+
+        return result
+    else:
+        logger.error("❌ Merge failed - no file created!")
+        return {'success': False, 'error': 'No file created'}
+
 def process_near_real_time_region(region: str = "TEST", run_start_label: str = None, env_path: str = None):
     """
     Process near-real-time breakpoint analysis for a specific region.
