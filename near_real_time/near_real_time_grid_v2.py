@@ -3282,7 +3282,7 @@ def merge_near_real_time_region_v3_simple(
 ):
     """
     SIMPLE V3: Always combine historical + new data.
-    No date checking - just merge everything.
+    Preserves ALL variables from the historical file.
     """
     log_memory_usage("Merge V3 Simple function start")
 
@@ -3344,7 +3344,11 @@ def merge_near_real_time_region_v3_simple(
     # ========== LOAD HISTORICAL DATA ==========
     logger.info("Loading historical dataset...")
     ds_historical = xr.open_dataset(original_historical_file)
-    logger.info(f"Historical file has {len(ds_historical['date'])} dates and {len(ds_historical['id_geohash'])} IDs")
+
+    # Track ALL variable names from historical file
+    historical_vars = list(ds_historical.data_vars)
+    logger.info(f"Historical file has {len(ds_historical['date'])} dates, {len(ds_historical['id_geohash'])} IDs")
+    logger.info(f"Historical variables: {historical_vars}")
 
     # ========== VERIFY DOWNLOADS ==========
     if verify_downloads_first:
@@ -3470,6 +3474,27 @@ def merge_near_real_time_region_v3_simple(
         }
 
     logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
+    logger.info(f"Combined variables: {list(combined.data_vars)}")
+
+    # ========== CRITICAL: Ensure ALL historical variables are preserved ==========
+    # Check which variables are missing from the combined dataset
+    combined_vars = set(combined.data_vars)
+    missing_vars = set(historical_vars) - combined_vars
+
+    if missing_vars:
+        logger.warning(f"Combined dataset is missing variables: {missing_vars}")
+        logger.info("These variables will be preserved from the historical dataset")
+
+        # For each missing variable, add it from historical dataset with NaN values
+        for var_name in missing_vars:
+            logger.info(f"Preserving variable '{var_name}' from historical data...")
+            # Get the variable from historical data (with all dates and IDs)
+            hist_var = ds_historical[var_name]
+            # Add it to the combined dataset
+            combined[var_name] = (('id_geohash', 'date'),
+                                  np.full((len(combined['id_geohash']), len(combined['date'])), np.nan))
+            # For IDs that exist in historical data, copy values
+            # This is more complex - we'll handle this in the merge step
 
     # ========== MERGE HISTORICAL + COMBINED ==========
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -3479,12 +3504,19 @@ def merge_near_real_time_region_v3_simple(
     logger.info(f"Historical: {len(ds_historical['id_geohash'])} IDs, {len(ds_historical['date'])} dates")
     logger.info(f"New data: {len(combined['id_geohash'])} IDs, {len(combined['date'])} dates")
 
-    # ========== MERGE: Combine both datasets ==========
-    # Use merge() to handle different date dimensions
+    # ========== MERGE: Combine both datasets preserving all variables ==========
     logger.info("Combining historical and new data...")
 
     try:
-        # Merge the two datasets
+        # METHOD 1: Use merge with compat='override' but ensure all variables exist
+        # First, make sure combined has all the variables from historical (with NaN for missing)
+        for var_name in historical_vars:
+            if var_name not in combined.data_vars:
+                # Create an empty variable with the right shape
+                combined[var_name] = (('id_geohash', 'date'),
+                                      np.full((len(combined['id_geohash']), len(combined['date'])), np.nan))
+
+        # Now merge - all variables should be present in both
         final_combined = xr.merge([ds_historical, combined], compat='override')
 
         # Sort by date and id
@@ -3495,6 +3527,14 @@ def merge_near_real_time_region_v3_simple(
         if len(unique_idx) < len(final_combined['id_geohash']):
             logger.info(f"Removing {len(final_combined['id_geohash']) - len(unique_idx)} duplicate IDs")
             final_combined = final_combined.isel(id_geohash=np.sort(unique_idx))
+
+        # Verify all variables are present
+        final_vars = set(final_combined.data_vars)
+        missing_final = set(historical_vars) - final_vars
+        if missing_final:
+            logger.error(f"CRITICAL: Still missing variables after merge: {missing_final}")
+        else:
+            logger.info(f"✅ All {len(historical_vars)} variables preserved: {sorted(historical_vars)}")
 
         # Write with compression
         logger.info(
@@ -3517,14 +3557,25 @@ def merge_near_real_time_region_v3_simple(
 
     except Exception as e:
         logger.error(f"Error merging datasets: {e}")
-        # Fallback: try concat instead of merge
-        logger.info("Trying concat instead...")
+        # Fallback: try concat with data variables
+        logger.info("Trying alternative merge method...")
         try:
-            final_combined = xr.concat([ds_historical, combined], dim='id_geohash')
+            # Create a new dataset with all variables
+            final_combined = xr.Dataset()
+
+            # Add all variables from historical
+            for var_name in historical_vars:
+                if var_name in ds_historical:
+                    final_combined[var_name] = ds_historical[var_name]
+
+            # Add/update variables from combined
+            for var_name in combined.data_vars:
+                final_combined[var_name] = combined[var_name]
+
             final_combined = final_combined.sortby(['date', 'id_geohash'])
             final_combined.to_netcdf(new_file)
         except Exception as e2:
-            logger.error(f"Error with concat fallback: {e2}")
+            logger.error(f"Error with fallback merge: {e2}")
             ds_historical.close()
             combined.close()
             return {'success': False, 'error': f'Merge failed: {e2}'}
@@ -3541,6 +3592,20 @@ def merge_near_real_time_region_v3_simple(
         file_size_gb = get_file_size_gb(str(new_file))
         logger.info(f"✅ Merged file created: {new_file}")
         logger.info(f"   File size: {file_size_gb:.2f} GB")
+
+        # Verify the file has all variables
+        verify_ds = xr.open_dataset(new_file)
+        verify_vars = set(verify_ds.data_vars)
+        verify_ds.close()
+
+        missing_vars_final = set(historical_vars) - verify_vars
+        if missing_vars_final:
+            logger.error(f"❌ Final file missing variables: {missing_vars_final}")
+            return {
+                'success': False,
+                'error': f'Missing variables: {missing_vars_final}',
+                'missing_variables': list(missing_vars_final)
+            }
 
         # Verify
         verification = verify_merged_netcdf(str(new_file))
@@ -3559,7 +3624,8 @@ def merge_near_real_time_region_v3_simple(
             'files_processed': len(processed_files),
             'files_failed': len(failed_files),
             'final_file': str(new_file),
-            'verification': verification
+            'verification': verification,
+            'variables_preserved': list(verify_vars)
         }
 
         if verification['valid']:
@@ -3568,6 +3634,7 @@ def merge_near_real_time_region_v3_simple(
             logger.info(f"   IDs: {verification['id_count']}")
             logger.info(f"   Dates: {verification['date_count']}")
             logger.info(f"   File size: {verification['file_size_gb']:.2f} GB")
+            logger.info(f"   Variables: {sorted(verify_vars)}")
         else:
             logger.error("❌ Merge V3 verification failed!")
 
@@ -3575,6 +3642,405 @@ def merge_near_real_time_region_v3_simple(
     else:
         logger.error("❌ Merge failed - no file created!")
         return {'success': False, 'error': 'No file created'}
+
+
+def merge_near_real_time_region_v3_cloud(
+        region: str = "TEST",
+        dates_to_merge: List[str] = None,
+        historical_file_path: str = None,
+        temp_dir: str = "/tmp",
+        verify_downloads_first: bool = True
+):
+    """
+    Cloud-optimized merge function for Kubernetes/Filestore.
+
+    Uses temporary local storage for intermediate files to reduce Filestore IO.
+    """
+    import tempfile
+    import shutil
+    from pathlib import Path
+
+    log_memory_usage("Cloud merge start")
+
+    # Use local temp directory for intermediate files
+    local_temp = Path(temp_dir) / f"merge_temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    local_temp.mkdir(exist_ok=True, parents=True)
+    logger.info(f"Using local temp directory: {local_temp}")
+
+    try:
+        # Load historical data from Filestore
+        if historical_file_path and os.path.exists(historical_file_path):
+            original_historical_file = historical_file_path
+        else:
+            dynamic_world_data_dir = os.environ['dynamic_world_data']
+            all_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+            original_historical_file = max(all_files, key=os.path.getctime)
+
+        logger.info(f"Loading historical file from Filestore: {original_historical_file}")
+        ds_historical = xr.open_dataset(original_historical_file)
+        historical_vars = list(ds_historical.data_vars)
+
+        # Collect downloaded files
+        dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
+        all_downloaded_files = []
+
+        for date_str in dates_to_merge:
+            if isinstance(date_str, pd.Timestamp):
+                date_str = date_str.strftime("%Y-%m")
+            download_dir = dynamic_world_download_dir / region / f'download_{date_str}'
+            if download_dir.exists():
+                files = glob.glob(str(download_dir / f'DW_{date_str}_*.nc'))
+                all_downloaded_files.extend(files)
+
+        if not all_downloaded_files:
+            logger.error("No downloaded files found!")
+            ds_historical.close()
+            return {'success': False, 'error': 'No downloaded files'}
+
+        # Process files in batches - use local temp for intermediate files
+        logger.info(f"Processing {len(all_downloaded_files)} files...")
+        combined = None
+        batch_size = 20
+
+        for batch_idx in tqdm(range(0, len(all_downloaded_files), batch_size), desc="Processing"):
+            batch_files = all_downloaded_files[batch_idx:batch_idx + batch_size]
+            batch_datasets = []
+
+            for file_path in batch_files:
+                try:
+                    # Copy to local temp for faster access
+                    local_file = local_temp / Path(file_path).name
+                    shutil.copy2(file_path, local_file)
+                    ds = xr.open_dataset(local_file)
+                    if len(ds['id_geohash']) > 0:
+                        batch_datasets.append(ds)
+                except Exception as e:
+                    logger.error(f"Error loading {file_path}: {e}")
+
+            if batch_datasets:
+                batch_combined = xr.concat(batch_datasets, dim='id_geohash')
+                _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
+                if len(unique_idx) < len(batch_combined['id_geohash']):
+                    batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
+
+                if combined is None:
+                    combined = batch_combined
+                else:
+                    combined = xr.concat([combined, batch_combined], dim='id_geohash')
+                    _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
+                    if len(unique_idx) < len(combined['id_geohash']):
+                        combined = combined.isel(id_geohash=np.sort(unique_idx))
+
+                for ds in batch_datasets:
+                    ds.close()
+                gc.collect()
+
+            # Clear batch files from temp
+            for f in local_temp.glob("*.nc"):
+                f.unlink()
+
+        # Ensure all variables exist
+        for var_name in historical_vars:
+            if var_name not in combined.data_vars:
+                logger.info(f"Adding placeholder for variable: {var_name}")
+                combined[var_name] = (('id_geohash', 'date'),
+                                      np.full((len(combined['id_geohash']), len(combined['date'])), np.nan))
+
+        # Merge
+        logger.info("Merging datasets...")
+        final_combined = xr.merge([ds_historical, combined], compat='override')
+        final_combined = final_combined.sortby(['date', 'id_geohash'])
+
+        # Write directly to Filestore (final file only)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        new_file = Path(original_historical_file).parent / f"historical_data_{timestamp}.nc"
+
+        logger.info(f"Writing final file to Filestore: {new_file}")
+
+        encoding = {}
+        for var in final_combined.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True
+            }
+
+        # Write directly to Filestore
+        final_combined.to_netcdf(new_file, encoding=encoding)
+
+        # Clean up
+        ds_historical.close()
+        combined.close()
+        final_combined.close()
+        gc.collect()
+
+        return {
+            'success': True,
+            'final_file': str(new_file),
+            'date_count': len(final_combined['date']),
+            'id_count': len(final_combined['id_geohash'])
+        }
+
+    except Exception as e:
+        logger.error(f"Merge failed: {e}")
+        return {'success': False, 'error': str(e)}
+    finally:
+        # Clean up temp directory
+        import shutil
+        shutil.rmtree(local_temp, ignore_errors=True)
+
+
+def verify_merged_data(
+        file_path: str,
+        region: str,
+        dates: List[str] = None,
+        check_id_count: bool = True,
+        check_date_count: bool = True,
+        verbose: bool = True
+) -> Dict[str, Any]:
+    """
+    Verify that a merged NetCDF file contains data for a specific region and dates.
+
+    This function checks:
+    1. The file exists and is valid
+    2. The file contains the expected dates (or at least some dates)
+    3. The file contains IDs for the region (or any IDs if region-specific check not needed)
+    4. The data is not empty (has values)
+
+    Args:
+        file_path: Path to the NetCDF file to check
+        region: Region name (e.g., "TEST", "EURASIA3") - used for logging only
+        dates: List of dates in "YYYY-MM" format to check for. If None, just checks file is valid.
+        check_id_count: If True, checks that there are IDs in the file
+        check_date_count: If True, checks that there are dates in the file
+        verbose: If True, logs detailed information
+
+    Returns:
+        dict: Verification results with keys:
+            - success: bool - True if all checks pass
+            - file_exists: bool
+            - valid: bool - True if file is valid NetCDF
+            - date_count: int - Number of dates in file
+            - id_count: int - Number of IDs in file
+            - file_size_gb: float - File size in GB
+            - dates_in_file: List[str] - All dates in the file (YYYY-MM format)
+            - missing_dates: List[str] - Dates requested that are missing
+            - present_dates: List[str] - Dates requested that are present
+            - all_dates_present: bool - True if all requested dates are present
+            - has_data: bool - True if file has non-empty data
+            - message: str - Summary message
+    """
+    import os
+    import xarray as xr
+    import pandas as pd
+    from typing import List, Dict, Any
+
+    result = {
+        'success': False,
+        'file_exists': False,
+        'valid': False,
+        'date_count': 0,
+        'id_count': 0,
+        'file_size_gb': 0,
+        'dates_in_file': [],
+        'missing_dates': [],
+        'present_dates': [],
+        'all_dates_present': False,
+        'has_data': False,
+        'message': '',
+        'error': None
+    }
+
+    # Check file exists
+    if not os.path.exists(file_path):
+        result['message'] = f"File does not exist: {file_path}"
+        result['error'] = 'File not found'
+        if verbose:
+            logger.error(result['message'])
+        return result
+
+    result['file_exists'] = True
+
+    # Check file size
+    result['file_size_gb'] = get_file_size_gb(file_path)
+    if verbose:
+        logger.info(f"File: {file_path}")
+        logger.info(f"Size: {result['file_size_gb']:.2f} GB")
+
+    # Try to open and read the file
+    try:
+        ds = xr.open_dataset(file_path)
+
+        # Check if it has dimensions
+        has_id_dim = 'id_geohash' in ds.dims
+        has_date_dim = 'date' in ds.dims
+
+        if not has_id_dim or not has_date_dim:
+            ds.close()
+            result['message'] = f"File missing required dimensions: id_geohash={has_id_dim}, date={has_date_dim}"
+            result['error'] = 'Missing dimensions'
+            if verbose:
+                logger.error(result['message'])
+            return result
+
+        result['valid'] = True
+        result['id_count'] = len(ds['id_geohash'])
+        result['date_count'] = len(ds['date'])
+
+        # Get dates in file
+        dates_in_file = pd.to_datetime(ds['date'].values)
+        result['dates_in_file'] = [d.strftime("%Y-%m") for d in dates_in_file]
+
+        # Check if there's any data (non-empty)
+        has_data = result['id_count'] > 0 and result['date_count'] > 0
+        result['has_data'] = has_data
+
+        # Check for requested dates
+        if dates:
+            requested_dates = sorted(dates)
+            present_dates = []
+            missing_dates = []
+
+            for date_str in requested_dates:
+                # Check if date exists in the file
+                date_exists = date_str in result['dates_in_file']
+                if date_exists:
+                    present_dates.append(date_str)
+                else:
+                    missing_dates.append(date_str)
+
+            result['present_dates'] = present_dates
+            result['missing_dates'] = missing_dates
+            result['all_dates_present'] = len(missing_dates) == 0
+
+            if verbose:
+                logger.info(f"Requested dates: {requested_dates}")
+                logger.info(f"Present: {present_dates}")
+                logger.info(f"Missing: {missing_dates}")
+
+                if result['all_dates_present']:
+                    logger.info(f"✅ All {len(requested_dates)} requested dates are present!")
+                else:
+                    logger.warning(f"⚠️ {len(missing_dates)} dates missing: {missing_dates}")
+
+        # Check for a specific ID to verify data quality
+        sample_id = ds['id_geohash'].values[0] if result['id_count'] > 0 else None
+        if sample_id and dates:
+            # Check if the sample ID has data for the requested dates
+            sample_data = ds.sel(id_geohash=sample_id)
+            sample_dates = pd.to_datetime(sample_data['date'].values)
+            sample_date_strings = [d.strftime("%Y-%m") for d in sample_dates]
+
+            # Check if any requested dates are in the sample data
+            sample_present = [d for d in dates if d in sample_date_strings]
+            if sample_present and verbose:
+                logger.info(f"Sample ID {sample_id[:8]}... has data for {len(sample_present)} requested dates")
+            elif verbose:
+                logger.warning(f"Sample ID {sample_id[:8]}... has NO data for requested dates!")
+
+        # Close the dataset
+        ds.close()
+
+        # Determine overall success
+        result['success'] = (
+                result['valid'] and
+                result['has_data'] and
+                (result['all_dates_present'] if dates else True)
+        )
+
+        # Build summary message
+        if result['success']:
+            if dates:
+                result[
+                    'message'] = f"✅ File contains all {len(dates)} requested dates, {result['id_count']} IDs, {result['date_count']} total dates"
+            else:
+                result['message'] = f"✅ File is valid with {result['id_count']} IDs, {result['date_count']} dates"
+        else:
+            issues = []
+            if not result['valid']:
+                issues.append("invalid file")
+            if not result['has_data']:
+                issues.append("no data")
+            if dates and not result['all_dates_present']:
+                issues.append(f"missing dates: {result['missing_dates']}")
+            result['message'] = f"⚠️ File has issues: {', '.join(issues)}"
+
+        if verbose:
+            logger.info(result['message'])
+
+        return result
+
+    except Exception as e:
+        result['message'] = f"Error reading file: {e}"
+        result['error'] = str(e)
+        if verbose:
+            logger.error(result['message'])
+        return result
+
+
+def check_region_data_in_merged_file(
+        region: str,
+        dates: List[str],
+        merged_file_path: str = None,
+        env_path: str = None,
+        verbose: bool = True
+) -> Dict[str, Any]:
+    """
+    Convenience function to check if a merged file contains data for a region.
+
+    Finds the most recent merged file if not specified, and checks it for the region's data.
+
+    Args:
+        region: Region name (e.g., "TEST", "EURASIA3")
+        dates: List of dates in "YYYY-MM" format to check for
+        merged_file_path: Optional path to the merged file. If None, finds the most recent.
+        env_path: Optional path to .env file
+        verbose: If True, logs detailed information
+
+    Returns:
+        dict: Verification results from verify_merged_data
+    """
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    # Find the merged file if not specified
+    if not merged_file_path:
+        dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+        if not dynamic_world_data_dir:
+            logger.error("dynamic_world_data not set in environment")
+            return {'success': False, 'error': 'Environment variable not set'}
+
+        # Find the most recent historical_data file
+        all_files = glob.glob(os.path.join(dynamic_world_data_dir, "historical_data_*.nc"))
+        if not all_files:
+            # Try just .nc files if no historical_data files
+            all_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+            # Exclude the original file
+            all_files = [f for f in all_files if 'lakes_dw_V2d' not in f and 'lakes_dw_V2' not in f]
+
+        if not all_files:
+            logger.error(f"No merged NetCDF files found in {dynamic_world_data_dir}")
+            return {'success': False, 'error': 'No merged files found'}
+
+        merged_file_path = max(all_files, key=os.path.getctime)
+        logger.info(f"Using most recent merged file: {merged_file_path}")
+
+    # Verify the merged file contains the region's data
+    result = verify_merged_data(
+        file_path=merged_file_path,
+        region=region,
+        dates=dates,
+        verbose=verbose
+    )
+
+    # Add region info
+    result['region'] = region
+    result['file_path'] = merged_file_path
+
+    return result
+
 
 def process_near_real_time_region(region: str = "TEST", run_start_label: str = None, env_path: str = None):
     """
@@ -4764,6 +5230,392 @@ def verify_downloads_complete(
         }
     }
 
+
+def summarize_breakpoint_results(
+        region: str,
+        analysis_date: str = None,
+        zarr_dir: str = None,
+        env_path: str = None,
+        verbose: bool = True
+) -> Dict[str, Any]:
+    """
+    Summarize breakpoint analysis results from Zarr files.
+
+    This function reads the Zarr output from process_near_real_time_region_dates_zarr
+    and provides a comprehensive summary of the breakpoint detection results.
+
+    Args:
+        region: Region name (e.g., "TEST", "EURASIA3")
+        analysis_date: Date in "YYYY-MM" format. If None, summarizes the most recent.
+        zarr_dir: Optional path to Zarr directory. If None, uses environment variable.
+        env_path: Optional path to .env file
+        verbose: If True, prints detailed summary
+
+    Returns:
+        dict: Summary statistics including:
+            - total_lakes: Total number of lakes processed
+            - breakpoints_found: Number of lakes with breakpoints
+            - breakpoint_rate: Percentage of lakes with breakpoints
+            - confidence_distribution: Counts of low/medium/high confidence
+            - date_range: Date range of data
+            - file_size_gb: Size of Zarr file
+            - detailed_results: More detailed breakdown
+    """
+    import json
+    from datetime import datetime
+
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    # Set up paths
+    if zarr_dir is None:
+        output_dir = os.environ.get('output_dir')
+        if not output_dir:
+            raise ValueError("output_dir not set in environment")
+        zarr_dir = Path(output_dir) / region / 'breakpoint_zarr'
+    else:
+        zarr_dir = Path(zarr_dir)
+
+    if not zarr_dir.exists():
+        return {'error': f'Zarr directory not found: {zarr_dir}'}
+
+    # Find Zarr files
+    if analysis_date:
+        zarr_files = [zarr_dir / f'breakpoints_{analysis_date}.zarr']
+        if not zarr_files[0].exists():
+            return {'error': f'Zarr file for {analysis_date} not found'}
+    else:
+        # Find all Zarr files and get the most recent
+        zarr_files = sorted(zarr_dir.glob('breakpoints_*.zarr'))
+        if not zarr_files:
+            return {'error': 'No Zarr files found'}
+
+    results = {}
+    total_summary = {
+        'region': region,
+        'dates_processed': [],
+        'total_lakes_all_dates': set(),
+        'total_breakpoints_all_dates': 0,
+        'confidence_distribution_all': {'low': 0, 'medium': 0, 'high': 0}
+    }
+
+    for zarr_path in zarr_files:
+        date_str = zarr_path.stem.replace('breakpoints_', '')
+
+        try:
+            # Open Zarr dataset
+            ds = xr.open_zarr(zarr_path)
+
+            # Basic info
+            n_lakes = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
+            date_info = "No date dimension" if 'date' not in ds.dims else len(ds['date'])
+
+            # Check for drainage_confidence column
+            has_confidence = 'drainage_confidence' in ds.data_vars
+
+            # Calculate statistics
+            confidence_counts = {'low': 0, 'medium': 0, 'high': 0}
+            breakpoints_found = 0
+
+            if has_confidence and n_lakes > 0:
+                # Get confidence values
+                conf_data = ds['drainage_confidence'].values
+
+                # Count by confidence level
+                confidence_counts['low'] = int(np.sum(conf_data == 1))
+                confidence_counts['medium'] = int(np.sum(conf_data == 2))
+                confidence_counts['high'] = int(np.sum(conf_data == 3))
+                breakpoints_found = confidence_counts['medium'] + confidence_counts['high']
+
+            # Check for water_observed to see if there's data
+            has_water = 'water_observed' in ds.data_vars
+
+            # Get date range if available
+            date_range = None
+            if 'date' in ds.coords:
+                dates = pd.to_datetime(ds['date'].values)
+                date_range = {
+                    'min': dates.min().strftime('%Y-%m-%d'),
+                    'max': dates.max().strftime('%Y-%m-%d'),
+                    'count': len(dates)
+                }
+
+            # Calculate file size
+            file_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
+
+            date_result = {
+                'date': date_str,
+                'total_lakes': n_lakes,
+                'breakpoints_found': breakpoints_found,
+                'breakpoint_rate': breakpoints_found / n_lakes * 100 if n_lakes > 0 else 0,
+                'confidence_distribution': confidence_counts,
+                'has_confidence': has_confidence,
+                'has_water_data': has_water,
+                'date_range': date_range,
+                'file_size_gb': round(file_size_gb, 4),
+                'zarr_path': str(zarr_path)
+            }
+
+            results[date_str] = date_result
+
+            # Update totals
+            total_summary['dates_processed'].append(date_str)
+            total_summary['total_lakes_all_dates'].add(n_lakes)
+            total_summary['total_breakpoints_all_dates'] += breakpoints_found
+            total_summary['confidence_distribution_all']['low'] += confidence_counts['low']
+            total_summary['confidence_distribution_all']['medium'] += confidence_counts['medium']
+            total_summary['confidence_distribution_all']['high'] += confidence_counts['high']
+
+            ds.close()
+
+        except Exception as e:
+            logger.error(f"Error reading {zarr_path}: {e}")
+            results[date_str] = {'error': str(e)}
+
+    # Build summary
+    summary = {
+        'region': region,
+        'dates_processed': total_summary['dates_processed'],
+        'total_dates': len(total_summary['dates_processed']),
+        'total_lakes': len(total_summary['total_lakes_all_dates']),
+        'total_breakpoints': total_summary['total_breakpoints_all_dates'],
+        'breakpoint_rate': total_summary['total_breakpoints_all_dates'] / len(
+            total_summary['total_lakes_all_dates']) * 100 if len(total_summary['total_lakes_all_dates']) > 0 else 0,
+        'confidence_distribution': total_summary['confidence_distribution_all'],
+        'date_results': results
+    }
+
+    # Print summary
+    if verbose:
+        print("\n" + "=" * 80)
+        print(f"BREAKPOINT ANALYSIS SUMMARY - {region}")
+        print("=" * 80)
+
+        print(f"\n📊 OVERVIEW:")
+        print(f"  Region: {region}")
+        print(f"  Dates processed: {len(summary['dates_processed'])}")
+        print(f"  Total lakes: {summary['total_lakes']:,}")
+        print(f"  Breakpoints found: {summary['total_breakpoints']:,}")
+        print(f"  Breakpoint rate: {summary['breakpoint_rate']:.2f}%")
+
+        print(f"\n📈 CONFIDENCE DISTRIBUTION:")
+        print(f"  Low confidence (1): {summary['confidence_distribution']['low']:,}")
+        print(f"  Medium confidence (2): {summary['confidence_distribution']['medium']:,}")
+        print(f"  High confidence (3): {summary['confidence_distribution']['high']:,}")
+
+        print(f"\n📅 DATE DETAILS:")
+        for date in sorted(summary['dates_processed']):
+            date_result = results[date]
+            if 'error' not in date_result:
+                print(f"  {date}:")
+                print(f"    Lakes: {date_result['total_lakes']:,}")
+                print(f"    Breakpoints: {date_result['breakpoints_found']:,} ({date_result['breakpoint_rate']:.2f}%)")
+                print(f"    Size: {date_result['file_size_gb']:.4f} GB")
+
+                if date_result.get('date_range'):
+                    print(f"    Date range: {date_result['date_range']['min']} to {date_result['date_range']['max']}")
+            else:
+                print(f"  {date}: ❌ ERROR - {date_result['error']}")
+
+        print("\n" + "=" * 80)
+
+    return summary
+
+
+def print_breakpoint_summary_table(
+        region: str,
+        dates: List[str] = None,
+        env_path: str = None
+):
+    """
+    Print a formatted table of breakpoint results for one or more dates.
+
+    Args:
+        region: Region name
+        dates: List of dates in "YYYY-MM" format. If None, finds all.
+        env_path: Optional path to .env file
+    """
+    import pandas as pd
+
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    output_dir = os.environ.get('output_dir')
+    if not output_dir:
+        raise ValueError("output_dir not set in environment")
+
+    zarr_dir = Path(output_dir) / region / 'breakpoint_zarr'
+
+    if not zarr_dir.exists():
+        print(f"❌ Zarr directory not found: {zarr_dir}")
+        return
+
+    # Find Zarr files
+    if dates:
+        zarr_files = [zarr_dir / f'breakpoints_{d}.zarr' for d in dates]
+        zarr_files = [f for f in zarr_files if f.exists()]
+    else:
+        zarr_files = sorted(zarr_dir.glob('breakpoints_*.zarr'))
+
+    if not zarr_files:
+        print("❌ No Zarr files found")
+        return
+
+    # Collect data for table
+    rows = []
+    for zarr_path in zarr_files:
+        date_str = zarr_path.stem.replace('breakpoints_', '')
+
+        try:
+            ds = xr.open_zarr(zarr_path)
+            n_lakes = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
+
+            if 'drainage_confidence' in ds.data_vars:
+                conf_data = ds['drainage_confidence'].values
+                low = int(np.sum(conf_data == 1))
+                medium = int(np.sum(conf_data == 2))
+                high = int(np.sum(conf_data == 3))
+                total_breakpoints = medium + high
+            else:
+                low = medium = high = total_breakpoints = 0
+
+            file_size = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
+
+            rows.append({
+                'Date': date_str,
+                'Lakes': n_lakes,
+                'Breakpoints': total_breakpoints,
+                'Rate %': f"{total_breakpoints / n_lakes * 100:.1f}" if n_lakes > 0 else "0.0",
+                'Low': low,
+                'Medium': medium,
+                'High': high,
+                'Size (GB)': f"{file_size:.4f}"
+            })
+
+            ds.close()
+        except Exception as e:
+            rows.append({
+                'Date': date_str,
+                'Lakes': 'ERROR',
+                'Breakpoints': '-',
+                'Rate %': '-',
+                'Low': '-',
+                'Medium': '-',
+                'High': '-',
+                'Size (GB)': '-'
+            })
+
+    # Create and print DataFrame
+    df = pd.DataFrame(rows)
+
+    print("\n" + "=" * 100)
+    print(f"BREAKPOINT RESULTS TABLE - {region}")
+    print("=" * 100)
+    print(df.to_string(index=False))
+    print("=" * 100)
+
+    return df
+
+
+def check_breakpoint_quality(
+        region: str,
+        analysis_date: str,
+        min_confidence: int = 2,
+        env_path: str = None
+) -> Dict[str, Any]:
+    """
+    Check the quality of breakpoint results for a specific date.
+
+    Args:
+        region: Region name
+        analysis_date: Date in "YYYY-MM" format
+        min_confidence: Minimum confidence level to consider (1, 2, or 3)
+        env_path: Optional path to .env file
+
+    Returns:
+        dict: Quality metrics
+    """
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    output_dir = os.environ.get('output_dir')
+    if not output_dir:
+        raise ValueError("output_dir not set in environment")
+
+    zarr_path = Path(output_dir) / region / 'breakpoint_zarr' / f'breakpoints_{analysis_date}.zarr'
+
+    if not zarr_path.exists():
+        return {'error': f'Zarr file not found: {zarr_path}'}
+
+    try:
+        ds = xr.open_zarr(zarr_path)
+
+        n_lakes = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
+
+        result = {
+            'date': analysis_date,
+            'region': region,
+            'total_lakes': n_lakes,
+            'has_confidence': False,
+            'has_water_data': False,
+            'quality_score': 0
+        }
+
+        if 'drainage_confidence' in ds.data_vars:
+            conf_data = ds['drainage_confidence'].values
+            result['has_confidence'] = True
+
+            # Count by confidence
+            low = int(np.sum(conf_data == 1))
+            medium = int(np.sum(conf_data == 2))
+            high = int(np.sum(conf_data == 3))
+
+            result['low_confidence'] = low
+            result['medium_confidence'] = medium
+            result['high_confidence'] = high
+
+            # Count quality breakpoints (meeting min_confidence)
+            quality_breakpoints = int(np.sum(conf_data >= min_confidence))
+            result['quality_breakpoints'] = quality_breakpoints
+            result['quality_rate'] = quality_breakpoints / n_lakes * 100 if n_lakes > 0 else 0
+
+            # Quality score (0-100)
+            if n_lakes > 0:
+                # Weighted score: 50% for high confidence, 30% for medium, 20% for any breakpoint
+                score = (high / n_lakes * 50) + (medium / n_lakes * 30) + ((high + medium) / n_lakes * 20)
+                result['quality_score'] = round(score, 2)
+
+        if 'water_observed' in ds.data_vars:
+            result['has_water_data'] = True
+            # Check if any water data is non-nan
+            water_data = ds['water_observed'].values
+            result['has_non_nan_water'] = bool(np.any(~np.isnan(water_data)))
+
+        ds.close()
+
+        # Quality assessment
+        if result['quality_score'] >= 80:
+            result['quality_assessment'] = 'EXCELLENT'
+        elif result['quality_score'] >= 60:
+            result['quality_assessment'] = 'GOOD'
+        elif result['quality_score'] >= 40:
+            result['quality_assessment'] = 'FAIR'
+        else:
+            result['quality_assessment'] = 'POOR'
+
+        return result
+
+    except Exception as e:
+        return {'error': str(e)}
 
 def verify_process_complete(
         region: str = "TEST",
