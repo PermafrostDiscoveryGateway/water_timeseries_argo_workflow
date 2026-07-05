@@ -58,19 +58,19 @@ def verify_merge_result(original_file, merged_file):
 
 
 def main():
-    original_file = "/Users/helium/Desktop/dynamic_world/data/lakes_dw_V2d.nc"
-    merged_file = "/Users/helium/Desktop/dynamic_world/data/historical_data_20260703_140615.nc"
-
-    verify_result = verify_merge_result(original_file, merged_file)
-    logger.debug(f"After verify results")
-    time.sleep(60*10)
-
     logger.debug(f"Beginning historical run")
     if len(sys.argv) > 1:
         env_path = sys.argv[1]
         load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
 
-    CURRENT_REGION = sys.argv[1]
+    if len(sys.argv) > 1:
+        REGION = sys.argv[1]
+    else:
+        REGION = 'EURASIA3'
 
     SHOULD_RUN = False
 
@@ -80,30 +80,7 @@ def main():
     original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     missing_dates_from_netcdf = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
 
-    # result_test = verify_merged_data(
-    #     file_path="/Users/helium/Desktop/dynamic_world/data/historical_data_20260702_170636.nc",
-    #     region="TEST",
-    #     dates=["2025-07", "2025-08", "2025-09", "2026-06"]
-    # )
-    #
-    # result_eurasia3 = verify_merged_data(
-    #     file_path="/Users/helium/Desktop/dynamic_world/data/historical_data_20260702_170636.nc",
-    #     region="EURASIA3",
-    #     dates=["2025-07", "2025-08", "2025-09", "2026-06"]
-    # )
 
-    # TODO remove later
-    # After merging, compare original vs new
-
-    # Usage
-    # original_file = "/Users/helium/Desktop/dynamic_world/data/lakes_dw_V2d.nc"
-    # merged_file = "/Users/helium/Desktop/dynamic_world/data/historical_data_20260702_170636.nc"
-    #
-    # verify_result = verify_merge_result(original_file, merged_file)
-    logger.debug(f"Got verify result")
-    # TODO remove later
-    expected_dates = generate_expected_dates(start_year=2025)
-    expected_dates = expected_dates[:-2]
 
     TODAY =  datetime.now()
     TODAY_MONTH = TODAY.month
@@ -115,10 +92,22 @@ def main():
             SHOULD_RUN = True
             logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
 
-    # TODO get timestamp value of last month
-    timestamp_to_run = [pd.Timestamp(date(datetime.now().year, TODAY_MONTH -1, 1))]
-    date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
-    logger.debug(f"timestamp_to_run: {timestamp_to_run}")
+    if SHOULD_RUN:
+        timestamp_to_run = [pd.Timestamp(date(datetime.now().year, TODAY_MONTH -1, 1))]
+        date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
+        logger.debug(f"timestamp_to_run: {timestamp_to_run}")
+
+        downloads_complete = verify_downloads_complete(region=REGION, analysis_dates=date_to_run)
+        complete = downloads_complete['complete']
+        incomplete_dates = downloads_complete['complete_dates']
+        incomplete_dates = downloads_complete['incomplete_dates']
+        logger.debug(f"Are downloads complete for region {REGION}? {downloads_complete['complete']}")
+        if not complete:
+            logger.debug(f"We should run downloads for {REGION} for {incomplete_dates}")
+    else:
+        logger.debug(f"Too early in the month to run downloads for {REGION}")
+
+
 
 
 if __name__ == "__main__":
