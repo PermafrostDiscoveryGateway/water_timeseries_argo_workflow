@@ -67,10 +67,7 @@ def main():
         load_dotenv()
         logger.info("Loading environment from default .env file")
 
-    if len(sys.argv) > 1:
-        REGION = sys.argv[1]
-    else:
-        REGION = 'EURASIA3'
+    REGION = os.environ.get("REGION", "TEST")
 
     SHOULD_RUN = False
 
@@ -104,6 +101,8 @@ def main():
         logger.debug(f"Are downloads complete for region {REGION}? {downloads_complete['complete']}")
         if not complete:
             logger.debug(f"We should run downloads for {REGION} for {incomplete_dates}")
+            download_result = download_near_real_time_region_dates(region=REGION, dates_to_download=timestamp_to_run)
+            logger.debug(f"Download result: {download_result}")
     else:
         logger.debug(f"Too early in the month to run downloads for {REGION}")
 
