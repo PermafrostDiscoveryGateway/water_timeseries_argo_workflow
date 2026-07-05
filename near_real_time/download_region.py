@@ -67,7 +67,7 @@ def main():
         load_dotenv()
         logger.info("Loading environment from default .env file")
 
-    REGION = os.environ.get("REGION", "TEST")
+    REGION = os.environ.get("region_name", "TEST")
 
     SHOULD_RUN = False
 
