@@ -176,8 +176,8 @@ spec:
             mkdir -p /data/water_timeseries/{dynamic_world_data,split_lakes,input,new_dynamic_world,split_new_dynamic_world,output,checkpoint,temp_netcdf,subsets,breakpoints}
             mkdir -p /data/water_timeseries/dask_work_space
             chmod -R 755 /data/water_timeseries
-            mkdir -p /data/eurasia2
-            chmod -R 755 /data/eurasia2
+            mkdir -p /data/eurasia2_download
+            chmod -R 755 /data/eurasia2_download
             
             # Set environment variables
             export TMPDIR=/data/water_timeseries/temp_netcdf
@@ -210,7 +210,7 @@ spec:
             
             # Create .env file
             echo "=== CREATING .env FILE ==="
-            cat > /data/eurasia2/.env << 'EOF'
+            cat > /data/eurasia2_download/.env << 'EOF'
             project=pdg-project-406720
             vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
             bucket_path=pdg-storage-default/water_timeseries_v2/data/input
@@ -239,7 +239,7 @@ spec:
             cd /app
             
             # Use python -u for unbuffered output and capture exit code properly
-            python -u /app/near_real_time/download_region.py /data/eurasia2/.env
+            python -u /app/near_real_time/download_region.py /data/eurasia2_download/.env
             SCRIPT_EXIT_CODE=$?
             
             echo "=== SCRIPT COMPLETED with exit code: $SCRIPT_EXIT_CODE ==="

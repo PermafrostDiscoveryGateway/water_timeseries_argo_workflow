@@ -90,7 +90,30 @@ def main():
             logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
 
     if SHOULD_RUN:
+        date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
+
         logger.debug(f"Checking if we should merge")
+        REGIONS = utils.region_boundaries.get_region_boundaries()
+        REGION_NAMES = list(REGIONS.keys())
+
+        regions_downloaded = 0
+
+        for region in REGION_NAMES:
+            logger.info(f"Checking if we should merge region: {region}")
+            check_result = verify_downloads_complete(region=region, analysis_dates=date_to_run)
+            logger.debug(f"Result for region {region}: {check_result['complete']}")
+            if check_result['complete']:
+                regions_downloaded += 1
+        logger.debug(f"How many regions are finished downloading?")
+        logger.debug(f"{regions_downloaded} regions downloaded")
+
+        if regions_downloaded == len(REGION_NAMES):
+            logger.debug(f"All regions downloaded")
+        else:
+            logger.debug(f"not all regions downloaded, do not merge")
+
+
+
 
 
 
