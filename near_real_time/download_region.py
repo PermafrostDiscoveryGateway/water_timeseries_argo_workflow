@@ -102,6 +102,7 @@ def main():
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+    logger.debug(f"This is the most recent dynamic world file {original_most_recent_dynamic_world_file}")
     missing_dates_from_netcdf = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
 
 

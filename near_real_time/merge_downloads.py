@@ -109,10 +109,16 @@ def main():
         logger.debug(f"How many regions are finished downloading?")
         logger.debug(f"{regions_downloaded} regions downloaded")
 
+        successfully_merged_region_count = 0
+        regions_still_to_merge = []
+
         if regions_downloaded == len(REGION_NAMES):
-            logger.debug(f"All regions downloaded")
+            for region in REGION_NAMES:
+                logger.debug(f"Checking if we already merged region {region} for {date_to_run}")
             for region in REGION_NAMES:
                 merge_result = merge_near_real_time_region_v3_simple(region=region, dates_to_merge=date_to_run)
+                # TODO use this method to check merged data
+                # check_region_data_in_merged_file
                 logger.debug(f"Merge result for region {region}: {merge_result['complete']}")
             logger.debug(f"Verifying merge finished for all regions properly")
         else:
