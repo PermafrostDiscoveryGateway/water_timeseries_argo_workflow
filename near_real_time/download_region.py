@@ -59,6 +59,7 @@ def verify_merge_result(original_file, merged_file):
 
 def main():
     logger.debug(f"Beginning historical run")
+    env_path = None
     if len(sys.argv) > 1:
         env_path = sys.argv[1]
         load_dotenv(dotenv_path=env_path)
@@ -127,8 +128,14 @@ def main():
         logger.debug(f"Are downloads complete for region {REGION}? {downloads_complete['complete']}")
         if not complete:
             logger.debug(f"We should run downloads for {REGION} for {incomplete_dates}")
-            download_result = download_near_real_time_region_dates(region=REGION, dates_to_download=timestamp_to_run)
-            logger.debug(f"Download result: {download_result}")
+            if env_path:
+                download_result = download_near_real_time_region_dates(region=REGION, dates_to_download=timestamp_to_run, env_path=env_path )
+                logger.debug(f"Download result: {download_result}")
+            else:
+                logger.debug(f"Missing env path")
+                download_result = download_near_real_time_region_dates(region=REGION, dates_to_download=timestamp_to_run)
+                logger.debug(f"Download result: {download_result}")
+
     else:
         logger.debug(f"Too early in the month to run downloads for {REGION}")
 
