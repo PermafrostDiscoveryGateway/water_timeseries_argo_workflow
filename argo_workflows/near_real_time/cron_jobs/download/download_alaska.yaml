@@ -8,7 +8,7 @@ metadata:
 spec:
   # Run daily at 3:30 PM CST (21:30 UTC)
   # Adjust timezone as needed - this is UTC time
-  schedule: "30 15 * * *"
+  schedule: "12 30 * * *"
   # Forbid - prevents new workflow from starting if one is already running
   concurrencyPolicy: "Forbid"
   # How long to wait for the workflow to start before giving up (5 minutes)

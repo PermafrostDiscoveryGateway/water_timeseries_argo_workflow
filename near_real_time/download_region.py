@@ -69,6 +69,32 @@ def main():
 
     REGION = os.environ.get("region_name", "TEST")
 
+    # ========== DEBUGGING: Check ALL environment variables ==========
+    logger.info("=" * 80)
+    logger.info("ENVIRONMENT VARIABLES (ALL)")
+    logger.info("=" * 80)
+    for key, value in sorted(os.environ.items()):
+        logger.info(f"  {key}: {value}")
+    logger.info("=" * 80)
+
+    REGION = os.environ.get("region_name", "TEST")
+    logger.info(f"=== REGION FROM ENV: '{REGION}' ===")
+
+    # ========== DEBUGGING: Check region boundaries ==========
+    import utils.region_boundaries
+    boundaries = utils.region_boundaries.get_region_boundaries()
+    logger.info(f"Available regions: {list(boundaries.keys())}")
+    if REGION in boundaries:
+        logger.info(f"Region '{REGION}' boundaries: {boundaries[REGION]}")
+    else:
+        logger.error(f"Region '{REGION}' NOT FOUND in boundaries!")
+        logger.error(f"Available: {list(boundaries.keys())}")
+
+    # ========== DEBUGGING: Check what's being passed to functions ==========
+    logger.info("=" * 80)
+    logger.info("FUNCTION CALL TRACING")
+    logger.info("=" * 80)
+
     SHOULD_RUN = False
 
     summer_months = [6, 7, 8, 9]
