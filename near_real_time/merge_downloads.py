@@ -91,6 +91,8 @@ def main():
 
     if SHOULD_RUN:
         date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
+        dates_to_run_string = date_to_run[0].replace('-', '_')
+        logger.debug(f"New netcdf file will end with string {dates_to_run_string}")
         logger.debug(f"Checking if we should merge")
         logger.debug(f"Merge if {date_to_run} are downloaded for all regions")
         REGIONS = utils.region_boundaries.get_region_boundaries()
@@ -109,6 +111,10 @@ def main():
 
         if regions_downloaded == len(REGION_NAMES):
             logger.debug(f"All regions downloaded")
+            for region in REGION_NAMES:
+                merge_result = merge_near_real_time_region_v3_simple(region=region, dates_to_merge=date_to_run)
+                logger.debug(f"Merge result for region {region}: {merge_result['complete']}")
+            logger.debug(f"Verifying merge finished for all regions properly")
         else:
             logger.debug(f"not all regions downloaded, do not merge")
 
