@@ -18,6 +18,16 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+def get_creation_time(filepath):
+    """Get file creation time on Linux (birth time) if available"""
+    stat_info = os.stat(filepath)
+    try:
+        # st_birthtime is the actual creation time on Linux
+        creation_time = stat_info.st_birthtime
+    except AttributeError:
+        # Fallback to ctime if birthtime not available
+        creation_time = stat_info.st_ctime
+    return creation_time
 
 # After merging, compare original vs new
 def verify_merge_result(original_file, merged_file):
@@ -75,11 +85,11 @@ def main():
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     for file in all_dynamic_world_files:
-        time_created = os.path.getctime(file)
+        time_created = get_creation_time(file)
         readable_time = datetime.fromtimestamp(time_created)
         logger.debug(f"Netcdf file {file} has creation date of {readable_time}")
-    original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
-
+        most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: f.stat().st_mtime)
+    logger.debug(f"Most recent dynamic world file {most_recent_dynamic_world_file}")
     # missing_dates_from_netcdf = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
 
 
