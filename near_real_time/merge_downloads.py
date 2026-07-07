@@ -107,7 +107,8 @@ def main():
     if SHOULD_RUN:
         date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
         dates_to_run_string = date_to_run[0].replace('-', '_')
-        logger.debug(f"New netcdf file will end with string {dates_to_run_string}")
+        name_of_final_merge_file = f"lakes_dw_Vdc{dates_to_run_string}.nc"
+        logger.debug(f"New netcdf file will be {name_of_final_merge_file}")
         logger.debug(f"Checking if we should merge")
         logger.debug(f"Merge if {date_to_run} are downloaded for all regions")
         REGIONS = utils.region_boundaries.get_region_boundaries()
