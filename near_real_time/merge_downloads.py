@@ -74,7 +74,12 @@ def main():
     summer_months = [6, 7, 8, 9]
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    for file in all_dynamic_world_files:
+        time_created = os.path.getctime(file)
+        readable_time = datetime.fromtimestamp(time_created)
+        logger.debug(f"Netcdf file {file} has creation date of {readable_time}")
     original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+
     # missing_dates_from_netcdf = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
 
 
