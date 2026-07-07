@@ -115,6 +115,7 @@ def main():
         REGION_NAMES = list(REGIONS.keys())
 
         regions_downloaded = 0
+        regions_downloaded_names = []
 
         for region in REGION_NAMES:
             logger.info(f"Checking if we should merge region: {region}")
@@ -122,8 +123,13 @@ def main():
             logger.debug(f"Result for region {region}: {check_result['complete']}")
             if check_result['complete']:
                 regions_downloaded += 1
+                regions_downloaded_names.append(region)
         logger.debug(f"How many regions are finished downloading?")
         logger.debug(f"{regions_downloaded} regions downloaded")
+        logger.debug(f"These regions are fully downloaded")
+
+        for region in regions_downloaded_names:
+            logger.debug(region)
 
         successfully_merged_region_count = 0
         regions_still_to_merge = []
