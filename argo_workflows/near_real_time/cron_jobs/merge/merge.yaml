@@ -8,7 +8,7 @@ metadata:
 spec:
   # Run daily at 3:30 PM CST (21:30 UTC)
   # Adjust timezone as needed - this is UTC time
-  # NOTE "45 17 * * *" is 1245 CST
+  # NOTE "45 17 * * *" is 1245 CSTx
   schedule: "45 17 * * *"
   # Forbid - prevents new workflow from starting if one is already running
   concurrencyPolicy: "Forbid"

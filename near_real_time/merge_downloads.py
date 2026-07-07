@@ -20,7 +20,7 @@ if str(project_root) not in sys.path:
 
 def get_creation_time(filepath):
     """Get file creation time on Linux (birth time) if available"""
-    stat_info = os.stat(filepath)
+    stat_info = os.stat(Path(filepath))
     try:
         # st_birthtime is the actual creation time on Linux
         creation_time = stat_info.st_birthtime
@@ -88,7 +88,7 @@ def main():
         time_created = get_creation_time(file)
         readable_time = datetime.fromtimestamp(time_created)
         logger.debug(f"Netcdf file {file} has creation date of {readable_time}")
-        most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: f.stat().st_mtime)
+        most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
     logger.debug(f"Most recent dynamic world file {most_recent_dynamic_world_file}")
     # missing_dates_from_netcdf = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
 
