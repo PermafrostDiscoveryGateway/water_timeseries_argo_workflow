@@ -5499,7 +5499,8 @@ def verify_downloads_complete(
             'incomplete_count': len(incomplete_dates),
             'total_expected_downloads': sum(r.get('expected_downloads', 0) for r in date_results.values()),
             'total_successful_downloads': sum(r.get('successful_downloads', 0) for r in date_results.values()),
-            'total_failed_downloads': sum(r.get('failed_downloads', 0) for r in date_results.values())
+            'total_failed_downloads': sum(r.get('failed_downloads', 0) for r in date_results.values()),
+            'total_skipped_downloads': sum(r.get('skipped_downloads', 0) for r in date_results.values()),
         }
     }
 
