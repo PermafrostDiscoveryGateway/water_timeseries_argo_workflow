@@ -31,3 +31,29 @@ def is_file_ready(filepath, wait_seconds=0.5, checks=10):
 
 def main():
     logger.debug(f"Running processing cron job")
+    SHOULD_RUN = False
+
+    summer_months = [6, 7, 8, 9]
+    dynamic_world_data_dir = os.environ['dynamic_world_data']
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
+    logger.debug(f"This is the most recent dynamic world file {original_most_recent_dynamic_world_file}")
+    missing_dates_from_netcdf = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(
+        original_most_recent_dynamic_world_file)
+
+    TODAY = datetime.now()
+    TODAY_MONTH = TODAY.month
+    if TODAY_MONTH - 1 in summer_months:
+        logger.debug(f"TODAY MONTH: {TODAY_MONTH}")
+        logger.debug(f"Last month: {TODAY.month - 1} checking to see if we should run")
+        TODAY_DAY = TODAY.day
+        if TODAY_DAY > 3:
+            SHOULD_RUN = True
+            logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
+
+    if SHOULD_RUN:
+        timestamp_to_run = [pd.Timestamp(date(datetime.now().year, TODAY_MONTH - 1, 1))]
+        date_to_run = [datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")]
+        logger.debug(f"timestamp_to_run: {timestamp_to_run}")
+    else:
+        logger.debug(f"Too early in the month to run")

@@ -68,7 +68,6 @@ def main():
         load_dotenv()
         logger.info("Loading environment from default .env file")
 
-    REGION = os.environ.get("region_name", "TEST")
 
     # ========== DEBUGGING: Check ALL environment variables ==========
     logger.info("=" * 80)
