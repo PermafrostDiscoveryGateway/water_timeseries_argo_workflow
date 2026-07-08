@@ -91,6 +91,13 @@ def sync_with_gsutil(output_dir: str, bucket_name: str, path_to_cloud_folder: st
 
 def main():
     logger.debug(f"Checking if we should upload anything to cloud")
+    if len(sys.argv) > 1:
+        env_path = sys.argv[1]
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
 
     # Get environment variables
     output_dir = os.environ.get('output_dir')
