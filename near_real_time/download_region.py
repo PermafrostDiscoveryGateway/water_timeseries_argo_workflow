@@ -132,8 +132,9 @@ def main():
         total_skipped_and_successful_downloads = summary['total_skipped_downloads'] + summary['total_successful_downloads']
         percent_downloaded = float(total_skipped_and_successful_downloads)/float(summary['total_expected_downloads'])
         logger.debug(f"Percent downloaded: {percent_downloaded}")
-        time.sleep(60*10)
-        logger.debug(f"Are downloads complete for region {REGION}? {downloads_complete['complete']}")
+        if percent_downloaded > 0.99:
+            complete = True
+        logger.debug(f"Are downloads complete for region {REGION}? {complete}")
         if not complete:
             logger.debug(f"We should run downloads for {REGION} for {incomplete_dates}")
             if env_path:
