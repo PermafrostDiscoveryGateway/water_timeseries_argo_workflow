@@ -9,7 +9,8 @@ RUN uv pip install \
     toml \
     dask[dataframe] \
     pyarrow \
-    geemap==0.37.2
+    geemap==0.37.2 \
+    gsutil
 
 # Alternatively, prevent upgrading any packages that are already installed:
 # RUN uv pip install --no-deps \  # This would skip dependencies but might break things
