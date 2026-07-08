@@ -136,8 +136,8 @@ def main():
             logger.debug(f"Total successful downloads {summary['total_successful_downloads']}")
             total_skipped_and_successful_downloads = summary['total_skipped_downloads'] + summary[
                 'total_successful_downloads']
-            percent_downloaded = float(total_skipped_and_successful_downloads) / float(
-                summary['total_expected_downloads'])
+            percent_downloaded = float(total_skipped_and_successful_downloads) / float(summary['total_expected_downloads'])
+            logger.debug(f"Percent downloaded for {region}: {percent_downloaded}")
             logger.debug(f"Percent downloaded: {percent_downloaded}")
             if downloads_complete['complete'] or percent_downloaded > 0.99:
                 regions_downloaded += 1
