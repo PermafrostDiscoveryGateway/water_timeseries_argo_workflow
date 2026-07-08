@@ -126,8 +126,20 @@ def main():
         regions_downloaded_names = []
 
         for region in REGION_NAMES:
-            check_result = verify_downloads_complete(region=region, analysis_dates=date_to_run)
-            if check_result['complete']:
+            downloads_complete = verify_downloads_complete(region=region, analysis_dates=date_to_run)
+            logger.debug(downloads_complete)
+            complete = downloads_complete['complete']
+            complete_dates = downloads_complete['complete_dates']
+            incomplete_dates = downloads_complete['incomplete_dates']
+            summary = downloads_complete['summary']
+            logger.debug(f"Total expected downloads {summary['total_expected_downloads']}")
+            logger.debug(f"Total successful downloads {summary['total_successful_downloads']}")
+            total_skipped_and_successful_downloads = summary['total_skipped_downloads'] + summary[
+                'total_successful_downloads']
+            percent_downloaded = float(total_skipped_and_successful_downloads) / float(
+                summary['total_expected_downloads'])
+            logger.debug(f"Percent downloaded: {percent_downloaded}")
+            if downloads_complete['complete'] or percent_downloaded > 0.99:
                 regions_downloaded += 1
                 regions_downloaded_names.append(region)
         logger.debug(f"How many regions are finished downloading?")
@@ -163,7 +175,7 @@ def main():
         if successfully_merged_region_count == len(REGION_NAMES):
             logger.debug("All regions merged successfully")
             shutil.move(most_recent_dynamic_world_file, name_of_final_merge_file)
-            # TODO move the latest file to name_of_final_merge_file
+        logger.debug(f"Merging now finished")
 
 
 
