@@ -138,10 +138,11 @@ def main():
             for region in REGION_NAMES:
                 logger.debug(f"Checking if we already merged region {region} for {date_to_run}")
             for region in REGION_NAMES:
-                merge_result = merge_near_real_time_region_v3_simple(region=region, dates_to_merge=date_to_run)
+                logger.debug(f"Not actually merging {region} yet")
+                # merge_result = merge_near_real_time_region_v3_simple(region=region, dates_to_merge=date_to_run)
                 # TODO use this method to check merged data
                 # check_region_data_in_merged_file
-                logger.debug(f"Merge result for region {region}: {merge_result['complete']}")
+                # logger.debug(f"Merge result for region {region}: {merge_result['complete']}")
             logger.debug(f"Verifying merge finished for all regions properly")
         else:
             logger.debug(f"not all regions downloaded, do not merge")
