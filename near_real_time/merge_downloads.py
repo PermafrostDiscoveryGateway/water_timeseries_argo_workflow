@@ -3,6 +3,7 @@ from near_real_time_grid_v2 import verify_downloads_complete, verify_process_com
                                     merge_near_real_time_region_v2, merge_near_real_time_region_v3_simple, \
                  compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_near_real_time_region_v3_smart
 import sys
+import shutil
 import utils.download_new_dynamic_world_data as download_new_dynamic_world_data
 from loguru import logger
 from datetime import date, datetime
@@ -63,7 +64,15 @@ def verify_merge_result(original_file, merged_file):
     return result
 
 
-# Usage
+def is_file_ready(filepath, wait_seconds=0.5, checks=10):
+    sizes = []
+    for _ in range(checks):
+        size = os.path.getsize(filepath)
+        sizes.append(size)
+        time.sleep(wait_seconds)
+
+    # If size hasn't changed, assume writing is done
+    return len(set(sizes)) == 1
 
 
 
@@ -106,7 +115,7 @@ def main():
     if SHOULD_RUN:
         date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
         dates_to_run_string = date_to_run[0].replace('-', '_')
-        name_of_final_merge_file = f"lakes_dw_Vdc{dates_to_run_string}.nc"
+        name_of_final_merge_file = f"{dynamic_world_data_dir}_lakes_dw_Vdc{dates_to_run_string}.nc"
         logger.debug(f"New netcdf file will be {name_of_final_merge_file}")
         logger.debug(f"Checking if we should merge")
         logger.debug(f"Merge if {date_to_run} are downloaded for all regions")
@@ -151,6 +160,10 @@ def main():
         else:
             logger.debug(f"not all regions downloaded, do not merge")
         logger.debug(f"Successfully merged {successfully_merged_region_count}")
+        if successfully_merged_region_count == len(REGION_NAMES):
+            logger.debug("All regions merged successfully")
+            shutil.move(most_recent_dynamic_world_file, name_of_final_merge_file)
+            # TODO move the latest file to name_of_final_merge_file
 
 
 
