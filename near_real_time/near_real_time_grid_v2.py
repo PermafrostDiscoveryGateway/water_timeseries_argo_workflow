@@ -3644,6 +3644,279 @@ def merge_near_real_time_region_v3_simple(
         return {'success': False, 'error': 'No file created'}
 
 
+def has_region_been_merged_for_dates(
+        region: str,
+        dates_to_check: List[str],
+        historical_file_path: str = None,
+        env_path: str = None
+) -> dict:
+    """
+    Check if a specific region already has the given dates merged.
+
+    Args:
+        region: Region name (TEST, ALASKA, CANADA, EURASIA)
+        dates_to_check: List of dates in "YYYY-MM" format
+        historical_file_path: Optional path to the historical file
+        env_path: Optional path to .env file
+
+    Returns:
+        dict: {
+            'all_dates_present': bool,
+            'missing_dates': List[str],
+            'present_dates': List[str],
+            'file_path': str,
+            'region_found': bool,
+            'date_counts': dict  # counts of dates per region
+        }
+    """
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    # Find the historical file if not provided
+    if historical_file_path is None:
+        dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+        if not dynamic_world_data_dir:
+            return {
+                'all_dates_present': False,
+                'error': 'dynamic_world_data not set in environment',
+                'missing_dates': dates_to_check
+            }
+
+        all_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+        if not all_files:
+            return {
+                'all_dates_present': False,
+                'error': 'No NetCDF files found',
+                'missing_dates': dates_to_check
+            }
+
+        historical_file_path = max(all_files, key=os.path.getctime)
+
+    try:
+        # Open the file
+        ds = xr.open_dataset(historical_file_path)
+
+        # Get all IDs and their associated regions
+        # Assuming you have region information stored with each ID
+        # If you don't have region stored, you'll need to get this from the region boundaries
+        all_ids = ds['id_geohash'].values
+
+        # Method 1: If region is stored as an attribute or variable
+        # Look for region information in the dataset
+        region_ids = []
+        if 'region' in ds.data_vars:
+            # If region is a variable in the dataset
+            region_mask = ds['region'] == region
+            region_ids = ds['id_geohash'].values[region_mask.values]
+        elif 'region' in ds.attrs:
+            # If region is stored as a global attribute
+            # This might not be reliable for per-ID region info
+            logger.warning("Region stored as global attribute - cannot verify per-ID region")
+        else:
+            # Method 2: Use the region boundaries to filter IDs
+            # This requires loading the region boundaries and checking which IDs fall within them
+            region_ids = get_ids_for_region_from_file(ds, region)
+
+        # If we found region-specific IDs, check their dates
+        if region_ids:
+            # Get the subset of data for this region
+            region_data = ds.sel(id_geohash=region_ids)
+
+            # Get existing dates for this region
+            existing_dates = set(pd.to_datetime(region_data['date'].values))
+            existing_date_strings = {d.strftime("%Y-%m") for d in existing_dates}
+
+            # Check which dates are present
+            present_dates = [d for d in dates_to_check if d in existing_date_strings]
+            missing_dates = [d for d in dates_to_check if d not in existing_date_strings]
+
+            result = {
+                'all_dates_present': len(missing_dates) == 0,
+                'present_dates': present_dates,
+                'missing_dates': missing_dates,
+                'file_path': historical_file_path,
+                'region_found': True,
+                'region_id_count': len(region_ids),
+                'region_date_count': len(existing_date_strings),
+                'all_dates_in_file': sorted(existing_date_strings)
+            }
+        else:
+            # No region-specific IDs found
+            # This could mean the region hasn't been merged yet
+            result = {
+                'all_dates_present': False,
+                'present_dates': [],
+                'missing_dates': dates_to_check,
+                'file_path': historical_file_path,
+                'region_found': False,
+                'message': f'No IDs found for region {region} in the file'
+            }
+
+        ds.close()
+        return result
+
+    except Exception as e:
+        logger.error(f"Error checking region dates: {e}")
+        return {
+            'all_dates_present': False,
+            'error': str(e),
+            'missing_dates': dates_to_check,
+            'file_path': historical_file_path
+        }
+
+
+def get_ids_for_region_from_file(ds, region: str) -> List[str]:
+    """
+    Get IDs for a specific region by checking which IDs fall within the region's bounds.
+
+    This is a helper function that uses the region boundaries to filter IDs.
+    """
+    from utils.region_boundaries import get_region_boundaries
+
+    try:
+        # Get region boundaries
+        region_boundaries = get_region_boundaries()
+        if region not in region_boundaries:
+            logger.warning(f"Region {region} not found in boundaries")
+            return []
+
+        bounds = region_boundaries[region]
+        x_min_start = bounds['X_MIN_START']
+        x_min_end = bounds['X_MIN_END']
+        y_min_start = bounds['Y_MIN_START']
+        y_min_end = bounds['Y_MIN_END']
+
+        # Get all IDs and their coordinates
+        # Assuming you have longitude and latitude information
+        # This depends on how your data is structured
+        all_ids = ds['id_geohash'].values
+
+        # If you have coordinate information in the dataset
+        if 'longitude' in ds.coords and 'latitude' in ds.coords:
+            # This is a simplified example - adjust based on your actual data structure
+            lons = ds['longitude'].values
+            lats = ds['latitude'].values
+
+            # Filter IDs within the bounding box
+            region_ids = []
+            for i, id_val in enumerate(all_ids):
+                if (x_min_start <= lons[i] <= x_min_end and
+                        y_min_start <= lats[i] <= y_min_end):
+                    region_ids.append(id_val)
+
+            return region_ids
+
+        # If you have the ID geohash and a way to convert it to coordinates
+        # You might need to use the geohash library
+        # This is a placeholder - implement based on your actual data structure
+        logger.warning("Cannot filter IDs by region - no coordinate information available")
+        return []
+
+    except Exception as e:
+        logger.error(f"Error getting region IDs: {e}")
+        return []
+
+def merge_near_real_time_region_v3_smart(
+        region: str = "TEST",
+        dates_to_merge: List[str] = None,
+        historical_file_path: str = None,
+        env_path: str = None,
+        skip_if_already_merged: bool = True,
+        verify_downloads_first: bool = True
+):
+    """
+    Enhanced merge function that checks if the region already has the dates.
+
+    This version properly handles multiple regions by checking region-specific data.
+    """
+    log_memory_usage("Smart Merge function start")
+
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    # Normalize dates
+    normalized_dates = []
+    for date in dates_to_merge:
+        if isinstance(date, pd.Timestamp):
+            normalized_dates.append(date.strftime("%Y-%m"))
+        elif isinstance(date, datetime.datetime):
+            normalized_dates.append(date.strftime("%Y-%m"))
+        elif isinstance(date, str):
+            try:
+                if len(date) == 7 and date[4] == '-':
+                    normalized_dates.append(date)
+                else:
+                    dt = pd.to_datetime(date)
+                    normalized_dates.append(dt.strftime("%Y-%m"))
+            except:
+                logger.warning(f"Could not parse date: {date}")
+
+    if not normalized_dates:
+        logger.error("No valid dates provided")
+        return {'success': False, 'error': 'No valid dates provided'}
+
+    # Check if the region already has these dates
+    if skip_if_already_merged and historical_file_path:
+        status = has_region_been_merged_for_dates(
+            region=region,
+            dates_to_check=normalized_dates,
+            historical_file_path=historical_file_path,
+            env_path=env_path
+        )
+
+        if status.get('all_dates_present', False):
+            logger.info(f"✅ Region {region} already has all dates {normalized_dates} merged")
+            return {
+                'success': True,
+                'skipped': True,
+                'reason': 'All dates already merged',
+                'status': status
+            }
+        elif status.get('present_dates'):
+            # Some dates are present, only merge the missing ones
+            missing_dates = status.get('missing_dates', [])
+            if missing_dates:
+                logger.info(
+                    f"Region {region} has {len(status['present_dates'])} dates, need to merge {len(missing_dates)}: {missing_dates}")
+                # Update dates_to_merge to only the missing ones
+                normalized_dates = missing_dates
+            else:
+                logger.info(f"Region {region} has all dates present")
+                return {
+                    'success': True,
+                    'skipped': True,
+                    'reason': 'All dates already merged',
+                    'status': status
+                }
+
+    # Get the historical file if not provided
+    if historical_file_path is None:
+        dynamic_world_data_dir = os.environ['dynamic_world_data']
+        all_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+        if not all_files:
+            logger.error("No NetCDF files found")
+            return {'success': False, 'error': 'No NetCDF files found'}
+        historical_file_path = max(all_files, key=os.path.getctime)
+
+    # Now proceed with the merge for the remaining dates
+    logger.info(f"Merging dates {normalized_dates} for region {region}")
+
+    merge_result = merge_near_real_time_region_v3_simple(
+        region=region,
+        dates_to_merge=normalized_dates,
+        historical_file_path=historical_file_path,
+        env_path=env_path,
+        verify_downloads_first=verify_downloads_first
+    )
+
+    return merge_result
+
 def merge_near_real_time_region_v3_cloud(
         region: str = "TEST",
         dates_to_merge: List[str] = None,
