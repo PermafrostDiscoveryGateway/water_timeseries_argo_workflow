@@ -4963,7 +4963,7 @@ def process_near_real_time_region_dates_zarr(
     Y_MIN_END = bounding_box_coords['Y_MIN_END']
 
     # Get the most recent historical file (already contains merged data)
-    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+    most_recent_dynamic_world_file = max(all_dynamic_world_files,key=lambda f: Path(f).stat().st_mtime)
     logger.info(f"Using historical NetCDF file: {most_recent_dynamic_world_file}")
     hist_file_size_gb = get_file_size_gb(most_recent_dynamic_world_file)
     logger.info(f"Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
