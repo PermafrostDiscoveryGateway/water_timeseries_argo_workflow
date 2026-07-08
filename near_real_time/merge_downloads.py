@@ -1,9 +1,11 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region , \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
                                     merge_near_real_time_region_v2, merge_near_real_time_region_v3_simple, \
-                 compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_near_real_time_region_v3_smart
+                 compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_near_real_time_region_v3_smart, \
+            enable_memory_tracking, log_memory_usage
 import sys
 import shutil
+import gc
 import utils.download_new_dynamic_world_data as download_new_dynamic_world_data
 from loguru import logger
 from datetime import date, datetime
@@ -85,6 +87,16 @@ def main():
     else:
         load_dotenv()
         logger.info("Loading environment from default .env file")
+
+    enable_memory_tracking()
+    log_memory_usage("Program start")
+
+    try:
+        import dask
+        dask.config.set(scheduler='threads')
+        dask.config.set({'array.chunk-size': '128MiB'})
+    except:
+        pass
 
     REGION = os.environ.get("region_name", "TEST")
 
@@ -168,6 +180,8 @@ def main():
                     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
                     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
                     logger.debug(f"Now the most recent dynamic world file is {most_recent_dynamic_world_file}")
+                    gc.collect()
+                    log_memory_usage(f"After merging region {region}")
             logger.debug(f"Verifying merge finished for all regions properly")
         else:
             logger.debug(f"not all regions downloaded, do not merge")
