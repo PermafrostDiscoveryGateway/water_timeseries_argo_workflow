@@ -84,6 +84,7 @@ def main():
     summer_months = [6, 7, 8, 9]
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    most_recent_dynamic_world_file = None
     for file in all_dynamic_world_files:
         time_created = get_creation_time(file)
         readable_time = datetime.fromtimestamp(time_created)
@@ -97,8 +98,6 @@ def main():
     TODAY =  datetime.now()
     TODAY_MONTH = TODAY.month
     if TODAY_MONTH - 1 in summer_months:
-        logger.debug(f"TODAY MONTH: {TODAY_MONTH}")
-        logger.debug(f"Last month: {TODAY.month - 1} checking to see if we should run")
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 3:
             SHOULD_RUN = True
@@ -118,9 +117,7 @@ def main():
         regions_downloaded_names = []
 
         for region in REGION_NAMES:
-            logger.info(f"Checking if we should merge region: {region}")
             check_result = verify_downloads_complete(region=region, analysis_dates=date_to_run)
-            logger.debug(f"Result for region {region}: {check_result['complete']}")
             if check_result['complete']:
                 regions_downloaded += 1
                 regions_downloaded_names.append(region)
