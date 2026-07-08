@@ -3338,7 +3338,7 @@ def merge_near_real_time_region_v3_simple(
         if not all_dynamic_world_files:
             logger.error(f"No .nc files found in {dynamic_world_data_dir}")
             return {'success': False, 'error': 'No .nc files found'}
-        original_historical_file = max(all_dynamic_world_files, key=os.path.getctime)
+        original_historical_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
         logger.info(f"Using most recent historical file: {original_historical_file}")
 
     # ========== LOAD HISTORICAL DATA ==========
@@ -3902,7 +3902,7 @@ def merge_near_real_time_region_v3_smart(
         if not all_files:
             logger.error("No NetCDF files found")
             return {'success': False, 'error': 'No NetCDF files found'}
-        historical_file_path = max(all_files, key=os.path.getctime)
+        historical_file_path = max(all_files, key=lambda f: Path(f).stat().st_mtime)
 
     # Now proceed with the merge for the remaining dates
     logger.info(f"Merging dates {normalized_dates} for region {region}")

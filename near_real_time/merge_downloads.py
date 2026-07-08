@@ -1,7 +1,7 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region , \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
                                     merge_near_real_time_region_v2, merge_near_real_time_region_v3_simple, \
-                 compare_netcdf_files, verify_merged_netcdf, verify_merged_data
+                 compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_near_real_time_region_v3_smart
 import sys
 import utils.download_new_dynamic_world_data as download_new_dynamic_world_data
 from loguru import logger
@@ -129,19 +129,18 @@ def main():
             logger.debug(region)
 
         successfully_merged_region_count = 0
-        regions_still_to_merge = []
 
         if regions_downloaded == len(REGION_NAMES):
             for region in REGION_NAMES:
                 logger.debug(f"Checking if we already merged region {region} for {date_to_run}")
             for region in REGION_NAMES:
-                # TODO check if already merged
                 logger.debug(f"Not actually merging {region} yet")
                 logger.debug(f"Checking what is the most recent netcdf file")
                 all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
                 most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
-                merge_result = merge_near_real_time_region_v3_simple(region=region, dates_to_merge=date_to_run, historical_file_path=most_recent_dynamic_world_file)
+                merge_result = merge_near_real_time_region_v3_smart(region=region, dates_to_merge=date_to_run, historical_file_path=most_recent_dynamic_world_file)
                 if merge_result['success']:
+                    successfully_merged_region_count +=1
                     logger.debug(f"Merging was successful for {region}")
                     new_netcdf_file = merge_result['final_file']
                     logger.debug(f"New netcdf file {new_netcdf_file}")
@@ -151,6 +150,7 @@ def main():
             logger.debug(f"Verifying merge finished for all regions properly")
         else:
             logger.debug(f"not all regions downloaded, do not merge")
+        logger.debug(f"Successfully merged {successfully_merged_region_count}")
 
 
 
