@@ -131,12 +131,27 @@ def create_empty_netcdf_with_structure(filepath, source_file=None):
                     attrs=var.attrs
                 )
 
-            # Copy global attributes
-            empty_ds.attrs = ds_source.attrs.copy()
+            # Copy global attributes (filter out unsupported types)
+            for attr_name, attr_value in ds_source.attrs.items():
+                # Skip boolean attributes (NetCDF doesn't support them)
+                if isinstance(attr_value, bool):
+                    logger.debug(f"Skipping boolean attribute '{attr_name}'")
+                    continue
+                # Skip bytes attributes (NetCDF doesn't support them)
+                if isinstance(attr_value, bytes):
+                    logger.debug(f"Skipping bytes attribute '{attr_name}'")
+                    continue
+                # Only copy supported types
+                try:
+                    empty_ds.attrs[attr_name] = attr_value
+                except Exception as e:
+                    logger.warning(f"Could not copy attribute '{attr_name}': {e}")
 
             # Add metadata to indicate this is an empty file
-            empty_ds.attrs['empty'] = True
+            empty_ds.attrs['empty'] = "True"  # Use string instead of boolean
             empty_ds.attrs['created_at'] = datetime.now().isoformat()
+            empty_ds.attrs['status'] = "empty_placeholder"
+            empty_ds.attrs['source_file'] = str(source_file)
 
             ds_source.close()
 
@@ -157,12 +172,13 @@ def create_empty_netcdf_with_structure(filepath, source_file=None):
                     dims=('id_geohash', 'date')
                 )
 
-            # Add metadata
-            empty_ds.attrs['empty'] = True
+            # Add metadata (using string values only)
+            empty_ds.attrs['empty'] = "True"
             empty_ds.attrs['created_at'] = datetime.now().isoformat()
             empty_ds.attrs['description'] = 'Empty placeholder for local disk merge'
+            empty_ds.attrs['status'] = 'empty'
 
-        # Write the empty file
+        # Write the empty file with proper encoding
         encoding = {}
         for var in empty_ds.data_vars:
             encoding[var] = {
@@ -170,6 +186,16 @@ def create_empty_netcdf_with_structure(filepath, source_file=None):
                 'complevel': 1,
                 'shuffle': True
             }
+
+        # Also ensure any boolean attributes are converted to strings
+        for attr_name, attr_value in list(empty_ds.attrs.items()):
+            if isinstance(attr_value, bool):
+                empty_ds.attrs[attr_name] = str(attr_value)
+            elif isinstance(attr_value, bytes):
+                try:
+                    empty_ds.attrs[attr_name] = attr_value.decode('utf-8')
+                except:
+                    empty_ds.attrs[attr_name] = str(attr_value)
 
         empty_ds.to_netcdf(filepath, encoding=encoding)
         empty_ds.close()
@@ -181,6 +207,12 @@ def create_empty_netcdf_with_structure(filepath, source_file=None):
 
     except Exception as e:
         logger.error(f"Error creating empty NetCDF: {e}")
+        # Clean up partial file if it exists
+        if filepath.exists():
+            try:
+                filepath.unlink()
+            except:
+                pass
         raise
 
 
