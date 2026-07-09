@@ -3816,7 +3816,8 @@ def merge_near_real_time_region_v3_smart_local_disk(
         skip_if_already_merged: bool = True,
         verify_downloads_first: bool = True,
         temp_dir: str = None,  # Optional temp directory for intermediate files
-        final_copy_path: str = None  # If provided, copy the final file here
+        final_copy_path: str = None,# If provided, copy the final file here
+        source_file: str = None, # the source file
 ):
     """
     Enhanced merge function that APPENDS data to an existing NetCDF file.
@@ -3923,12 +3924,7 @@ def merge_near_real_time_region_v3_smart_local_disk(
         logger.error("dynamic_world_data not set in environment")
         return {'success': False, 'error': 'dynamic_world_data not set'}
 
-    all_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-    if not all_files:
-        logger.error("No NetCDF files found in dynamic_world_data")
-        return {'success': False, 'error': 'No NetCDF files found'}
 
-    source_file = max(all_files, key=lambda f: Path(f).stat().st_mtime)
     logger.info(f"Using source historical file: {source_file}")
 
     # Use temp directory if provided, otherwise use the input file's parent

@@ -332,7 +332,6 @@ def main():
                 logger.info(f"Merging region: {region}")
                 logger.debug(f"Checking what is the most recent netcdf file")
                 all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-                most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
 
                 # ===== TODO 2: Use _local_disk method and the empty netcdf file from TODO 1 =====
                 logger.info(f"Merging {region} into {local_merge_file}")
@@ -346,7 +345,8 @@ def main():
                     skip_if_already_merged=True,
                     verify_downloads_first=True,
                     temp_dir="/tmp/merge_temp",  # Use local disk for temp files
-                    final_copy_path=None  # We'll copy at the end
+                    final_copy_path=None,
+                    source_file=most_recent_dynamic_world_file,
                 )
 
                 if merge_result.get('success', False):
