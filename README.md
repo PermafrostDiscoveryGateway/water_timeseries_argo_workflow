@@ -1,7 +1,7 @@
-# water_timeseries_argo_workflow
+# Water_timeseries_argo_workflow
 Argo workflows for running the water time series pipeline. 
 
-# adding the autopilot cluster
+# Adding the autopilot cluster
 
 You will need to add the autopilot cluster. First, authenticate using gcloud
 
@@ -17,7 +17,7 @@ You should now see that you are using that context using
 
 `kubectx`
 
-# connecting to network
+# Connecting to network
 
 kubectl commands will likely hang. on any network you are on, you wil neet to run this 
 command to whitelist your IP to access
@@ -32,11 +32,11 @@ or else this command (on some networks)
     --enable-master-authorized-networks \
     --master-authorized-networks $(curl  -4 -s ifconfig.me)/32`
 
-# port forward to view the argo UI interface
+# How to port forward to view the argo UI interface
 
 `kubectl -n argo port-forward deployment/argo-server 2746:2746`
 
-# a VM was created for to handle some tasks. Commands below
+# A VM was created for to handle some tasks. Commands below
 
 gcloud compute instances stop download-vm --zone=us-west1-a
 gcloud compute instances start download-vm --zone=us-west1-a
@@ -53,11 +53,11 @@ Use that environment, or create a new one and install that repo using
 uv add git+https://github.com/PermafrostDiscoveryGateway/water-timeseries-v2
 
 also install dependencies in requirements.txt
-# setting up the storage
+# Setting up the storage
 
 Before other steps, use this command 
 
-# create filestore
+# Create filestore, if it does ot eixst
 
 Create a filestore. This is the first step. You can also use an existing filestore if it is already created.
 An existing filestore has already been created for this one.
@@ -88,14 +88,14 @@ This IP would be in filestore-pv.yaml under spec, nfs, server
     --zone=us-west1-c \
     --format="yaml(name, state, fileShares, networks)"`
 
-# firewall rules for filestore
+# Set firewall rules for filestore
 
 `gcloud compute firewall-rules create allow-filestore \
     --network=pdg-network-1 \
     --allow=tcp:111,udp:111,tcp:2049,udp:2049 \
     --source-ranges=10.0.0.0/8`
 
-# creating the cluster
+# Creating an autopilot cluster
 
 This pipeline will exceed the specs for the autopilot cluster. So after filestore is set up (or verified)
 
@@ -118,7 +118,7 @@ output of `kubectx`
 `
 
 
-# create argo namespace
+# Create argo namespace and install argo server
 
 `kubectl create namespace argo`
 kubectl get pods -n argo`
@@ -134,7 +134,7 @@ In order to access the argo workflow UI, you need to port forward the argo serve
 
 
 
-# PV and PVC
+# Set up PV and PVC
 
 These files are under the /storage_setup directory
 After setting up filestore and adding the IP to filestore-pv.yaml, create a PersistentVolume with this command
@@ -167,7 +167,7 @@ Remove tests
 `
 `kubectl -n argo delete pod nfs-test`
 
-# connecting to the PVC
+# Connecting to the PVC
 
 this script creates 3 pods. You can exec into any of them to view what is in the PVC under /data
 
@@ -279,7 +279,7 @@ Checks it exists
 `kubectl get secret ghcr-secret -n argo -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | jq
 `
 
-## earthengine setup
+## Earthengine setup
 
 
 `ls ~/.config/earthengine/`
@@ -290,5 +290,3 @@ Checks it exists
   -n argo`
 
 `secret/earth-engine-creds created
-
-## NOTE ON CHUNKED PROCESSING
