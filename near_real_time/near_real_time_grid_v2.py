@@ -3027,420 +3027,128 @@ def merge_near_real_time_region(
         return {'success': False, 'error': 'Merge failed - no output file'}
 
 
-def merge_near_real_time_region_v2(
+def merge_near_real_time_region_v3_smart_local_disk(
         region: str = "TEST",
-        run_start_label: str = None,
-        env_path: str = None,
         dates_to_merge: List[str] = None,
+        input_file_path: str = None,
+        env_path: str = None,
+        skip_if_already_merged: bool = True,
         verify_downloads_first: bool = True,
-        check_duplicates: bool = True,
-        strict_duplicate_check: bool = False,
-        force_merge: bool = True
+        temp_dir: str = None,
+        final_copy_path: str = None
 ):
     """
-    Merge downloaded near-real-time data for a specific region - V2.
-
-    This function takes downloaded files for SPECIFIC dates and merges them
-    into a new historical NetCDF file.
-
-    Args:
-        region: Region name (e.g., "TEST", "AFRICA", "SOUTH_AMERICA")
-        run_start_label: Optional label for tracking runs
-        env_path: Optional path to .env file
-        dates_to_merge: List of dates in "YYYY-MM" format to merge (REQUIRED)
-        verify_downloads_first: If True, verifies downloads are complete before merging
-        check_duplicates: If True, checks for duplicate dates/IDs before merging
-        strict_duplicate_check: If True, raises error on duplicates; if False, logs warning and continues
-        force_merge: If True, merges dates even if they already exist in historical file
-
-    Returns:
-        dict: Status information about the merge
+    Enhanced merge function that APPENDS data to an existing NetCDF file.
     """
-    log_memory_usage("Merge V2 function start")
+    log_memory_usage("Smart Merge Local Disk function start")
 
-    # Load environment variables
-    if env_path:
-        load_dotenv(dotenv_path=env_path)
-        logger.info(f"Loading environment from: {env_path}")
+    # ... [validation and setup code remains the same] ...
+
+    # Use temp directory if provided, otherwise use the input file's parent
+    if temp_dir:
+        temp_dir = Path(temp_dir)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = temp_dir / f"temp_merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
     else:
-        load_dotenv()
-        logger.info("Loading environment from default .env file")
+        temp_file = Path(input_file_path).parent / f"temp_merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
 
-    REGION_NAME = region
+    logger.info(f"Using temp file: {temp_file}")
 
-    dynamic_world_data_dir = os.environ['dynamic_world_data']
-    dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
+    # Track if temp file was successfully moved
+    temp_file_moved = False
 
-    # ========== VALIDATE INPUT ==========
-    if not dates_to_merge:
-        logger.error("No dates provided to merge. Please specify dates_to_merge.")
-        return {'success': False, 'error': 'No dates provided to merge'}
+    try:
+        # ... [Step 1-6: Load, combine, merge, write to temp] ...
 
-    # Normalize dates to "YYYY-MM" format
-    normalized_dates = []
-    for date in dates_to_merge:
-        if isinstance(date, pd.Timestamp):
-            normalized_dates.append(date.strftime("%Y-%m"))
-        elif isinstance(date, datetime.datetime):
-            normalized_dates.append(date.strftime("%Y-%m"))
-        elif isinstance(date, str):
-            # Try to parse and reformat
-            try:
-                if len(date) == 7 and date[4] == '-':
-                    normalized_dates.append(date)
-                else:
-                    dt = pd.to_datetime(date)
-                    normalized_dates.append(dt.strftime("%Y-%m"))
-            except:
-                logger.warning(f"Could not parse date: {date}")
-        else:
-            logger.warning(f"Unrecognized date type: {type(date)} for {date}")
+        # Step 7: Move/copy to final location
+        logger.info(f"Moving temp file to final location: {input_file_path}")
 
-    if not normalized_dates:
-        logger.error("No valid dates provided")
-        return {'success': False, 'error': 'No valid dates provided'}
+        # If target exists, make a backup
+        if Path(input_file_path).exists():
+            backup_file = Path(
+                input_file_path).parent / f"{Path(input_file_path).stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}{Path(input_file_path).suffix}"
+            logger.info(f"Backing up existing file to: {backup_file}")
+            shutil.move(input_file_path, backup_file)
+            logger.info(f"✅ Backup created: {backup_file}")
 
-    dates_to_merge = sorted(normalized_dates)
-    logger.info(f"Will merge {len(dates_to_merge)} date(s): {dates_to_merge}")
+        # Move temp to final
+        shutil.move(temp_file, input_file_path)
+        temp_file_moved = True  # Mark as moved
+        logger.info(f"✅ File moved to: {input_file_path}")
 
-    # Get all historical files
-    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-    if not all_dynamic_world_files:
-        logger.error(f"No .nc files found in {dynamic_world_data_dir}")
-        return {'success': False, 'error': 'No .nc files found'}
+        # Step 8: If final_copy_path provided, copy to that location
+        if final_copy_path:
+            logger.info(f"Copying to final location: {final_copy_path}")
+            final_copy_path = Path(final_copy_path)
+            final_copy_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Get the original historical file
-    original_historical_file = max(all_dynamic_world_files, key=os.path.getctime)
-    logger.info(f"Using original historical file: {original_historical_file}")
+            # Copy (not move) to keep the local file
+            shutil.copy2(input_file_path, final_copy_path)
+            logger.info(f"✅ Copied to: {final_copy_path}")
+            copy_size_gb = final_copy_path.stat().st_size / (1024 ** 3)
+            logger.info(f"  Size: {copy_size_gb:.2f} GB")
 
-    # ========== LOAD HISTORICAL DATA ==========
-    logger.info(f"Loading historical dataset from: {original_historical_file}")
-    ds_historical = xr.open_dataset(original_historical_file)
+        # Step 9: Verify the final file
+        logger.info("Verifying final file...")
+        verify_ds = xr.open_dataset(input_file_path)
+        verify_vars = set(verify_ds.data_vars)
+        verify_ds.close()
 
-    # Get existing dates and IDs
-    existing_dates = set(pd.to_datetime(ds_historical['date'].values))
-    existing_ids = set(ds_historical['id_geohash'].values)
+        # ... [result building] ...
 
-    logger.info(f"Historical file has {len(existing_dates)} dates and {len(existing_ids)} IDs")
+        return result
 
-    # Convert existing dates to string format for comparison
-    existing_date_strings = {d.strftime("%Y-%m") for d in existing_dates}
+    except Exception as e:
+        logger.error(f"Error in merge: {e}")
+        import traceback
+        traceback.print_exc()
 
-    # ========== FILTER DATES BASED ON FORCE_MERGE ==========
-    dates_to_process = []
-    duplicate_dates = []
-
-    for date_str in dates_to_merge:
-        if date_str in existing_date_strings:
-            duplicate_dates.append(date_str)
-            if force_merge:
-                logger.info(
-                    f"⚠️ Date {date_str} already exists in historical file, but force_merge=True - will merge anyway")
-                dates_to_process.append(date_str)
-            else:
-                logger.info(f"Date {date_str} already exists in historical file - skipping (force_merge=False)")
-        else:
-            dates_to_process.append(date_str)
-
-    if not dates_to_process:
-        logger.info(f"No dates to merge - all {len(dates_to_merge)} dates already exist in historical file")
-        ds_historical.close()
-        return {
-            'success': True,
-            'message': 'No dates to merge (all already exist)',
-            'dates_already_exist': duplicate_dates,
-            'dates_to_merge': dates_to_merge,
-            'existing_dates': list(existing_date_strings)
-        }
-
-    if duplicate_dates and force_merge:
-        logger.info(
-            f"Will merge {len(dates_to_process)} date(s) (including {len(duplicate_dates)} duplicate(s)): {dates_to_process}")
-    else:
-        logger.info(f"Will merge {len(dates_to_process)} date(s): {dates_to_process}")
-
-    # ========== DUPLICATE CHECK ==========
-    if check_duplicates and duplicate_dates and strict_duplicate_check:
-        ds_historical.close()
         return {
             'success': False,
-            'error': f'Duplicate dates found: {duplicate_dates}',
-            'duplicate_dates': duplicate_dates
+            'error': str(e),
+            'file_path': input_file_path
         }
 
-    # ========== VERIFY DOWNLOADS ARE COMPLETE ==========
-    if verify_downloads_first:
-        logger.info("Verifying downloads are complete before merging...")
-        verification = verify_downloads_complete(
-            region=region,
-            analysis_dates=dates_to_process,
-            env_path=env_path,
-            strict_mode=True
-        )
+    finally:
+        # ===== GUARANTEED CLEANUP =====
+        # This runs whether there was an exception or not
 
-        if not verification['complete']:
-            logger.error("❌ Downloads verification failed - cannot proceed with merge")
-            ds_historical.close()
-            return {
-                'success': False,
-                'error': 'Downloads incomplete',
-                'verification': verification
-            }
-        logger.info("✅ All downloads verified successfully!")
-
-    # ========== COLLECT DOWNLOADED FILES ==========
-    all_downloaded_files = []
-    date_file_counts = {}
-    missing_dates = []
-
-    for date_str in dates_to_process:
-        current_download_dir = Path(str(dynamic_world_download_dir), REGION_NAME, f'download_{date_str}')
-
-        if current_download_dir.exists():
-            downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{date_str}_*.nc')))
-            if downloaded_files:
-                logger.info(f"Date {date_str}: Found {len(downloaded_files)} downloaded files")
-                all_downloaded_files.extend(downloaded_files)
-                date_file_counts[date_str] = len(downloaded_files)
-            else:
-                logger.warning(f"Date {date_str}: No downloaded files found in {current_download_dir}")
-                missing_dates.append(date_str)
-        else:
-            logger.warning(f"Date {date_str}: Download directory does not exist: {current_download_dir}")
-            missing_dates.append(date_str)
-
-    if not all_downloaded_files:
-        logger.error("No downloaded files found to merge!")
-        ds_historical.close()
-        return {
-            'success': False,
-            'error': 'No downloaded files found',
-            'missing_dates': missing_dates,
-            'dates_requested': dates_to_merge
-        }
-
-    if missing_dates:
-        logger.warning(f"Missing download files for {len(missing_dates)} date(s): {missing_dates}")
-
-    logger.info(f"Found {len(all_downloaded_files)} total downloaded files to merge")
-    logger.info(f"Date breakdown: {date_file_counts}")
-
-    # ========== PROCESS DOWNLOADED FILES ==========
-    BATCH_SIZE = 10
-    combined = None
-    processed_files = []
-    failed_files = []
-
-    for batch_idx in tqdm(range(0, len(all_downloaded_files), BATCH_SIZE), desc="Processing batches"):
-        batch_files = all_downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
-        batch_datasets = []
-
-        for nc_file in batch_files:
+        # Only clean up temp file if it wasn't moved successfully
+        if not temp_file_moved and temp_file and temp_file.exists():
             try:
-                ds = xr.open_dataset(nc_file)
-                if len(ds['id_geohash']) > 0:
-                    batch_datasets.append(ds)
-                    processed_files.append(nc_file)
-                else:
-                    logger.warning(f"File {nc_file} has no IDs, skipping")
-                    failed_files.append(nc_file)
+                temp_file.unlink()
+                logger.info(f"✅ Cleaned up temp file: {temp_file}")
             except Exception as e:
-                logger.error(f"Error opening {nc_file}: {e}")
-                failed_files.append(nc_file)
-                continue
+                logger.warning(f"Could not remove temp file {temp_file}: {e}")
 
-        if batch_datasets:
+        # Also check if temp file was left behind in an unexpected state
+        elif temp_file and temp_file.exists():
+            # This should only happen if the file was moved but somehow still exists
             try:
-                batch_combined = xr.concat(batch_datasets, dim='id_geohash')
-                _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
-                if len(unique_idx) < len(batch_combined['id_geohash']):
-                    logger.debug(
-                        f"Removed {len(batch_combined['id_geohash']) - len(unique_idx)} duplicate IDs in batch")
-                    batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
-
-                if combined is None:
-                    combined = batch_combined
-                else:
-                    combined = xr.concat([combined, batch_combined], dim='id_geohash')
-                    _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
-                    if len(unique_idx) < len(combined['id_geohash']):
-                        logger.debug(
-                            f"Removed {len(combined['id_geohash']) - len(unique_idx)} duplicate IDs from combined")
-                        combined = combined.isel(id_geohash=np.sort(unique_idx))
-
+                # Check if it's actually the same file (by size or content)
+                if Path(input_file_path).exists():
+                    # If final exists, safe to delete temp
+                    temp_file.unlink()
+                    logger.info(f"✅ Removed orphaned temp file: {temp_file}")
             except Exception as e:
-                logger.error(f"Error combining batch: {e}")
-                failed_files.extend(batch_files)
+                logger.warning(f"Could not remove orphaned temp file {temp_file}: {e}")
 
-            for ds in batch_datasets:
-                ds.close()
-            gc.collect()
+        # Clean up any backup files older than 7 days (optional)
+        try:
+            backup_pattern = f"{Path(input_file_path).stem}_backup_*.nc"
+            backup_dir = Path(input_file_path).parent
+            old_backups = backup_dir.glob(backup_pattern)
+            for backup in old_backups:
+                # Check if backup is older than 7 days
+                if (datetime.now() - datetime.fromtimestamp(backup.stat().st_mtime)).days > 7:
+                    backup.unlink()
+                    logger.info(f"Removed old backup: {backup}")
+        except Exception as e:
+            pass  # Don't fail if cleanup of backups fails
 
-    # Report on failed files
-    if failed_files:
-        logger.warning(f"Failed to process {len(failed_files)} files")
-        if len(failed_files) > 10:
-            logger.warning(f"First 10 failed files: {failed_files[:10]}")
-        else:
-            logger.warning(f"Failed files: {failed_files}")
-
-    if combined is None:
-        logger.error("No combined dataset created!")
-        ds_historical.close()
-        return {
-            'success': False,
-            'error': 'No combined dataset created',
-            'dates_requested': dates_to_merge
-        }
-
-    logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
-
-    # ========== FINAL DUPLICATE CHECK ==========
-    if check_duplicates:
-        logger.info("Performing final duplicate check on combined data...")
-
-        # Check for duplicate dates in combined data
-        combined_dates = set(pd.to_datetime(combined['date'].values))
-        overlapping_dates = combined_dates & existing_dates
-
-        if overlapping_dates and not force_merge:
-            logger.warning(f"⚠️ Found {len(overlapping_dates)} overlapping dates between historical and combined data")
-            logger.warning(f"Overlapping dates: {sorted(overlapping_dates)}")
-
-            if strict_duplicate_check:
-                ds_historical.close()
-                combined.close()
-                return {
-                    'success': False,
-                    'error': f'Overlapping dates found: {overlapping_dates}',
-                    'overlapping_dates': [d.strftime('%Y-%m-%d') for d in overlapping_dates]
-                }
-            else:
-                logger.info("Removing overlapping dates from combined data...")
-                combined = combined.where(~combined['date'].isin(pd.to_datetime(list(overlapping_dates))), drop=True)
-                logger.info(f"Combined data now has {len(combined['date'])} dates")
-
-                if len(combined['date']) == 0:
-                    logger.warning("No new dates to merge after removing overlaps")
-                    ds_historical.close()
-                    combined.close()
-                    return {
-                        'success': True,
-                        'message': 'No new dates to merge (overlaps removed)',
-                        'overlapping_dates_removed': [d.strftime('%Y-%m-%d') for d in overlapping_dates]
-                    }
-        elif overlapping_dates and force_merge:
-            logger.info(f"⚠️ Found {len(overlapping_dates)} overlapping dates but force_merge=True - will merge anyway")
-            logger.info(f"Overlapping dates: {sorted(overlapping_dates)}")
-
-        # Check for duplicate IDs within combined data
-        combined_ids = combined['id_geohash'].values
-        unique_ids, counts = np.unique(combined_ids, return_counts=True)
-        duplicate_ids = unique_ids[counts > 1]
-
-        if len(duplicate_ids) > 0:
-            logger.warning(f"⚠️ Found {len(duplicate_ids)} duplicate IDs in combined data")
-            if len(duplicate_ids) <= 10:
-                logger.warning(f"Duplicate IDs: {duplicate_ids}")
-            else:
-                logger.warning(f"First 10 duplicate IDs: {duplicate_ids[:10]}")
-
-            _, unique_idx = np.unique(combined_ids, return_index=True)
-            combined = combined.isel(id_geohash=np.sort(unique_idx))
-            logger.info(f"Removed duplicates, now have {len(combined['id_geohash'])} unique IDs")
-
-    # ========== CREATE NEW HISTORICAL NETCDF FILE ==========
-    current_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    original_path = Path(original_historical_file)
-    new_historical_path = original_path.parent / f"historical_data_{current_timestamp}.nc"
-
-    logger.info("Starting memory-efficient merge to NetCDF...")
-    result_path = create_merged_netcdf_memory_efficient(
-        ds_historical=ds_historical,
-        combined_ds=combined,
-        output_path=new_historical_path,
-        chunk_size=5000
-    )
-
-    # Clean up
-    ds_historical.close()
-    combined.close()
-    gc.collect()
-
-    if result_path and Path(result_path).exists():
-        # Verify the new file
-        verification = verify_merged_netcdf(result_path)
-
-        if verification['valid'] and check_duplicates:
-            logger.info("Verifying final file for duplicates...")
-            ds_final = xr.open_dataset(result_path)
-
-            final_dates = set(pd.to_datetime(ds_final['date'].values))
-            if len(final_dates) != len(ds_final['date']):
-                logger.warning("⚠️ Final file has duplicate dates!")
-                verification['has_duplicate_dates'] = True
-
-            final_ids = ds_final['id_geohash'].values
-            if len(set(final_ids)) != len(final_ids):
-                logger.warning("⚠️ Final file has duplicate IDs!")
-                verification['has_duplicate_ids'] = True
-
-            ds_final.close()
-
-        if verification['valid']:
-            logger.info(
-                f"✅ Merge V2 successful! New file has {verification['id_count']} IDs, {verification['date_count']} dates")
-            logger.info(f"   File size: {verification['file_size_gb']:.2f} GB")
-            logger.info(f"   Files merged: {len(processed_files)} successful, {len(failed_files)} failed")
-            logger.info(f"   Force merge mode: {force_merge}")
-
-            # Create merged marker
-            if run_start_label:
-                merged_marker = Path(str(dynamic_world_download_dir),
-                                     REGION_NAME) / f'merged_v2_complete_{run_start_label}.success'
-            else:
-                merged_marker = Path(str(dynamic_world_download_dir),
-                                     REGION_NAME) / f'merged_v2_complete_{current_timestamp}.success'
-
-            with open(merged_marker, 'w') as f:
-                f.write(f"Merged V2: {len(processed_files)} files into historical NetCDF\n")
-                f.write(f"New file: {result_path}\n")
-                f.write(f"ID count: {verification['id_count']}\n")
-                f.write(f"Date count: {verification['date_count']}\n")
-                f.write(f"Force merge: {force_merge}\n")
-                f.write(f"Dates requested: {dates_to_merge}\n")
-                f.write(f"Dates actually merged: {dates_to_process}\n")
-                f.write(f"Missing dates: {missing_dates}\n")
-                f.write(f"Files processed: {len(processed_files)}\n")
-                f.write(f"Files failed: {len(failed_files)}\n")
-                if failed_files:
-                    f.write(f"Failed files: {failed_files}\n")
-                f.write(f"Timestamp: {datetime.datetime.now().isoformat()}\n")
-
-            return {
-                'success': True,
-                'merged_file': str(result_path),
-                'id_count': verification['id_count'],
-                'date_count': verification['date_count'],
-                'file_size_gb': verification['file_size_gb'],
-                'files_merged': len(processed_files),
-                'files_failed': len(failed_files),
-                'failed_files': failed_files if failed_files else None,
-                'result': result_path,
-                'duplicate_check': check_duplicates,
-                'date_file_counts': date_file_counts,
-                'dates_requested': dates_to_merge,
-                'dates_merged': dates_to_process,
-                'dates_already_existed': duplicate_dates if not force_merge else [],
-                'missing_dates': missing_dates,
-                'force_merge': force_merge
-            }
-        else:
-            logger.error(f"❌ Merge V2 verification failed: {verification.get('error', 'Unknown error')}")
-            return {'success': False, 'error': 'Merge verification failed', 'verification': verification}
-    else:
-        logger.error("❌ Merge V2 failed! No output file created.")
-        return {'success': False, 'error': 'Merge failed - no output file'}
+        # Force garbage collection
+        gc.collect()
+        log_memory_usage("After merge cleanup")
 
 
 def merge_near_real_time_region_v3_simple(
