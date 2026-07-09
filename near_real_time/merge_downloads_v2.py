@@ -210,12 +210,13 @@ def main():
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     most_recent_dynamic_world_file = None
-    for file in all_dynamic_world_files:
-        time_created = get_creation_time(file)
-        readable_time = datetime.fromtimestamp(time_created)
-        logger.debug(f"Netcdf file {file} has creation date of {readable_time}")
-        most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
-    logger.debug(f"Most recent dynamic world file {most_recent_dynamic_world_file}")
+    most_recent_dynamic_world_file = os.path.join(dynamic_world_data_dir, 'lakes_dw_V2d_2016-2025.nc')
+    # for file in all_dynamic_world_files:
+    #     time_created = get_creation_time(file)
+    #     readable_time = datetime.fromtimestamp(time_created)
+    #     logger.debug(f"Netcdf file {file} has creation date of {readable_time}")
+    #     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
+    # logger.debug(f"Most recent dynamic world file {most_recent_dynamic_world_file}")
 
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
