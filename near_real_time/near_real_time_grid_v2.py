@@ -4094,6 +4094,323 @@ def merge_near_real_time_region_v3_smart(
 
     return merge_result
 
+
+def merge_near_real_time_region_v3_smart_local_disk(
+        region: str = "TEST",
+        dates_to_merge: List[str] = None,
+        input_file_path: str = None,  # The file to append to (can be empty/new)
+        env_path: str = None,
+        skip_if_already_merged: bool = True,
+        verify_downloads_first: bool = True,
+        temp_dir: str = None,  # Optional temp directory for intermediate files
+        final_copy_path: str = None  # If provided, copy the final file here
+):
+    """
+    Enhanced merge function that APPENDS data to an existing NetCDF file.
+
+    This is designed for local disk usage - you can write to a local file,
+    then copy to Filestore afterward.
+
+    Args:
+        region: Region name
+        dates_to_merge: List of dates in "YYYY-MM" format
+        input_file_path: Path to the NetCDF file to append to (will be created if it doesn't exist)
+        env_path: Optional path to .env file
+        skip_if_already_merged: If True, skip dates already in the file
+        verify_downloads_first: If True, verify downloads before merging
+        temp_dir: Optional temp directory for intermediate files
+        final_copy_path: If provided, copy the final file here after writing
+
+    Returns:
+        dict: Merge result with status information
+    """
+    log_memory_usage("Smart Merge Local Disk function start")
+
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    # Validate input file path
+    if input_file_path is None:
+        logger.error("input_file_path is required for local disk merge")
+        return {'success': False, 'error': 'input_file_path is required'}
+
+    # Ensure directory exists
+    input_dir = Path(input_file_path).parent
+    input_dir.mkdir(parents=True, exist_ok=True)
+
+    # Normalize dates
+    normalized_dates = []
+    for date in dates_to_merge:
+        if isinstance(date, pd.Timestamp):
+            normalized_dates.append(date.strftime("%Y-%m"))
+        elif isinstance(date, datetime.datetime):
+            normalized_dates.append(date.strftime("%Y-%m"))
+        elif isinstance(date, str):
+            try:
+                if len(date) == 7 and date[4] == '-':
+                    normalized_dates.append(date)
+                else:
+                    dt = pd.to_datetime(date)
+                    normalized_dates.append(dt.strftime("%Y-%m"))
+            except:
+                logger.warning(f"Could not parse date: {date}")
+
+    if not normalized_dates:
+        logger.error("No valid dates provided")
+        return {'success': False, 'error': 'No valid dates provided'}
+
+    # Check if file exists and has region data
+    file_exists = Path(input_file_path).exists()
+
+    if skip_if_already_merged and file_exists:
+        # Check what dates are already in the file for this region
+        status = has_region_been_merged_for_dates(
+            region=region,
+            dates_to_check=normalized_dates,
+            historical_file_path=input_file_path,
+            env_path=env_path
+        )
+
+        if status.get('all_dates_present', False):
+            logger.info(f"✅ Region {region} already has all dates {normalized_dates} in {input_file_path}")
+            return {
+                'success': True,
+                'skipped': True,
+                'reason': 'All dates already merged',
+                'file_path': input_file_path,
+                'status': status
+            }
+        elif status.get('present_dates'):
+            # Some dates are present, only merge the missing ones
+            missing_dates = status.get('missing_dates', [])
+            if missing_dates:
+                logger.info(
+                    f"Region {region} has {len(status['present_dates'])} dates, need to append {len(missing_dates)}: {missing_dates}")
+                normalized_dates = missing_dates
+            else:
+                logger.info(f"Region {region} has all dates present")
+                return {
+                    'success': True,
+                    'skipped': True,
+                    'reason': 'All dates already merged',
+                    'file_path': input_file_path,
+                    'status': status
+                }
+
+    # If file doesn't exist, we'll create it fresh
+    if not file_exists:
+        logger.info(f"File {input_file_path} does not exist, will create new file")
+
+    # Get the historical file (source of existing data)
+    dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+    if not dynamic_world_data_dir:
+        logger.error("dynamic_world_data not set in environment")
+        return {'success': False, 'error': 'dynamic_world_data not set'}
+
+    all_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    if not all_files:
+        logger.error("No NetCDF files found in dynamic_world_data")
+        return {'success': False, 'error': 'No NetCDF files found'}
+
+    source_file = max(all_files, key=lambda f: Path(f).stat().st_mtime)
+    logger.info(f"Using source historical file: {source_file}")
+
+    # Use temp directory if provided, otherwise use the input file's parent
+    if temp_dir:
+        temp_dir = Path(temp_dir)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = temp_dir / f"temp_merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+    else:
+        temp_file = Path(input_file_path).parent / f"temp_merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+
+    logger.info(f"Using temp file: {temp_file}")
+
+    try:
+        # Step 1: Load the source historical data
+        logger.info(f"Loading source data from {source_file}...")
+        ds_source = xr.open_dataset(source_file)
+
+        # Step 2: Get the downloaded data for the missing dates
+        logger.info(f"Getting downloaded data for dates: {normalized_dates}")
+
+        # Collect downloaded files for the dates
+        dynamic_world_download_dir = Path(os.environ.get('dynamic_world_downloads', ''))
+        all_downloaded_files = []
+
+        for date_str in normalized_dates:
+            download_dir = dynamic_world_download_dir / region / f'download_{date_str}'
+            if download_dir.exists():
+                downloaded_files = glob.glob(str(download_dir / f'DW_{date_str}_*.nc'))
+                all_downloaded_files.extend(downloaded_files)
+                logger.info(f"Found {len(downloaded_files)} files for {date_str}")
+            else:
+                logger.warning(f"Download directory not found for {date_str}: {download_dir}")
+
+        if not all_downloaded_files:
+            logger.error("No downloaded files found to merge")
+            ds_source.close()
+            return {'success': False, 'error': 'No downloaded files found'}
+
+        # Step 3: Combine downloaded files into a single dataset
+        logger.info(f"Combining {len(all_downloaded_files)} downloaded files...")
+        combined = None
+
+        for i in tqdm(range(0, len(all_downloaded_files), 20), desc="Processing download files"):
+            batch_files = all_downloaded_files[i:i + 20]
+            batch_datasets = []
+
+            for nc_file in batch_files:
+                try:
+                    ds = xr.open_dataset(nc_file)
+                    if len(ds['id_geohash']) > 0:
+                        batch_datasets.append(ds)
+                except Exception as e:
+                    logger.warning(f"Could not open {nc_file}: {e}")
+
+            if batch_datasets:
+                batch_combined = xr.concat(batch_datasets, dim='id_geohash')
+                _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
+                if len(unique_idx) < len(batch_combined['id_geohash']):
+                    batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
+
+                if combined is None:
+                    combined = batch_combined
+                else:
+                    combined = xr.concat([combined, batch_combined], dim='id_geohash')
+                    _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
+                    if len(unique_idx) < len(combined['id_geohash']):
+                        combined = combined.isel(id_geohash=np.sort(unique_idx))
+
+            # Clean up
+            for ds in batch_datasets:
+                ds.close()
+            gc.collect()
+
+        if combined is None:
+            logger.error("No combined dataset created")
+            ds_source.close()
+            return {'success': False, 'error': 'No combined dataset created'}
+
+        logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
+
+        # Step 4: Ensure all variables are present
+        source_vars = list(ds_source.data_vars)
+        for var_name in source_vars:
+            if var_name not in combined.data_vars:
+                logger.info(f"Adding placeholder for variable: {var_name}")
+                combined[var_name] = (('id_geohash', 'date'),
+                                      np.full((len(combined['id_geohash']), len(combined['date'])), np.nan))
+
+        # Step 5: Merge source + combined
+        logger.info("Merging source and new data...")
+        final_combined = xr.merge([ds_source, combined], compat='override')
+        final_combined = final_combined.sortby(['date', 'id_geohash'])
+
+        # Remove duplicate IDs if any
+        _, unique_idx = np.unique(final_combined['id_geohash'].values, return_index=True)
+        if len(unique_idx) < len(final_combined['id_geohash']):
+            logger.info(f"Removing {len(final_combined['id_geohash']) - len(unique_idx)} duplicate IDs")
+            final_combined = final_combined.isel(id_geohash=np.sort(unique_idx))
+
+        # Step 6: Write to temp file
+        logger.info(f"Writing merged data to temp file: {temp_file}")
+        logger.info(f"  IDs: {len(final_combined['id_geohash']):,}")
+        logger.info(f"  Dates: {len(final_combined['date'])}")
+
+        encoding = {}
+        for var in final_combined.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True
+            }
+
+        # Write to temp file (local disk first)
+        final_combined.to_netcdf(temp_file, encoding=encoding)
+        logger.info(f"✅ Temp file written: {temp_file}")
+        temp_size_gb = temp_file.stat().st_size / (1024 ** 3)
+        logger.info(f"  Size: {temp_size_gb:.2f} GB")
+
+        # Step 7: Move/copy to final location
+        logger.info(f"Moving temp file to final location: {input_file_path}")
+
+        # If target exists, make a backup
+        if Path(input_file_path).exists():
+            backup_file = Path(
+                input_file_path).parent / f"{Path(input_file_path).stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}{Path(input_file_path).suffix}"
+            logger.info(f"Backing up existing file to: {backup_file}")
+            shutil.move(input_file_path, backup_file)
+
+        # Move temp to final
+        shutil.move(temp_file, input_file_path)
+        logger.info(f"✅ File moved to: {input_file_path}")
+
+        # Step 8: If final_copy_path provided, copy to that location
+        if final_copy_path:
+            logger.info(f"Copying to final location: {final_copy_path}")
+            final_copy_path = Path(final_copy_path)
+            final_copy_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Copy (not move) to keep the local file
+            shutil.copy2(input_file_path, final_copy_path)
+            logger.info(f"✅ Copied to: {final_copy_path}")
+            copy_size_gb = final_copy_path.stat().st_size / (1024 ** 3)
+            logger.info(f"  Size: {copy_size_gb:.2f} GB")
+
+        # Step 9: Clean up
+        ds_source.close()
+        combined.close()
+        final_combined.close()
+        gc.collect()
+
+        # Step 10: Verify the final file
+        logger.info("Verifying final file...")
+        verify_ds = xr.open_dataset(input_file_path)
+        verify_vars = set(verify_ds.data_vars)
+        verify_ds.close()
+
+        result = {
+            'success': True,
+            'file_path': str(input_file_path),
+            'final_copy_path': str(final_copy_path) if final_copy_path else None,
+            'id_count': len(final_combined['id_geohash']),
+            'date_count': len(final_combined['date']),
+            'file_size_gb': Path(input_file_path).stat().st_size / (1024 ** 3),
+            'dates_merged': normalized_dates,
+            'region': region,
+            'variables_preserved': list(verify_vars)
+        }
+
+        logger.info(f"✅ Merge completed successfully!")
+        logger.info(f"  Final file: {input_file_path}")
+        logger.info(f"  IDs: {result['id_count']:,}")
+        logger.info(f"  Dates: {result['date_count']}")
+        logger.info(f"  Size: {result['file_size_gb']:.2f} GB")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in merge: {e}")
+        import traceback
+        traceback.print_exc()
+
+        # Clean up temp file if it exists
+        if temp_file and temp_file.exists():
+            try:
+                temp_file.unlink()
+                logger.info(f"Removed temp file: {temp_file}")
+            except:
+                pass
+
+        return {
+            'success': False,
+            'error': str(e),
+            'file_path': input_file_path
+        }
+
 def merge_near_real_time_region_v3_cloud(
         region: str = "TEST",
         dates_to_merge: List[str] = None,
