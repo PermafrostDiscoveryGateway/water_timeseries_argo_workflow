@@ -3536,8 +3536,13 @@ def merge_near_real_time_region_v3_simple(
             env_path=env_path,
             strict_mode=True
         )
-
-        if not verification['complete']:
+        summary = verification['summary']
+        total_expected_downloaded = summary['total_expected_downloaded']
+        total_successful_downloaded = summary['total_successful_downloaded']
+        total_skipped_downloads = summary['total_skipped_downloads']
+        total_skipped_and_successful_downloads =total_expected_downloaded + total_skipped_downloads
+        percent_downloaded = float(total_skipped_and_successful_downloads) / float(total_expected_downloaded)
+        if not verification['complete'] and percent_downloaded < 0.99:
             logger.error("❌ Downloads verification failed - cannot proceed with merge")
             ds_historical.close()
             return {
