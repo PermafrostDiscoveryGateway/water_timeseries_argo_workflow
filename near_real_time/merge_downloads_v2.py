@@ -241,14 +241,27 @@ def main():
     summer_months = [6, 7, 8, 9]
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-    most_recent_dynamic_world_file = None
+
+    # Explicitly use the known good source file
     most_recent_dynamic_world_file = os.path.join(dynamic_world_data_dir, 'lakes_dw_V2d_2016-2025.nc')
-    # for file in all_dynamic_world_files:
-    #     time_created = get_creation_time(file)
-    #     readable_time = datetime.fromtimestamp(time_created)
-    #     logger.debug(f"Netcdf file {file} has creation date of {readable_time}")
-    #     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
-    # logger.debug(f"Most recent dynamic world file {most_recent_dynamic_world_file}")
+
+    # Check if the source file exists
+    if not Path(most_recent_dynamic_world_file).exists():
+        logger.error(f"Source file not found: {most_recent_dynamic_world_file}")
+        # Try to find any other .nc file as fallback
+        if all_dynamic_world_files:
+            # Exclude any temp or backup files
+            valid_files = [f for f in all_dynamic_world_files
+                           if 'temp' not in f and 'backup' not in f and 'merged_historical' not in f]
+            if valid_files:
+                most_recent_dynamic_world_file = max(valid_files, key=lambda f: Path(f).stat().st_mtime)
+                logger.info(f"Using fallback source file: {most_recent_dynamic_world_file}")
+            else:
+                logger.error("No valid source files found")
+                sys.exit(1)
+        else:
+            logger.error("No NetCDF files found")
+            sys.exit(1)
 
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
@@ -262,24 +275,33 @@ def main():
         date_to_run = [datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")]
         dates_to_run_string = date_to_run[0].replace('-', '_')
 
-        # ===== TODO 1: Create empty netcdf file here to be used for writing =====
+        if not Path(most_recent_dynamic_world_file).exists():
+            logger.error(f"Source file not found: {most_recent_dynamic_world_file}")
+            sys.exit(1)
+
         # Use local disk for temporary file
         local_temp_dir = Path("/tmp/merge_temp")
         local_temp_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create the temp file on local disk
-        local_merge_file = local_temp_dir / f"merged_historical_{dates_to_run_string}.nc"
-        logger.info(f"Creating empty NetCDF file on local disk: {local_merge_file}")
+        # Copy source file to local disk (fast, once)
+        local_base_file = local_temp_dir / f"base_historical_{dates_to_run_string}.nc"
+        logger.info(f"Copying source file to local disk: {local_base_file}")
 
-        # Create empty NetCDF with structure from the most recent file
-        try:
-            create_empty_netcdf_with_structure(
-                filepath=local_merge_file,
-                source_file=most_recent_dynamic_world_file
-            )
-        except Exception as e:
-            logger.error(f"Failed to create empty NetCDF: {e}")
-            sys.exit(1)
+        # If local file already exists from a previous run, remove it
+        if local_base_file.exists():
+            local_base_file.unlink()
+            logger.info(f"Removed existing local base file: {local_base_file}")
+
+        # Copy the source file (this is fast - just file I/O)
+        start_copy = time.time()
+        shutil.copy2(most_recent_dynamic_world_file, local_base_file)
+        copy_time = time.time() - start_copy
+        logger.info(f"✅ Copied source file in {copy_time:.2f} seconds")
+        logger.info(f"  Size: {local_base_file.stat().st_size / (1024 ** 3):.2f} GB")
+
+        # Use the copied file as the merge target
+        local_merge_file = local_base_file
+        logger.info(f"Local merge file will be: {local_merge_file}")
 
         # Final Filestore path
         name_of_final_merge_file = f"{dynamic_world_data_dir}/lakes_dw_Vdc_v2_{dates_to_run_string}.nc"
@@ -323,30 +345,19 @@ def main():
             for region in REGION_NAMES:
                 logger.debug(f"Checking if we already merged region {region} for {date_to_run}")
 
-            # Get the source file (the most recent historical file)
-            all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-            source_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
-            logger.info(f"Using source file: {source_file}")
-
             for region in REGION_NAMES:
                 logger.info(f"Merging region: {region}")
-                logger.debug(f"Checking what is the most recent netcdf file")
-                all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-
-                # ===== TODO 2: Use _local_disk method and the empty netcdf file from TODO 1 =====
-                logger.info(f"Merging {region} into {local_merge_file}")
                 log_memory_usage(f"Before merging {region}")
 
+                # ===== FIXED: Use the updated method without source_file and verify_downloads_first =====
                 merge_result = merge_near_real_time_region_v3_smart_local_disk(
                     region=region,
                     dates_to_merge=date_to_run,
-                    input_file_path=local_merge_file,  # Append to the local file
+                    input_file_path=local_merge_file,  # Append to the local file (already has source data)
                     env_path=env_path,
                     skip_if_already_merged=True,
-                    verify_downloads_first=True,
                     temp_dir="/tmp/merge_temp",  # Use local disk for temp files
-                    final_copy_path=None,
-                    source_file=most_recent_dynamic_world_file,
+                    final_copy_path=None,  # We'll copy to Filestore at the end
                 )
 
                 if merge_result.get('success', False):
@@ -361,6 +372,9 @@ def main():
                         logger.info(f"  Dates: {merge_result.get('date_count', 0)}")
                         file_size = merge_result.get('file_size_gb', 0)
                         logger.info(f"  Size: {file_size:.2f} GB")
+                    else:
+                        # Fallback logging
+                        logger.info(f"  File size: {local_merge_file.stat().st_size / (1024 ** 3):.2f} GB")
 
                     # Force garbage collection
                     gc.collect()
@@ -377,7 +391,6 @@ def main():
 
         logger.debug(f"Successfully merged {successfully_merged_region_count} regions out of {len(REGION_NAMES)}")
 
-        # ===== TODO 3: Copy the temp file from 1, now full, to the name of final merge file =====
         if successfully_merged_region_count == len(REGION_NAMES):
             logger.info("=" * 80)
             logger.info("✅ ALL REGIONS MERGED SUCCESSFULLY")
@@ -422,7 +435,7 @@ def main():
                     logger.info(f"✅ Final file: {name_of_final_merge_file}")
                     logger.info(f"  Size: {final_size_gb:.2f} GB")
 
-                    # Optional: Verify the copied file
+                    # Verify the copied file
                     try:
                         logger.info("Verifying final file...")
                         verify_ds = xr.open_dataset(name_of_final_merge_file)
@@ -442,11 +455,13 @@ def main():
 
         # Clean up old temp files (keep last 5)
         try:
-            temp_files = sorted(local_temp_dir.glob("merged_historical_*.nc"), key=lambda f: f.stat().st_mtime)
+            temp_files = sorted(local_temp_dir.glob("*.nc"), key=lambda f: f.stat().st_mtime)
             if len(temp_files) > 5:
                 for old_file in temp_files[:-5]:
-                    logger.info(f"Removing old temp file: {old_file}")
-                    old_file.unlink()
+                    # Don't delete the current merge file
+                    if old_file != local_merge_file:
+                        logger.info(f"Removing old temp file: {old_file}")
+                        old_file.unlink()
         except Exception as e:
             logger.warning(f"Could not clean up old temp files: {e}")
 
