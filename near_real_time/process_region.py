@@ -1,6 +1,6 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region , \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
-                                    merge_near_real_time_region_v2, merge_near_real_time_region_v3_simple, \
+                                     merge_near_real_time_region_v3_simple, \
                  compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_near_real_time_region_v3_smart
 import sys
 import shutil
@@ -54,7 +54,7 @@ def main():
         date_to_run = [datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")]
         logger.debug(f"timestamp_to_run: {timestamp_to_run}")
         dates_to_run_string = date_to_run[0].replace('-', '_')
-        name_of_final_merge_file = f"{dynamic_world_data_dir}_lakes_dw_Vdc{dates_to_run_string}.nc"
+        name_of_final_merge_file = f"{dynamic_world_data_dir}/lakes_dw_Vdc_v2_{dates_to_run_string}.nc"
         logger.debug(f"Checking if the file exists: {name_of_final_merge_file}")
         if os.path.isfile(name_of_final_merge_file):
             logger.debug(f"File for the most recent month exists")
