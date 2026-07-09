@@ -1,9 +1,26 @@
 # water_timeseries_argo_workflow
 Argo workflows for running the water time series pipeline. 
 
+# adding the autopilot cluster
+
+You will need to add the autopilot cluster. First, authenticate using gcloud
+
+`gcloud auth application-default login`
+
+Add the cluster
+
+`gcloud container clusters get-credentials autopilot-2 \
+    --region= us-west1 \
+    --project=pdg-project-406720`
+
+You should now see that you are using that context using 
+
+`kubectx`
+
 # connecting to network
 
-need to whitelist your IP
+kubectl commands will likely hang. on any network you are on, you wil neet to run this 
+command to whitelist your IP to access
 
 `gcloud container clusters update autopilot-cluster-2 --region us-west1 \
     --enable-master-authorized-networks \
@@ -43,6 +60,7 @@ Before other steps, use this command
 # create filestore
 
 Create a filestore. This is the first step. You can also use an existing filestore if it is already created.
+An existing filestore has already been created for this one.
 
 `gcloud filestore instances create argo-filestore \
     --zone=us-west1-c \
@@ -81,7 +99,7 @@ This IP would be in filestore-pv.yaml under spec, nfs, server
 
 This pipeline will exceed the specs for the autopilot cluster. So after filestore is set up (or verified)
 
-cluster creation
+cluster creation exapmle
 
 `gcloud container clusters create water-cluster \
     --region=us-west1 \
@@ -99,11 +117,6 @@ output of `kubectx`
 `gke_pdg-project-406720_us-west1_autopilot-cluster-2
 `
 
-# whitelist cluster
-
-`gcloud container clusters update autopilot-cluster-2 --region us-west1 \
-    --enable-master-authorized-networks \
-    --master-authorized-networks $MY_IP/32`
 
 # create argo namespace
 
@@ -123,6 +136,7 @@ In order to access the argo workflow UI, you need to port forward the argo serve
 
 # PV and PVC
 
+These files are under the /storage_setup directory
 After setting up filestore and adding the IP to filestore-pv.yaml, create a PersistentVolume with this command
 
 `kubectl apply -f filestore-pv.yaml`
