@@ -3935,9 +3935,9 @@ def merge_near_real_time_region_v3_smart_local_disk(
     if temp_dir:
         temp_dir = Path(temp_dir)
         temp_dir.mkdir(parents=True, exist_ok=True)
-        temp_file = temp_dir / f"temp_merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+        temp_file = temp_dir / f"temp_merge_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
     else:
-        temp_file = Path(input_file_path).parent / f"temp_merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+        temp_file = Path(input_file_path).parent / f"temp_merge_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
 
     logger.info(f"Using temp file: {temp_file}")
 
@@ -4053,7 +4053,7 @@ def merge_near_real_time_region_v3_smart_local_disk(
         # If target exists, make a backup
         if Path(input_file_path).exists():
             backup_file = Path(
-                input_file_path).parent / f"{Path(input_file_path).stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}{Path(input_file_path).suffix}"
+                input_file_path).parent / f"{Path(input_file_path).stem}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}{Path(input_file_path).suffix}"
             logger.info(f"Backing up existing file to: {backup_file}")
             shutil.move(input_file_path, backup_file)
 
@@ -4143,7 +4143,7 @@ def merge_near_real_time_region_v3_cloud(
     log_memory_usage("Cloud merge start")
 
     # Use local temp directory for intermediate files
-    local_temp = Path(temp_dir) / f"merge_temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    local_temp = Path(temp_dir) / f"merge_temp_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     local_temp.mkdir(exist_ok=True, parents=True)
     logger.info(f"Using local temp directory: {local_temp}")
 
@@ -4232,7 +4232,7 @@ def merge_near_real_time_region_v3_cloud(
         final_combined = final_combined.sortby(['date', 'id_geohash'])
 
         # Write directly to Filestore (final file only)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         new_file = Path(original_historical_file).parent / f"historical_data_{timestamp}.nc"
 
         logger.info(f"Writing final file to Filestore: {new_file}")
