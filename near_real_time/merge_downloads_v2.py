@@ -355,7 +355,7 @@ def main():
                     dates_to_merge=date_to_run,
                     input_file_path=local_merge_file,  # Append to the local file (already has source data)
                     env_path=env_path,
-                    skip_if_already_merged=True,
+                    skip_if_already_merged=True,  # Keep this
                     temp_dir="/tmp/merge_temp",  # Use local disk for temp files
                     final_copy_path=None,  # We'll copy to Filestore at the end
                 )

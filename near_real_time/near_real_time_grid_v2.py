@@ -3048,9 +3048,9 @@ def merge_near_real_time_region_v3_smart_local_disk(
     if temp_dir:
         temp_dir = Path(temp_dir)
         temp_dir.mkdir(parents=True, exist_ok=True)
-        temp_file = temp_dir / f"temp_merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+        temp_file = temp_dir / f"temp_merge_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
     else:
-        temp_file = Path(input_file_path).parent / f"temp_merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+        temp_file = Path(input_file_path).parent / f"temp_merge_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
 
     logger.info(f"Using temp file: {temp_file}")
 
@@ -3066,7 +3066,7 @@ def merge_near_real_time_region_v3_smart_local_disk(
         # If target exists, make a backup
         if Path(input_file_path).exists():
             backup_file = Path(
-                input_file_path).parent / f"{Path(input_file_path).stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}{Path(input_file_path).suffix}"
+                input_file_path).parent / f"{Path(input_file_path).stem}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}{Path(input_file_path).suffix}"
             logger.info(f"Backing up existing file to: {backup_file}")
             shutil.move(input_file_path, backup_file)
             logger.info(f"✅ Backup created: {backup_file}")
@@ -3140,7 +3140,7 @@ def merge_near_real_time_region_v3_smart_local_disk(
             old_backups = backup_dir.glob(backup_pattern)
             for backup in old_backups:
                 # Check if backup is older than 7 days
-                if (datetime.now() - datetime.fromtimestamp(backup.stat().st_mtime)).days > 7:
+                if (datetime.datetime.now() - datetime.datetime.fromtimestamp(backup.stat().st_mtime)).days > 7:
                     backup.unlink()
                     logger.info(f"Removed old backup: {backup}")
         except Exception as e:
@@ -3923,9 +3923,9 @@ def merge_near_real_time_region_v3_smart_local_disk(
     if temp_dir:
         temp_dir_path = Path(temp_dir)
         temp_dir_path.mkdir(parents=True, exist_ok=True)
-        temp_file = temp_dir_path / f"temp_merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+        temp_file = temp_dir_path / f"temp_merge_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
     else:
-        temp_file = input_path.parent / f"temp_merge_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+        temp_file = input_path.parent / f"temp_merge_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
 
     logger.info(f"Using temp file: {temp_file}")
 
@@ -3939,7 +3939,7 @@ def merge_near_real_time_region_v3_smart_local_disk(
         logger.info(f"  Existing file has {existing_id_count:,} IDs and {existing_date_count} dates")
         logger.info(f"  Existing variables: {list(ds_existing.data_vars)}")
 
-        # Step 2: Get the downloaded data for the missing dates
+        # Step 2: Get the downloaded data for the dates
         logger.info(f"Getting downloaded data for dates: {normalized_dates}")
 
         dynamic_world_download_dir = Path(os.environ.get('dynamic_world_downloads', ''))
@@ -4023,7 +4023,7 @@ def merge_near_real_time_region_v3_smart_local_disk(
                 combined[var_name] = (('id_geohash', 'date'),
                                       np.full((len(combined['id_geohash']), len(combined['date'])), np.nan))
 
-        # Step 5: Ensure all variables from combined are in existing (should already be there)
+        # Step 5: Ensure all variables from combined are in existing
         for var_name in combined.data_vars:
             if var_name not in ds_existing.data_vars:
                 logger.info(f"Adding new variable from combined to existing: {var_name}")
@@ -4067,7 +4067,7 @@ def merge_near_real_time_region_v3_smart_local_disk(
 
         # If target exists, make a backup
         if input_path.exists():
-            backup_file = input_path.parent / f"{input_path.stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}{input_path.suffix}"
+            backup_file = input_path.parent / f"{input_path.stem}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}{input_path.suffix}"
             logger.info(f"Backing up existing file to: {backup_file}")
             shutil.move(str(input_path), str(backup_file))
 
