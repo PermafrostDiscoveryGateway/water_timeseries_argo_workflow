@@ -10,6 +10,7 @@ import utils.download_new_dynamic_world_data as download_new_dynamic_world_data
 from loguru import logger
 from datetime import date, datetime
 from dotenv import load_dotenv
+import subprocess
 import os
 import glob
 import time
@@ -24,6 +25,115 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+import subprocess
+
+
+def copy_and_compress_netcdf(source_file: str, target_file: str, compression_level: int = 4):
+    """
+    Copy a NetCDF file with compression using nccopy.
+
+    Args:
+        source_file: Path to source NetCDF file
+        target_file: Path to target (compressed) NetCDF file
+        compression_level: Compression level (1-9, higher = more compression but slower)
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    logger.info(f"Copying and compressing {source_file} to {target_file}")
+    logger.info(f"  Source size: {Path(source_file).stat().st_size / (1024 ** 3):.2f} GB")
+
+    # Use nccopy with compression
+    cmd = [
+        'nccopy',
+        '-d', str(compression_level),  # Compression level (1-9)
+        '-s',  # Shuffle filter (improves compression)
+        source_file,
+        target_file
+    ]
+
+    try:
+        start_time = time.time()
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        elapsed = time.time() - start_time
+
+        if Path(target_file).exists():
+            target_size_gb = Path(target_file).stat().st_size / (1024 ** 3)
+            compression_ratio = Path(source_file).stat().st_size / Path(target_file).stat().st_size
+            logger.info(f"✅ Compression complete in {elapsed:.2f} seconds")
+            logger.info(f"  Original: {Path(source_file).stat().st_size / (1024 ** 3):.2f} GB")
+            logger.info(f"  Compressed: {target_size_gb:.2f} GB")
+            logger.info(f"  Compression ratio: {compression_ratio:.2f}x")
+            return True
+        else:
+            logger.error("Target file not created")
+            return False
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"nccopy failed: {e.stderr}")
+        return False
+    except FileNotFoundError:
+        logger.warning("nccopy not found, falling back to xarray method")
+        return copy_and_compress_netcdf_xarray(source_file, target_file, compression_level)
+
+
+def copy_and_compress_netcdf_xarray(source_file: str, target_file: str, compression_level: int = 4):
+    """
+    Copy and compress NetCDF using xarray (fallback if nccopy not available).
+    """
+    logger.info(f"Using xarray to copy and compress: {source_file} -> {target_file}")
+
+    try:
+        start_time = time.time()
+
+        # Open the source file (memory-mapped, doesn't load everything)
+        ds = xr.open_dataset(source_file)
+
+        # Create encoding with compression
+        encoding = {}
+        for var in ds.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': compression_level,
+                'shuffle': True
+            }
+
+        # Write with compression
+        ds.to_netcdf(target_file, encoding=encoding)
+        ds.close()
+
+        elapsed = time.time() - start_time
+
+        if Path(target_file).exists():
+            target_size_gb = Path(target_file).stat().st_size / (1024 ** 3)
+            compression_ratio = Path(source_file).stat().st_size / Path(target_file).stat().st_size
+            logger.info(f"✅ Compression complete in {elapsed:.2f} seconds")
+            logger.info(f"  Original: {Path(source_file).stat().st_size / (1024 ** 3):.2f} GB")
+            logger.info(f"  Compressed: {target_size_gb:.2f} GB")
+            logger.info(f"  Compression ratio: {compression_ratio:.2f}x")
+            return True
+        else:
+            logger.error("Target file not created")
+            return False
+
+    except Exception as e:
+        logger.error(f"xarray compression failed: {e}")
+        return False
+
+
+def copy_netcdf_with_progress(source_file: str, target_file: str, compression_level: int = 4):
+    """
+    Copy a NetCDF file with compression using the best available method.
+    """
+    # Try nccopy first (faster)
+    try:
+        import subprocess
+        # Check if nccopy is available
+        subprocess.run(['nccopy', '--version'], capture_output=True, check=True)
+        return copy_and_compress_netcdf(source_file, target_file, compression_level)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        logger.info("nccopy not available, using xarray method")
+        return copy_and_compress_netcdf_xarray(source_file, target_file, compression_level)
 
 def get_creation_time(filepath):
     """Get file creation time on Linux (birth time) if available"""
@@ -293,10 +403,32 @@ def main():
             logger.info(f"Removed existing local base file: {local_base_file}")
 
         # Copy the source file (this is fast - just file I/O)
+        # TODO add compression for local_base_file
+        # Copy source file to local disk with compression
+        local_base_file = local_temp_dir / f"base_historical_{dates_to_run_string}.nc"
+        logger.info(f"Copying and compressing source file to local disk: {local_base_file}")
+
+        # If local file already exists from a previous run, remove it
+        if local_base_file.exists():
+            local_base_file.unlink()
+            logger.info(f"Removed existing local base file: {local_base_file}")
+
+        # ===== TODO: Copy with compression =====
         start_copy = time.time()
-        shutil.copy2(most_recent_dynamic_world_file, local_base_file)
+
+        # Use the compression function
+        compression_success = copy_netcdf_with_progress(
+            source_file=most_recent_dynamic_world_file,
+            target_file=str(local_base_file),
+            compression_level=4  # Good balance of speed vs compression
+        )
+
+        if not compression_success:
+            logger.error("Failed to copy and compress source file")
+            sys.exit(1)
+
         copy_time = time.time() - start_copy
-        logger.info(f"✅ Copied source file in {copy_time:.2f} seconds")
+        logger.info(f"✅ Copied and compressed source file in {copy_time:.2f} seconds")
         logger.info(f"  Size: {local_base_file.stat().st_size / (1024 ** 3):.2f} GB")
 
         # Use the copied file as the merge target
