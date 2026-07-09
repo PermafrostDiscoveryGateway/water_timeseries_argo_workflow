@@ -6233,6 +6233,329 @@ def verify_and_trigger_processing(
     return result
 
 
+def merge_near_real_time_region_v3_chunked(
+        region: str = "TEST",
+        dates_to_merge: List[str] = None,
+        source_file: str = None,
+        output_file: str = None,
+        env_path: str = None,
+        chunk_size: int = 50000,  # Number of IDs per chunk
+        temp_dir: str = "/tmp/merge_temp"
+):
+    """
+    Chunked merge function that processes data in chunks to stay under memory/disk limits.
+
+    This function:
+    1. Reads source file in chunks (memory efficient)
+    2. Merges with downloaded data for each chunk
+    3. Writes results incrementally
+    4. Cleans up after each chunk
+    """
+    log_memory_usage("Chunked merge start")
+
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    # Validate inputs
+    if source_file is None or not Path(source_file).exists():
+        logger.error(f"Source file not found: {source_file}")
+        return {'success': False, 'error': 'Source file not found'}
+
+    if output_file is None:
+        logger.error("Output file path is required")
+        return {'success': False, 'error': 'Output file path is required'}
+
+    # Normalize dates
+    normalized_dates = []
+    for date in dates_to_merge:
+        if isinstance(date, pd.Timestamp):
+            normalized_dates.append(date.strftime("%Y-%m"))
+        elif isinstance(date, datetime.datetime):
+            normalized_dates.append(date.strftime("%Y-%m"))
+        elif isinstance(date, str):
+            try:
+                if len(date) == 7 and date[4] == '-':
+                    normalized_dates.append(date)
+                else:
+                    dt = pd.to_datetime(date)
+                    normalized_dates.append(dt.strftime("%Y-%m"))
+            except:
+                logger.warning(f"Could not parse date: {date}")
+
+    if not normalized_dates:
+        logger.error("No valid dates provided")
+        return {'success': False, 'error': 'No valid dates provided'}
+
+    # Create temp directory
+    temp_dir_path = Path(temp_dir)
+    temp_dir_path.mkdir(parents=True, exist_ok=True)
+
+    # Get downloaded files for the dates
+    dynamic_world_download_dir = Path(os.environ.get('dynamic_world_downloads', ''))
+    all_downloaded_files = []
+
+    for date_str in normalized_dates:
+        download_dir = dynamic_world_download_dir / region / f'download_{date_str}'
+        if download_dir.exists():
+            downloaded_files = glob.glob(str(download_dir / f'DW_{date_str}_*.nc'))
+            all_downloaded_files.extend(downloaded_files)
+            logger.info(f"Found {len(downloaded_files)} files for {date_str}")
+        else:
+            logger.warning(f"Download directory not found for {date_str}: {download_dir}")
+
+    if not all_downloaded_files:
+        logger.error("No downloaded files found to merge")
+        return {'success': False, 'error': 'No downloaded files found'}
+
+    # Combine downloaded files into a single dataset
+    logger.info(f"Combining {len(all_downloaded_files)} downloaded files...")
+    combined = None
+
+    for i in tqdm(range(0, len(all_downloaded_files), 20), desc="Processing download files"):
+        batch_files = all_downloaded_files[i:i + 20]
+        batch_datasets = []
+
+        for nc_file in batch_files:
+            try:
+                ds = xr.open_dataset(nc_file)
+                if len(ds['id_geohash']) > 0:
+                    batch_datasets.append(ds)
+            except Exception as e:
+                logger.warning(f"Could not open {nc_file}: {e}")
+
+        if batch_datasets:
+            batch_combined = xr.concat(batch_datasets, dim='id_geohash')
+            _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
+            if len(unique_idx) < len(batch_combined['id_geohash']):
+                batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
+
+            if combined is None:
+                combined = batch_combined
+            else:
+                combined = xr.concat([combined, batch_combined], dim='id_geohash')
+                _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
+                if len(unique_idx) < len(combined['id_geohash']):
+                    combined = combined.isel(id_geohash=np.sort(unique_idx))
+
+        # Clean up batch datasets
+        for ds in batch_datasets:
+            ds.close()
+        gc.collect()
+
+    if combined is None:
+        logger.error("No combined dataset created")
+        return {'success': False, 'error': 'No combined dataset created'}
+
+    logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
+
+    try:
+        # Step 1: Open source file with chunking
+        logger.info(f"Opening source file with chunking: {source_file}")
+        ds_source = xr.open_dataset(source_file, chunks={'id_geohash': chunk_size})
+
+        total_ids = len(ds_source['id_geohash'])
+        num_chunks = (total_ids + chunk_size - 1) // chunk_size
+        logger.info(f"Processing {total_ids:,} IDs in {num_chunks} chunks of {chunk_size}")
+
+        # Step 2: Process chunks
+        first_chunk = True
+        merged_chunks = []
+        chunk_file_paths = []
+
+        for chunk_idx in tqdm(range(num_chunks), desc="Processing ID chunks"):
+            start_idx = chunk_idx * chunk_size
+            end_idx = min((chunk_idx + 1) * chunk_size, total_ids)
+
+            logger.info(f"Processing chunk {chunk_idx + 1}/{num_chunks} (IDs {start_idx:,} - {end_idx:,})")
+
+            # Get source chunk
+            source_chunk = ds_source.isel(id_geohash=slice(start_idx, end_idx))
+
+            # Get matching IDs from combined data
+            source_ids = set(source_chunk['id_geohash'].values)
+            combined_ids = set(combined['id_geohash'].values)
+
+            # Find IDs that exist in both
+            matching_ids = source_ids & combined_ids
+
+            if matching_ids:
+                # Get combined data for matching IDs
+                combined_chunk = combined.sel(id_geohash=list(matching_ids))
+
+                # Merge source chunk with combined data
+                merged_chunk = xr.merge([source_chunk, combined_chunk], compat='override')
+            else:
+                # No matching IDs, just use source chunk
+                merged_chunk = source_chunk
+
+            # Ensure all variables are present
+            source_vars = list(ds_source.data_vars)
+            for var_name in source_vars:
+                if var_name not in merged_chunk.data_vars:
+                    merged_chunk[var_name] = (('id_geohash', 'date'),
+                                              np.full((len(merged_chunk['id_geohash']), len(merged_chunk['date'])),
+                                                      np.nan))
+
+            # Write chunk to temporary file
+            chunk_file = temp_dir_path / f"chunk_{chunk_idx:04d}.nc"
+            encoding = {}
+            for var in merged_chunk.data_vars:
+                encoding[var] = {
+                    'zlib': True,
+                    'complevel': 4,
+                    'shuffle': True
+                }
+
+            merged_chunk.to_netcdf(chunk_file, encoding=encoding)
+            chunk_file_paths.append(chunk_file)
+            logger.info(
+                f"  Chunk {chunk_idx + 1} written: {chunk_file} ({chunk_file.stat().st_size / (1024 ** 3):.2f} GB)")
+
+            # Clean up chunk to free memory
+            source_chunk.close()
+            if 'combined_chunk' in locals():
+                combined_chunk.close()
+            merged_chunk.close()
+            gc.collect()
+
+            # Log memory usage
+            log_memory_usage(f"After chunk {chunk_idx + 1}")
+
+            # Check disk usage
+            used_gb = shutil.disk_usage(temp_dir_path).used / (1024 ** 3)
+            logger.info(f"Temp directory usage: {used_gb:.2f} GB")
+
+            # If temp directory is getting large, combine and compress chunks
+            if used_gb > 8 and len(chunk_file_paths) > 2:
+                logger.warning(f"Temp directory at {used_gb:.2f} GB, combining chunks...")
+                combine_chunk_files(chunk_file_paths, output_file, temp_dir_path)
+                # Clean up chunk files
+                for f in chunk_file_paths:
+                    f.unlink()
+                chunk_file_paths = []
+                gc.collect()
+
+        # Step 3: Combine all chunks into final file
+        logger.info(f"Combining {len(chunk_file_paths)} chunks into final file...")
+        combine_chunk_files(chunk_file_paths, output_file, temp_dir_path)
+
+        # Step 4: Clean up
+        ds_source.close()
+        combined.close()
+        gc.collect()
+
+        # Step 5: Verify the final file
+        logger.info("Verifying final file...")
+        verify_ds = xr.open_dataset(output_file)
+        final_id_count = len(verify_ds['id_geohash'])
+        final_date_count = len(verify_ds['date'])
+        verify_vars = set(verify_ds.data_vars)
+        verify_ds.close()
+
+        result = {
+            'success': True,
+            'file_path': str(output_file),
+            'id_count': final_id_count,
+            'date_count': final_date_count,
+            'file_size_gb': Path(output_file).stat().st_size / (1024 ** 3),
+            'dates_merged': normalized_dates,
+            'region': region,
+            'variables_preserved': list(verify_vars)
+        }
+
+        logger.info(f"✅ Chunked merge completed successfully!")
+        logger.info(f"  Final file: {output_file}")
+        logger.info(f"  IDs: {result['id_count']:,}")
+        logger.info(f"  Dates: {result['date_count']}")
+        logger.info(f"  Size: {result['file_size_gb']:.2f} GB")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in chunked merge: {e}")
+        import traceback
+        traceback.print_exc()
+
+        # Clean up chunk files
+        for f in chunk_file_paths:
+            try:
+                f.unlink()
+            except:
+                pass
+
+        return {
+            'success': False,
+            'error': str(e),
+            'file_path': str(output_file)
+        }
+
+
+def combine_chunk_files(chunk_files, output_file, temp_dir):
+    """
+    Combine chunk files into a single NetCDF file.
+    """
+    if not chunk_files:
+        logger.error("No chunk files to combine")
+        return False
+
+    logger.info(f"Combining {len(chunk_files)} chunk files...")
+
+    # Open all chunks and concatenate
+    chunk_datasets = []
+    for chunk_file in chunk_files:
+        try:
+            ds = xr.open_dataset(chunk_file)
+            chunk_datasets.append(ds)
+        except Exception as e:
+            logger.warning(f"Could not open {chunk_file}: {e}")
+
+    if not chunk_datasets:
+        logger.error("No valid chunk datasets to combine")
+        return False
+
+    try:
+        # Concatenate all chunks
+        final_combined = xr.concat(chunk_datasets, dim='id_geohash')
+
+        # Remove duplicate IDs if any
+        _, unique_idx = np.unique(final_combined['id_geohash'].values, return_index=True)
+        if len(unique_idx) < len(final_combined['id_geohash']):
+            logger.info(f"Removing {len(final_combined['id_geohash']) - len(unique_idx)} duplicate IDs")
+            final_combined = final_combined.isel(id_geohash=np.sort(unique_idx))
+
+        # Sort
+        final_combined = final_combined.sortby(['date', 'id_geohash'])
+
+        # Write with compression
+        encoding = {}
+        for var in final_combined.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True
+            }
+
+        final_combined.to_netcdf(output_file, encoding=encoding)
+
+        # Clean up
+        for ds in chunk_datasets:
+            ds.close()
+        final_combined.close()
+        gc.collect()
+
+        logger.info(f"✅ Combined {len(chunk_files)} chunks into {output_file}")
+        logger.info(f"  Size: {Path(output_file).stat().st_size / (1024 ** 3):.2f} GB")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error combining chunks: {e}")
+        return False
+
+
 def main():
     """
     Main entry point for command-line usage.

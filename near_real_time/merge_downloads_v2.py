@@ -1,6 +1,6 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region, \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
-    merge_near_real_time_region_v3_simple, \
+    merge_near_real_time_region_v3_simple,merge_near_real_time_region_v3_chunked,  \
     compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_near_real_time_region_v3_smart, \
     enable_memory_tracking, log_memory_usage, merge_near_real_time_region_v3_smart_local_disk
 import sys
@@ -347,25 +347,23 @@ def main():
         pass
 
     SHOULD_RUN = False
-
     summer_months = [6, 7, 8, 9]
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
 
     # Explicitly use the known good source file
-    most_recent_dynamic_world_file = os.path.join(dynamic_world_data_dir, 'lakes_dw_V2d_2016-2025.nc')
+    source_file = os.path.join(dynamic_world_data_dir, 'lakes_dw_V2d_2016-2025.nc')
 
     # Check if the source file exists
-    if not Path(most_recent_dynamic_world_file).exists():
-        logger.error(f"Source file not found: {most_recent_dynamic_world_file}")
+    if not Path(source_file).exists():
+        logger.error(f"Source file not found: {source_file}")
         # Try to find any other .nc file as fallback
         if all_dynamic_world_files:
-            # Exclude any temp or backup files
             valid_files = [f for f in all_dynamic_world_files
                            if 'temp' not in f and 'backup' not in f and 'merged_historical' not in f]
             if valid_files:
-                most_recent_dynamic_world_file = max(valid_files, key=lambda f: Path(f).stat().st_mtime)
-                logger.info(f"Using fallback source file: {most_recent_dynamic_world_file}")
+                source_file = max(valid_files, key=lambda f: Path(f).stat().st_mtime)
+                logger.info(f"Using fallback source file: {source_file}")
             else:
                 logger.error("No valid source files found")
                 sys.exit(1)
@@ -385,62 +383,33 @@ def main():
         date_to_run = [datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")]
         dates_to_run_string = date_to_run[0].replace('-', '_')
 
-        if not Path(most_recent_dynamic_world_file).exists():
-            logger.error(f"Source file not found: {most_recent_dynamic_world_file}")
-            sys.exit(1)
+        # ===== NEW: Check if we should use chunked or local disk merge =====
+        # Check available local disk space
+        import shutil
+        disk_usage = shutil.disk_usage("/tmp")
+        free_gb = disk_usage.free / (1024 ** 3)
+        source_size_gb = Path(source_file).stat().st_size / (1024 ** 3)
 
-        # Use local disk for temporary file
+        logger.info(f"Available local disk: {free_gb:.2f} GB")
+        logger.info(f"Source file size: {source_size_gb:.2f} GB")
+
+        # Use chunked merge if free space is limited or source file is large
+        use_chunked_merge = (free_gb < 15 or source_size_gb > 8)
+        logger.info(f"Using chunked merge: {use_chunked_merge}")
+
+        # Create temp directories
         local_temp_dir = Path("/tmp/merge_temp")
         local_temp_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy source file to local disk (fast, once)
-        local_base_file = local_temp_dir / f"base_historical_{dates_to_run_string}.nc"
-        logger.info(f"Copying source file to local disk: {local_base_file}")
-
-        # If local file already exists from a previous run, remove it
-        if local_base_file.exists():
-            local_base_file.unlink()
-            logger.info(f"Removed existing local base file: {local_base_file}")
-
-        # Copy the source file (this is fast - just file I/O)
-        # TODO add compression for local_base_file
-        # Copy source file to local disk with compression
-        local_base_file = local_temp_dir / f"base_historical_{dates_to_run_string}.nc"
-        logger.info(f"Copying and compressing source file to local disk: {local_base_file}")
-
-        # If local file already exists from a previous run, remove it
-        if local_base_file.exists():
-            local_base_file.unlink()
-            logger.info(f"Removed existing local base file: {local_base_file}")
-
-        # ===== TODO: Copy with compression =====
-        start_copy = time.time()
-
-        # Use the compression function
-        compression_success = copy_netcdf_with_progress(
-            source_file=most_recent_dynamic_world_file,
-            target_file=str(local_base_file),
-            compression_level=4  # Good balance of speed vs compression
-        )
-
-        if not compression_success:
-            logger.error("Failed to copy and compress source file")
-            sys.exit(1)
-
-        copy_time = time.time() - start_copy
-        logger.info(f"✅ Copied and compressed source file in {copy_time:.2f} seconds")
-        logger.info(f"  Size: {local_base_file.stat().st_size / (1024 ** 3):.2f} GB")
-
-        # Use the copied file as the merge target
-        local_merge_file = local_base_file
+        # Use local disk for temporary file
+        local_merge_file = local_temp_dir / f"merged_historical_{dates_to_run_string}.nc"
         logger.info(f"Local merge file will be: {local_merge_file}")
 
         # Final Filestore path
         name_of_final_merge_file = f"{dynamic_world_data_dir}/lakes_dw_Vdc_v2_{dates_to_run_string}.nc"
         logger.debug(f"New netcdf file will be {name_of_final_merge_file}")
-        logger.debug(f"Checking if we should merge")
-        logger.debug(f"Merge if {date_to_run} are downloaded for all regions")
 
+        # Verify downloads are complete
         REGIONS = utils.region_boundaries.get_region_boundaries()
         REGION_NAMES = list(REGIONS.keys())
 
@@ -452,49 +421,64 @@ def main():
             logger.debug(downloads_complete)
             summary = downloads_complete['summary']
             logger.debug(f"Total expected downloads {summary['total_expected_downloads']}")
-            logger.debug(f"Total successful downloads {summary['total_successful_downloads']}")
             total_skipped_and_successful_downloads = summary['total_skipped_downloads'] + summary[
                 'total_successful_downloads']
             total_expected_downloads = summary['total_expected_downloads']
-            percent_downloaded = float(total_skipped_and_successful_downloads) / float(total_expected_downloads)
+            percent_downloaded = float(total_skipped_and_successful_downloads) / float(
+                total_expected_downloads) if total_expected_downloads > 0 else 0
             logger.debug(f"Percent downloaded for {region}: {percent_downloaded}")
-            logger.debug(f"Percent downloaded: {percent_downloaded}")
+
             if downloads_complete['complete'] or percent_downloaded > 0.99:
                 regions_downloaded += 1
                 regions_downloaded_names.append(region)
 
-        logger.debug(f"How many regions are finished downloading?")
         logger.debug(f"{regions_downloaded} regions downloaded")
-        logger.debug(f"These regions are fully downloaded")
-
-        for region in regions_downloaded_names:
-            logger.debug(region)
 
         successfully_merged_region_count = 0
-        merged_files = []  # Track which files were merged
 
         if regions_downloaded == len(REGION_NAMES):
             for region in REGION_NAMES:
-                logger.debug(f"Checking if we already merged region {region} for {date_to_run}")
+                logger.info(f"Processing region: {region}")
+                log_memory_usage(f"Before processing {region}")
 
-            for region in REGION_NAMES:
-                logger.info(f"Merging region: {region}")
-                log_memory_usage(f"Before merging {region}")
+                if use_chunked_merge:
+                    # ===== OPTION 1: Use chunked merge (memory efficient) =====
+                    logger.info(f"Using chunked merge for {region}")
 
-                # ===== FIXED: Use the updated method without source_file and verify_downloads_first =====
-                merge_result = merge_near_real_time_region_v3_smart_local_disk(
-                    region=region,
-                    dates_to_merge=date_to_run,
-                    input_file_path=local_merge_file,  # Append to the local file (already has source data)
-                    env_path=env_path,
-                    skip_if_already_merged=True,  # Keep this
-                    temp_dir="/tmp/merge_temp",  # Use local disk for temp files
-                    final_copy_path=None,  # We'll copy to Filestore at the end
-                )
+                    # Process each region with chunked merge
+                    merge_result = merge_near_real_time_region_v3_chunked(
+                        region=region,
+                        dates_to_merge=date_to_run,
+                        source_file=source_file,
+                        output_file=local_merge_file,
+                        env_path=env_path,
+                        chunk_size=50000,  # Adjust based on memory
+                        temp_dir="/tmp/merge_temp"
+                    )
+                else:
+                    # ===== OPTION 3: Use local disk merge with per-region cleanup =====
+                    logger.info(f"Using local disk merge for {region}")
+
+                    # First, compress the source file if needed
+                    compressed_source = local_temp_dir / f"compressed_source_{dates_to_run_string}.nc"
+                    if not compressed_source.exists():
+                        logger.info("Compressing source file...")
+                        copy_and_compress_netcdf(source_file, compressed_source, compression_level=4)
+                        logger.info(f"Compressed source: {compressed_source.stat().st_size / (1024 ** 3):.2f} GB")
+
+                    # Merge region
+                    merge_result = merge_near_real_time_region_v3_smart_local_disk(
+                        region=region,
+                        dates_to_merge=date_to_run,
+                        input_file_path=local_merge_file,
+                        env_path=env_path,
+                        skip_if_already_merged=True,
+                        temp_dir="/tmp/merge_temp",
+                        final_copy_path=None,
+                    )
 
                 if merge_result.get('success', False):
                     successfully_merged_region_count += 1
-                    merged_files.append(region)
                     logger.info(f"✅ Merging was successful for {region}")
 
                     # Log the merge result
@@ -504,13 +488,33 @@ def main():
                         logger.info(f"  Dates: {merge_result.get('date_count', 0)}")
                         file_size = merge_result.get('file_size_gb', 0)
                         logger.info(f"  Size: {file_size:.2f} GB")
-                    else:
-                        # Fallback logging
-                        logger.info(f"  File size: {local_merge_file.stat().st_size / (1024 ** 3):.2f} GB")
 
+                    # ===== CLEANUP after each region (Option 3) =====
                     # Force garbage collection
                     gc.collect()
-                    log_memory_usage(f"After merging region {region}")
+                    log_memory_usage(f"After processing {region}")
+
+                    # Check and clean up temp files
+                    temp_files = list(local_temp_dir.glob("chunk_*.nc"))
+                    if temp_files:
+                        for f in temp_files:
+                            try:
+                                f.unlink()
+                                logger.debug(f"Removed chunk file: {f}")
+                            except:
+                                pass
+
+                    # Check disk usage
+                    used_gb = shutil.disk_usage("/tmp").used / (1024 ** 3)
+                    logger.info(f"Local disk usage after {region}: {used_gb:.2f} GB")
+
+                    # If getting close to limit, recompress
+                    if used_gb > 8 and local_merge_file.exists():
+                        logger.info("Recompressing local file to free space...")
+                        temp_recompress = local_temp_dir / f"recompress_{dates_to_run_string}.nc"
+                        copy_and_compress_netcdf(local_merge_file, temp_recompress, compression_level=6)
+                        shutil.move(temp_recompress, local_merge_file)
+                        logger.info(f"Recompressed size: {local_merge_file.stat().st_size / (1024 ** 3):.2f} GB")
                 else:
                     logger.error(f"❌ Merge failed for {region}: {merge_result.get('error', 'Unknown error')}")
 
@@ -523,6 +527,7 @@ def main():
 
         logger.debug(f"Successfully merged {successfully_merged_region_count} regions out of {len(REGION_NAMES)}")
 
+        # ===== Final copy to Filestore =====
         if successfully_merged_region_count == len(REGION_NAMES):
             logger.info("=" * 80)
             logger.info("✅ ALL REGIONS MERGED SUCCESSFULLY")
@@ -590,7 +595,6 @@ def main():
             temp_files = sorted(local_temp_dir.glob("*.nc"), key=lambda f: f.stat().st_mtime)
             if len(temp_files) > 5:
                 for old_file in temp_files[:-5]:
-                    # Don't delete the current merge file
                     if old_file != local_merge_file:
                         logger.info(f"Removing old temp file: {old_file}")
                         old_file.unlink()
@@ -602,10 +606,6 @@ def main():
 
     else:
         logger.debug("SHOULD_RUN is False - skipping merge")
-        logger.debug(f"Current month: {TODAY_MONTH}, Summer months: {summer_months}")
-        logger.debug(f"Condition: TODAY_MONTH - 1 in summer_months: {TODAY_MONTH - 1 in summer_months}")
-        if TODAY_MONTH - 1 in summer_months:
-            logger.debug(f"TODAY_DAY: {TODAY_DAY}, need > 3: {TODAY_DAY > 3}")
 
 
 if __name__ == "__main__":
