@@ -3846,6 +3846,23 @@ def merge_near_real_time_region_v3_smart_local_disk(
     else:
         load_dotenv()
 
+        # Get the historical file (source of existing data)
+        dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+        if not dynamic_world_data_dir:
+            logger.error("dynamic_world_data not set in environment")
+            return {'success': False, 'error': 'dynamic_world_data not set'}
+
+        # FIX: Add validation for source_file
+        if source_file is None:
+            logger.error("source_file is required")
+            return {'success': False, 'error': 'source_file is required'}
+
+        if not Path(source_file).exists():
+            logger.error(f"source_file does not exist: {source_file}")
+            return {'success': False, 'error': f'source_file does not exist: {source_file}'}
+
+        logger.info(f"Using source historical file: {source_file}")
+
     # Validate input file path
     if input_file_path is None:
         logger.error("input_file_path is required for local disk merge")
