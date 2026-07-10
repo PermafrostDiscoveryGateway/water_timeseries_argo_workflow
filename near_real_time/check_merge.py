@@ -143,8 +143,9 @@ def main():
             logger.debug(f"Found {len(region_ids)} IDs for region {region}")
             has_been_merged = has_region_been_merged_for_dates(region=region,
                                                                dates_to_check=date_to_run, historical_file_path=dynamic_world_file_to_test)
-            logger.debug(f"Result for region {region}")
-            logger.debug(has_been_merged)
+            partial_dates = has_been_merged['partial_dates']
+            missing_dates = has_been_merged['missing_dates']
+            logger.debug(f"Result for region {region} partial dates {partial_dates} missing dates {missing_dates}")
 
 
 

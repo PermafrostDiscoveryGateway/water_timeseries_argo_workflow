@@ -3830,18 +3830,18 @@ def has_region_been_merged_for_dates(
         }
 
         # Log summary
-        logger.info(f"\n{'=' * 60}")
-        logger.info(f"REGION CHECK: {region}")
-        logger.info(f"{'=' * 60}")
-        logger.info(f"Total IDs in region: {result['region_id_count']}")
-        logger.info(f"IDs in file: {result['region_ids_in_file']}")
-        logger.info(f"IDs missing: {result['region_ids_missing']}")
-        logger.info(f"All dates present: {result['all_dates_present']}")
-        logger.info(f"Some dates present: {result['some_dates_present']}")
-        logger.info(f"None dates present: {result['none_dates_present']}")
-        logger.info(f"Present dates: {result['present_dates']}")
-        logger.info(f"Partial dates: {result['partial_dates']}")
-        logger.info(f"Missing dates: {result['missing_dates']}")
+        # logger.info(f"\n{'=' * 60}")
+        # logger.info(f"REGION CHECK: {region}")
+        # logger.info(f"{'=' * 60}")
+        # logger.info(f"Total IDs in region: {result['region_id_count']}")
+        # logger.info(f"IDs in file: {result['region_ids_in_file']}")
+        # logger.info(f"IDs missing: {result['region_ids_missing']}")
+        # logger.info(f"All dates present: {result['all_dates_present']}")
+        # logger.info(f"Some dates present: {result['some_dates_present']}")
+        # logger.info(f"None dates present: {result['none_dates_present']}")
+        # logger.info(f"Present dates: {result['present_dates']}")
+        # logger.info(f"Partial dates: {result['partial_dates']}")
+        # logger.info(f"Missing dates: {result['missing_dates']}")
 
         return result
 
