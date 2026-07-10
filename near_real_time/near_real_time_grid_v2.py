@@ -3543,20 +3543,28 @@ def has_region_been_merged_for_dates(
     """
     Check if a specific region already has the given dates merged.
 
+    This function uses region boundaries to determine which IDs belong to the region,
+    then checks if those IDs have data for the specified dates.
+
     Args:
-        region: Region name (TEST, ALASKA, CANADA, EURASIA)
+        region: Region name (TEST, ALASKA, CANADA, EURASIA1, EURASIA2, EURASIA3)
         dates_to_check: List of dates in "YYYY-MM" format
         historical_file_path: Optional path to the historical file
         env_path: Optional path to .env file
 
     Returns:
         dict: {
-            'all_dates_present': bool,
-            'missing_dates': List[str],
-            'present_dates': List[str],
+            'all_dates_present': bool,  # True if ALL dates are present for ALL region IDs
+            'some_dates_present': bool,  # True if at least one date is present for some IDs
+            'none_dates_present': bool,  # True if no dates are present for any region IDs
+            'missing_dates': List[str],  # Dates that are missing for ANY region ID
+            'present_dates': List[str],  # Dates that are present for ALL region IDs
+            'partial_dates': List[str],  # Dates that are present for SOME but not ALL region IDs
+            'region_id_count': int,      # Total number of IDs in this region
+            'region_ids_with_data': int,  # Number of region IDs that have data for the dates
+            'region_ids_missing_data': int,  # Number of region IDs missing data
             'file_path': str,
-            'region_found': bool,
-            'date_counts': dict  # counts of dates per region
+            'region_found': bool
         }
     """
     # Load environment
@@ -3571,46 +3579,128 @@ def has_region_been_merged_for_dates(
         if not dynamic_world_data_dir:
             return {
                 'all_dates_present': False,
+                'some_dates_present': False,
+                'none_dates_present': True,
                 'error': 'dynamic_world_data not set in environment',
-                'missing_dates': dates_to_check
+                'missing_dates': dates_to_check,
+                'present_dates': [],
+                'partial_dates': []
             }
 
         all_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
         if not all_files:
             return {
                 'all_dates_present': False,
+                'some_dates_present': False,
+                'none_dates_present': True,
                 'error': 'No NetCDF files found',
-                'missing_dates': dates_to_check
+                'missing_dates': dates_to_check,
+                'present_dates': [],
+                'partial_dates': []
             }
 
-        historical_file_path = max(all_files, key=os.path.getctime)
+        historical_file_path = max(all_files, key=lambda f: Path(f).stat().st_mtime)
 
     try:
-        # Open the file
+        # Get region boundaries
+        from utils.region_boundaries import get_region_boundaries
+        region_boundaries = get_region_boundaries()
+
+        if region not in region_boundaries:
+            return {
+                'all_dates_present': False,
+                'some_dates_present': False,
+                'none_dates_present': True,
+                'error': f'Region {region} not found in boundaries',
+                'missing_dates': dates_to_check,
+                'present_dates': [],
+                'partial_dates': [],
+                'region_found': False
+            }
+
+        bounds = region_boundaries[region]
+        x_min_start = bounds['X_MIN_START']
+        x_min_end = bounds['X_MIN_END']
+        y_min_start = bounds['Y_MIN_START']
+        y_min_end = bounds['Y_MIN_END']
+
+        # Open the NetCDF file
         ds = xr.open_dataset(historical_file_path)
 
-        # Get all IDs and their associated regions
-        # Assuming you have region information stored with each ID
-        # If you don't have region stored, you'll need to get this from the region boundaries
+        # Get all IDs
         all_ids = ds['id_geohash'].values
 
-        # Method 1: If region is stored as an attribute or variable
-        # Look for region information in the dataset
+        # ========== METHOD 1: If coordinates are stored in the dataset ==========
         region_ids = []
-        if 'region' in ds.data_vars:
-            # If region is a variable in the dataset
-            region_mask = ds['region'] == region
-            region_ids = ds['id_geohash'].values[region_mask.values]
-        elif 'region' in ds.attrs:
-            # If region is stored as a global attribute
-            # This might not be reliable for per-ID region info
-            logger.warning("Region stored as global attribute - cannot verify per-ID region")
-        else:
-            # Method 2: Use the region boundaries to filter IDs
-            # This requires loading the region boundaries and checking which IDs fall within them
-            region_ids = get_ids_for_region_from_file(ds, region)
 
-        # If we found region-specific IDs, check their dates
+        # Check if we have coordinate information
+        has_coords = False
+        if 'longitude' in ds.coords and 'latitude' in ds.coords:
+            # Try to get coordinates for each ID
+            try:
+                # This assumes the coordinates are aligned with the IDs
+                lons = ds['longitude'].values
+                lats = ds['latitude'].values
+
+                if len(lons) == len(all_ids):
+                    # Filter IDs within the bounding box
+                    for i, id_val in enumerate(all_ids):
+                        if (x_min_start <= lons[i] <= x_min_end and
+                                y_min_start <= lats[i] <= y_min_end):
+                            region_ids.append(id_val)
+                    has_coords = True
+                    logger.info(f"Found {len(region_ids)} IDs in region {region} using coordinates")
+            except Exception as e:
+                logger.warning(f"Could not use coordinates from dataset: {e}")
+
+        # ========== METHOD 2: Use geohash decoding if available ==========
+        if not has_coords or len(region_ids) == 0:
+            try:
+                import geohash2
+                logger.info("Attempting to decode geohashes to find region IDs...")
+
+                for id_val in all_ids:
+                    try:
+                        # Decode geohash to get coordinates
+                        # Note: geohash2.decode returns (lat, lon)
+                        lat, lon = geohash2.decode(id_val)
+
+                        if (x_min_start <= lon <= x_min_end and
+                                y_min_start <= lat <= y_min_end):
+                            region_ids.append(id_val)
+                    except Exception as e:
+                        # Skip invalid geohashes
+                        continue
+
+                if len(region_ids) > 0:
+                    logger.info(f"Found {len(region_ids)} IDs in region {region} using geohash decoding")
+                    has_coords = True
+            except ImportError:
+                logger.warning("geohash2 not installed, cannot decode geohashes")
+            except Exception as e:
+                logger.warning(f"Error decoding geohashes: {e}")
+
+        # ========== METHOD 3: Fallback - use stored region info if available ==========
+        if not has_coords or len(region_ids) == 0:
+            # Check if region is stored as a variable or attribute
+            if 'region' in ds.data_vars:
+                try:
+                    region_mask = ds['region'] == region
+                    region_ids = ds['id_geohash'].values[region_mask.values]
+                    logger.info(f"Found {len(region_ids)} IDs in region {region} using region variable")
+                except Exception as e:
+                    logger.warning(f"Could not use region variable: {e}")
+            elif 'region' in ds.attrs:
+                # Region stored as global attribute - not reliable for per-ID
+                logger.warning("Region stored as global attribute - cannot verify per-ID region")
+
+        # ========== METHOD 4: Last resort - use all IDs ==========
+        if len(region_ids) == 0:
+            logger.warning(f"No IDs found for region {region} using any method.")
+            logger.warning(f"Using ALL IDs in the file as a fallback (may not be accurate)")
+            region_ids = list(all_ids)
+
+        # ========== Check dates for region IDs ==========
         if region_ids:
             # Get the subset of data for this region
             region_data = ds.sel(id_geohash=region_ids)
@@ -3620,40 +3710,115 @@ def has_region_been_merged_for_dates(
             existing_date_strings = {d.strftime("%Y-%m") for d in existing_dates}
 
             # Check which dates are present
-            present_dates = [d for d in dates_to_check if d in existing_date_strings]
-            missing_dates = [d for d in dates_to_check if d not in existing_date_strings]
+            present_dates = []
+            missing_dates = []
+            partial_dates = []
+
+            for date_str in dates_to_check:
+                if date_str in existing_date_strings:
+                    # Check if ALL IDs in the region have data for this date
+                    # Get data for this specific date
+                    date_data = region_data.sel(date=pd.Timestamp(f"{date_str}-01"))
+
+                    # Check how many IDs have non-NaN data for this date
+                    # Use water_observed as a proxy for data presence
+                    if 'water_observed' in date_data.data_vars:
+                        has_data_mask = ~np.isnan(date_data['water_observed'].values)
+                        ids_with_data = np.sum(has_data_mask)
+                        total_ids = len(region_ids)
+
+                        if ids_with_data == total_ids:
+                            # All IDs have data
+                            present_dates.append(date_str)
+                        elif ids_with_data > 0:
+                            # Some IDs have data, some don't
+                            partial_dates.append(date_str)
+                            missing_dates.append(date_str)
+                        else:
+                            # No IDs have data
+                            missing_dates.append(date_str)
+                    else:
+                        # Can't check data presence, assume it's present
+                        present_dates.append(date_str)
+                else:
+                    missing_dates.append(date_str)
+
+            # Determine status
+            all_present = len(missing_dates) == 0 and len(partial_dates) == 0
+            some_present = len(present_dates) > 0 or len(partial_dates) > 0
+            none_present = len(present_dates) == 0 and len(partial_dates) == 0
+
+            # Count IDs with data
+            ids_with_data = 0
+            try:
+                # Check how many IDs have any data
+                for id_val in region_ids[:100]:  # Sample to avoid memory issues
+                    sample_data = region_data.sel(id_geohash=id_val)
+                    if 'water_observed' in sample_data.data_vars:
+                        if np.any(~np.isnan(sample_data['water_observed'].values)):
+                            ids_with_data += 1
+            except:
+                ids_with_data = 0
 
             result = {
-                'all_dates_present': len(missing_dates) == 0,
+                'all_dates_present': all_present,
+                'some_dates_present': some_present,
+                'none_dates_present': none_present,
                 'present_dates': present_dates,
                 'missing_dates': missing_dates,
+                'partial_dates': partial_dates,
                 'file_path': historical_file_path,
                 'region_found': True,
                 'region_id_count': len(region_ids),
-                'region_date_count': len(existing_date_strings),
+                'region_ids_with_data': ids_with_data,
+                'region_ids_missing_data': len(region_ids) - ids_with_data,
                 'all_dates_in_file': sorted(existing_date_strings)
             }
         else:
             # No region-specific IDs found
-            # This could mean the region hasn't been merged yet
             result = {
                 'all_dates_present': False,
+                'some_dates_present': False,
+                'none_dates_present': True,
                 'present_dates': [],
                 'missing_dates': dates_to_check,
+                'partial_dates': [],
                 'file_path': historical_file_path,
                 'region_found': False,
+                'region_id_count': 0,
+                'region_ids_with_data': 0,
+                'region_ids_missing_data': 0,
                 'message': f'No IDs found for region {region} in the file'
             }
 
         ds.close()
+
+        # Log summary
+        logger.info(f"Region {region} check results:")
+        logger.info(f"  Total IDs in region: {result['region_id_count']}")
+        logger.info(f"  IDs with data: {result['region_ids_with_data']}")
+        logger.info(f"  IDs missing data: {result['region_ids_missing_data']}")
+        logger.info(f"  All dates present: {result['all_dates_present']}")
+        logger.info(f"  Some dates present: {result['some_dates_present']}")
+        logger.info(f"  None dates present: {result['none_dates_present']}")
+        logger.info(f"  Present dates: {result['present_dates']}")
+        logger.info(f"  Partial dates: {result['partial_dates']}")
+        logger.info(f"  Missing dates: {result['missing_dates']}")
+
         return result
 
     except Exception as e:
         logger.error(f"Error checking region dates: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             'all_dates_present': False,
+            'some_dates_present': False,
+            'none_dates_present': True,
             'error': str(e),
             'missing_dates': dates_to_check,
+            'present_dates': [],
+            'partial_dates': [],
             'file_path': historical_file_path
         }
 
