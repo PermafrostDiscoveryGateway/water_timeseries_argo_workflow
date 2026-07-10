@@ -4290,9 +4290,9 @@ def merge_near_real_time_region_v4_smart(
     if temp_dir:
         temp_dir_path = Path(temp_dir)
         temp_dir_path.mkdir(parents=True, exist_ok=True)
-        temp_file = temp_dir_path / f"temp_merge_{region}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+        temp_file = temp_dir_path / f"temp_merge_{region}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
     else:
-        temp_file = target_path.parent / f"temp_merge_{region}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+        temp_file = target_path.parent / f"temp_merge_{region}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
 
     logger.info(f"Using temp file: {temp_file}")
 
@@ -4409,7 +4409,7 @@ def merge_near_real_time_region_v4_smart(
 
         # Step 6: Backup target and replace with temp
         if target_path.exists():
-            backup_file = target_path.parent / f"{target_path.stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}{target_path.suffix}"
+            backup_file = target_path.parent / f"{target_path.stem}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}{target_path.suffix}"
             logger.info(f"Backing up target to: {backup_file}")
             shutil.move(str(target_path), str(backup_file))
 

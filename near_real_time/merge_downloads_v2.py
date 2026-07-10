@@ -169,6 +169,7 @@ def main():
         successfully_merged_region_count = 0
 
         # TODO check this is it right copy method?
+        logger.debug(f"Copying older data to {NAME_OF_FINAL_MERGE_FILE}")
         shutil.copy(HISTORICAL_DATA_FILE, NAME_OF_FINAL_MERGE_FILE)
 
         if regions_downloaded == len(REGION_NAMES):
