@@ -175,30 +175,48 @@ def main():
             for region in REGION_NAMES:
                 logger.debug(f"Checking if we already merged region {region} for {date_to_run}")
 
-            for region in REGION_NAMES:
-                logger.debug(f"Not actually merging {region} yet")
-                logger.debug(f"Checking what is the most recent netcdf file")
-                all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-                most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
-                # TODO change this method so that it will merge everything into NAME_OF_FINAL_MERGE_FILE
-                merge_result = merge_near_real_time_region_v4_smart(region=region, dates_to_merge=date_to_run, historical_file_path=most_recent_dynamic_world_file)
-                if merge_result['success']:
-                    successfully_merged_region_count +=1
-                    logger.debug(f"Merging was successful for {region}")
-                    new_netcdf_file = merge_result['final_file']
-                    logger.debug(f"New netcdf file {new_netcdf_file}")
-                    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-                    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
-                    logger.debug(f"Now the most recent dynamic world file is {most_recent_dynamic_world_file}")
-                    gc.collect()
-                    log_memory_usage(f"After merging region {region}")
-            logger.debug(f"Verifying merge finished for all regions properly")
-        else:
-            logger.debug(f"not all regions downloaded, do not merge")
-        logger.debug(f"Successfully merged {successfully_merged_region_count}")
-        if successfully_merged_region_count == len(REGION_NAMES):
-            logger.debug("All regions merged successfully")
-        logger.debug(f"Merging now finished")
+            if regions_downloaded == len(REGION_NAMES):
+                successfully_merged_region_count = 0
+
+                for region in REGION_NAMES:
+                    logger.debug(f"Merging region {region} into {NAME_OF_FINAL_MERGE_FILE}")
+
+                    # Use V4 smart merge that merges INTO the target file
+                    merge_result = merge_near_real_time_region_v4_smart(
+                        region=region,
+                        dates_to_merge=date_to_run,
+                        target_file_path=NAME_OF_FINAL_MERGE_FILE,  # ← Merge INTO this file
+                        skip_if_already_merged=True,
+                        verify_downloads_first=False  # Already verified
+                    )
+
+                    if merge_result.get('success', False):
+                        if merge_result.get('skipped', False):
+                            logger.info(f"✅ Region {region} already had data (skipped)")
+                        else:
+                            successfully_merged_region_count += 1
+                            logger.info(f"✅ Merge successful for region {region}")
+                            logger.info(f"  Target file now has {merge_result.get('id_count', 0):,} IDs")
+                            logger.info(f"  File size: {merge_result.get('file_size_gb', 0):.2f} GB")
+
+                        gc.collect()
+                        log_memory_usage(f"After merging region {region}")
+                    else:
+                        logger.error(f"❌ Merge failed for region {region}: {merge_result.get('error')}")
+
+                logger.debug(f"Verifying merge finished for all regions properly")
+            else:
+                logger.debug(f"Not all regions downloaded, do not merge")
+
+            logger.debug(f"Successfully merged {successfully_merged_region_count}")
+            if successfully_merged_region_count == len(REGION_NAMES):
+                logger.debug("All regions merged successfully!")
+                # The file is already at NAME_OF_FINAL_MERGE_FILE
+                logger.info(f"Final merged file: {NAME_OF_FINAL_MERGE_FILE}")
+            else:
+                logger.warning(f"Only {successfully_merged_region_count}/{len(REGION_NAMES)} regions merged")
+
+            logger.debug(f"Merging now finished")
 
 
 
