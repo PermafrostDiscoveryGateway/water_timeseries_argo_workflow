@@ -21,6 +21,247 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+import xarray as xr
+import numpy as np
+from pathlib import Path
+from tqdm import tqdm
+import gc
+from loguru import logger
+
+
+def copy_netcdf_with_compression(
+        source_path: str,
+        target_path: str,
+        chunk_size_ids: int = 5000,
+        compression_level: int = 4,
+        shuffle: bool = True
+) -> bool:
+    """
+    Copy a NetCDF file to a new location with compression applied.
+
+    Reads the source file in chunks to avoid loading everything into memory.
+
+    Args:
+        source_path: Path to the source NetCDF file
+        target_path: Path to the target NetCDF file (will be created)
+        chunk_size_ids: Number of IDs to process per chunk (default: 5000)
+        compression_level: zlib compression level (0-9, default: 4)
+        shuffle: Enable shuffle filter for better compression (default: True)
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    logger.info(f"Copying {source_path} to {target_path} with compression")
+
+    # Get file size for progress
+    source_size = Path(source_path).stat().st_size
+    logger.info(f"Source file size: {source_size / (1024 ** 3):.2f} GB")
+
+    try:
+        # Open source with chunking
+        logger.info("Opening source file with chunking...")
+        ds_source = xr.open_dataset(
+            source_path,
+            chunks={'id_geohash': chunk_size_ids, 'date': -1}
+        )
+
+        # Get dimensions
+        total_ids = len(ds_source['id_geohash'])
+        total_dates = len(ds_source['date'])
+        logger.info(f"Source has {total_ids:,} IDs and {total_dates} dates")
+
+        # Get all variable names
+        var_names = list(ds_source.data_vars)
+        logger.info(f"Variables to preserve: {var_names}")
+
+        # Calculate number of chunks
+        num_chunks = (total_ids + chunk_size_ids - 1) // chunk_size_ids
+        logger.info(f"Processing {num_chunks} chunks of {chunk_size_ids} IDs each")
+
+        # Process chunks
+        first_chunk = True
+        chunk_file_paths = []
+
+        # Use temp directory for chunk files
+        import tempfile
+        temp_dir = tempfile.mkdtemp(prefix='copy_chunks_')
+
+        try:
+            for chunk_idx in tqdm(range(num_chunks), desc="Copying chunks"):
+                start_idx = chunk_idx * chunk_size_ids
+                end_idx = min((chunk_idx + 1) * chunk_size_ids, total_ids)
+
+                logger.debug(f"Processing chunk {chunk_idx + 1}/{num_chunks} (IDs {start_idx:,} - {end_idx:,})")
+
+                # Get chunk
+                chunk_data = ds_source.isel(id_geohash=slice(start_idx, end_idx))
+
+                # If chunk is empty, skip
+                if len(chunk_data['id_geohash']) == 0:
+                    continue
+
+                # Write chunk to temporary file with compression
+                chunk_file = Path(temp_dir) / f"chunk_{chunk_idx:04d}.nc"
+
+                # Prepare encoding with compression
+                encoding = {}
+                for var in var_names:
+                    if var in chunk_data.data_vars:
+                        encoding[var] = {
+                            'zlib': True,
+                            'complevel': compression_level,
+                            'shuffle': shuffle,
+                            'chunksizes': (min(100, len(chunk_data['date'])), min(1000, len(chunk_data['id_geohash'])))
+                        }
+
+                # Write chunk
+                chunk_data.to_netcdf(
+                    chunk_file,
+                    mode='w',
+                    encoding=encoding,
+                    unlimited_dims=['id_geohash'] if first_chunk else None
+                )
+
+                chunk_file_paths.append(chunk_file)
+
+                # Clean up
+                chunk_data.close()
+                gc.collect()
+
+                logger.debug(
+                    f"  Chunk {chunk_idx + 1} written: {chunk_file} ({chunk_file.stat().st_size / (1024 ** 3):.3f} GB)")
+
+            # Close source
+            ds_source.close()
+
+            # Combine all chunks into final file
+            logger.info(f"Combining {len(chunk_file_paths)} chunks into final file...")
+
+            if len(chunk_file_paths) == 0:
+                logger.error("No chunks were created")
+                return False
+
+            if len(chunk_file_paths) == 1:
+                # Only one chunk, just move it
+                shutil.move(chunk_file_paths[0], target_path)
+                logger.info(f"✅ Single chunk moved to {target_path}")
+            else:
+                # Combine multiple chunks
+                combine_chunks_to_netcdf(
+                    chunk_files=chunk_file_paths,
+                    output_path=target_path,
+                    compression_level=compression_level,
+                    shuffle=shuffle
+                )
+
+            # Verify the final file
+            if Path(target_path).exists():
+                final_size = Path(target_path).stat().st_size
+                compression_ratio = source_size / final_size if final_size > 0 else 0
+                logger.info(f"✅ Copy completed successfully!")
+                logger.info(f"  Original size: {source_size / (1024 ** 3):.2f} GB")
+                logger.info(f"  Compressed size: {final_size / (1024 ** 3):.2f} GB")
+                logger.info(f"  Compression ratio: {compression_ratio:.2f}x")
+                return True
+            else:
+                logger.error(f"Final file not created: {target_path}")
+                return False
+
+        finally:
+            # Clean up temp directory
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    except Exception as e:
+        logger.error(f"Error copying with compression: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def combine_chunks_to_netcdf(
+        chunk_files: list,
+        output_path: str,
+        compression_level: int = 4,
+        shuffle: bool = True
+) -> bool:
+    """
+    Combine multiple chunk files into a single NetCDF file with compression.
+
+    Args:
+        chunk_files: List of chunk file paths
+        output_path: Path to the output file
+        compression_level: zlib compression level (0-9)
+        shuffle: Enable shuffle filter
+
+    Returns:
+        bool: True if successful
+    """
+    logger.info(f"Combining {len(chunk_files)} chunks into {output_path}")
+
+    try:
+        # Open all chunks
+        datasets = []
+        for chunk_file in chunk_files:
+            try:
+                ds = xr.open_dataset(chunk_file)
+                if len(ds['id_geohash']) > 0:
+                    datasets.append(ds)
+                else:
+                    ds.close()
+            except Exception as e:
+                logger.warning(f"Could not open {chunk_file}: {e}")
+
+        if not datasets:
+            logger.error("No valid datasets to combine")
+            return False
+
+        # Concatenate all chunks
+        logger.info(f"Concatenating {len(datasets)} datasets...")
+        combined = xr.concat(datasets, dim='id_geohash')
+
+        # Remove duplicate IDs if any
+        _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
+        if len(unique_idx) < len(combined['id_geohash']):
+            logger.info(f"Removing {len(combined['id_geohash']) - len(unique_idx)} duplicate IDs")
+            combined = combined.isel(id_geohash=np.sort(unique_idx))
+
+        # Sort by date and id
+        combined = combined.sortby(['date', 'id_geohash'])
+
+        # Prepare encoding with compression
+        encoding = {}
+        for var in combined.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': compression_level,
+                'shuffle': shuffle,
+                'chunksizes': (min(100, len(combined['date'])), min(1000, len(combined['id_geohash'])))
+            }
+
+        # Write to final file
+        logger.info(f"Writing final file: {output_path}")
+        combined.to_netcdf(
+            output_path,
+            mode='w',
+            encoding=encoding,
+            unlimited_dims=['id_geohash']
+        )
+
+        # Clean up
+        combined.close()
+        for ds in datasets:
+            ds.close()
+        gc.collect()
+
+        logger.info(f"✅ Combined {len(datasets)} chunks into {output_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error combining chunks: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def get_creation_time(filepath):
@@ -170,7 +411,18 @@ def main():
 
         # TODO check this is it right copy method?
         logger.debug(f"Copying older data to {NAME_OF_FINAL_MERGE_FILE}")
-        shutil.copy(HISTORICAL_DATA_FILE, NAME_OF_FINAL_MERGE_FILE)
+        copy_success = copy_netcdf_with_compression(
+            source_path=HISTORICAL_DATA_FILE,
+            target_path=NAME_OF_FINAL_MERGE_FILE,
+            chunk_size_ids=5000,
+            compression_level=4,
+            shuffle=True
+        )
+        logger.debug(copy_success)
+        logger.debug(f"Successfully copied {NAME_OF_FINAL_MERGE_FILE}")
+        file_path = Path(NAME_OF_FINAL_MERGE_FILE)
+        file_size = file_path.stat().st_size
+        logger.debug(f"Size of {NAME_OF_FINAL_MERGE_FILE}: {file_size}")
 
         if regions_downloaded == len(REGION_NAMES):
             for region in REGION_NAMES:
@@ -190,6 +442,10 @@ def main():
                         skip_if_already_merged=True,
                         verify_downloads_first=False  # Already verified
                     )
+                    file_path = Path(NAME_OF_FINAL_MERGE_FILE)
+                    file_size = file_path.stat().st_size
+                    logger.debug(f"Size of {NAME_OF_FINAL_MERGE_FILE}: {file_size}")
+
 
                     if merge_result.get('success', False):
                         if merge_result.get('skipped', False):
