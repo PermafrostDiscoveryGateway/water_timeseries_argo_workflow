@@ -137,16 +137,10 @@ def main():
         regions_downloaded = 0
         regions_downloaded_names = []
 
-        for region in REGION_NAMES:
-            if env_path is not None:
-                region_ids = get_ids_for_region_from_vector_file(region, env_path=env_path)
-                logger.debug(f"Found {len(region_ids)} IDs for region {region}")
-            else:
-                region_ids = get_ids_for_region_from_vector_file(region)
-                logger.debug(f"Found {len(region_ids)} IDs for region {region}")
-
 
         for region in REGION_NAMES:
+            region_ids = get_ids_for_region_from_vector_file(region)
+            logger.debug(f"Found {len(region_ids)} IDs for region {region}")
             has_been_merged = has_region_been_merged_for_dates(region=region,
                                                                dates_to_check=date_to_run, historical_file_path=dynamic_world_file_to_test)
             logger.debug(f"Result for region {region}")
