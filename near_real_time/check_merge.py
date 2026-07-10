@@ -2,7 +2,7 @@ from near_real_time_grid_v2 import verify_downloads_complete, verify_process_com
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
                                      merge_near_real_time_region_v3_simple, \
                  compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_near_real_time_region_v3_smart, \
-            enable_memory_tracking, log_memory_usage, has_region_been_merged_for_dates
+            enable_memory_tracking, log_memory_usage, has_region_been_merged_for_dates, get_ids_for_region_from_vector_file
 import sys
 import shutil
 import gc
@@ -135,6 +135,15 @@ def main():
 
         regions_downloaded = 0
         regions_downloaded_names = []
+
+        for region in REGION_NAMES:
+            if env_path is not None:
+                region_ids = get_ids_for_region_from_vector_file(region, env_path=env_path)
+                logger.debug(f"Found {len(region_ids)} IDs for region {region}")
+            else:
+                region_ids = get_ids_for_region_from_vector_file(region)
+                logger.debug(f"Found {len(region_ids)} IDs for region {region}")
+
 
         for region in REGION_NAMES:
             downloads_complete = verify_downloads_complete(region=region, analysis_dates=date_to_run)
