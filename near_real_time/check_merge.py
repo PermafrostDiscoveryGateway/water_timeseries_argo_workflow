@@ -135,7 +135,7 @@ def main():
         REGION_NAMES = list(REGIONS.keys())
 
         regions_downloaded = 0
-        regions_downloaded_names = []
+        regions_merged = []
 
 
         for region in REGION_NAMES:
@@ -145,7 +145,11 @@ def main():
                                                                dates_to_check=date_to_run, historical_file_path=dynamic_world_file_to_test)
             partial_dates = has_been_merged['partial_dates']
             missing_dates = has_been_merged['missing_dates']
+            if len(partial_dates) == 0 and len(missing_dates) == 0:
+                regions_merged.append(region)
             logger.debug(f"Result for region {region} partial dates {partial_dates} missing dates {missing_dates}")
+            logger.debug(f"Successfully merged regions")
+            logger.debug(regions_merged)
 
 
 
