@@ -4121,33 +4121,186 @@ def merge_near_real_time_region_v3_smart(
     return merge_result
 
 
+import os
+import shutil
+import glob
+import gc
+import time
+from pathlib import Path
+from loguru import logger
+import xarray as xr
+import numpy as np
+from tqdm import tqdm
+
+
+def atomic_write_netcdf(
+        data_to_write,
+        target_path: str,
+        temp_dir: str = None,
+        compression_level: int = 4,
+        shuffle: bool = True
+) -> bool:
+    """
+    Write a NetCDF file atomically using a temporary file.
+
+    Args:
+        data_to_write: xarray Dataset to write
+        target_path: Final target path
+        temp_dir: Optional temp directory (uses target parent if None)
+        compression_level: zlib compression level (0-9)
+        shuffle: Enable shuffle filter
+
+    Returns:
+        bool: True if write was successful and atomic
+    """
+    target_path = Path(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Create temp file path
+    if temp_dir:
+        temp_dir = Path(temp_dir)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = temp_dir / f".tmp_{target_path.name}_{int(time.time())}"
+    else:
+        temp_file = target_path.parent / f".tmp_{target_path.name}_{int(time.time())}"
+
+    # Also create a marker file to track completion
+    marker_file = target_path.parent / f".{target_path.name}.complete"
+
+    try:
+        # Write to temp file with compression
+        logger.info(f"Writing to temp file: {temp_file}")
+
+        encoding = {}
+        for var in data_to_write.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': compression_level,
+                'shuffle': shuffle
+            }
+
+        # Write to temp file
+        data_to_write.to_netcdf(temp_file, encoding=encoding)
+
+        # Verify temp file exists and has content
+        if not temp_file.exists() or temp_file.stat().st_size == 0:
+            logger.error(f"Temp file is empty or missing: {temp_file}")
+            return False
+
+        # Verify the temp file is valid
+        try:
+            verify_ds = xr.open_dataset(temp_file)
+            verify_ds.close()
+        except Exception as e:
+            logger.error(f"Temp file verification failed: {e}")
+            temp_file.unlink(missing_ok=True)
+            return False
+
+        # Atomic move: rename the temp file to the target
+        # On Unix, rename is atomic if source and dest are on same filesystem
+        logger.info(f"Moving temp file to target: {target_path}")
+
+        # Backup existing target if it exists
+        if target_path.exists():
+            backup_file = target_path.parent / f"{target_path.stem}_backup_{int(time.time())}{target_path.suffix}"
+            shutil.move(str(target_path), str(backup_file))
+            logger.info(f"Backed up existing file to: {backup_file}")
+
+        # Atomic rename
+        shutil.move(str(temp_file), str(target_path))
+
+        # Write marker file to indicate completion
+        with open(marker_file, 'w') as f:
+            f.write(f"Completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"File size: {target_path.stat().st_size / (1024 ** 3):.2f} GB\n")
+            f.write(f"IDs: {len(data_to_write['id_geohash'])}\n")
+            f.write(f"Dates: {len(data_to_write['date'])}\n")
+
+        # Clean up old backups (keep last 5)
+        backup_files = sorted(target_path.parent.glob(f"{target_path.stem}_backup_*.nc"))
+        for backup in backup_files[:-5]:
+            try:
+                backup.unlink()
+                logger.debug(f"Removed old backup: {backup}")
+            except:
+                pass
+
+        logger.info(f"✅ Atomic write completed: {target_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error during atomic write: {e}")
+
+        # Clean up temp file if it exists
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+                logger.info(f"Cleaned up temp file: {temp_file}")
+            except:
+                pass
+
+        return False
+
+
+def is_atomic_write_complete(target_path: str) -> bool:
+    """
+    Check if an atomic write was completed successfully.
+    """
+    target_path = Path(target_path)
+    marker_file = target_path.parent / f".{target_path.name}.complete"
+
+    if not target_path.exists():
+        return False
+
+    if not marker_file.exists():
+        return False
+
+    # Also verify the file can be opened
+    try:
+        ds = xr.open_dataset(target_path)
+        ds.close()
+        return True
+    except:
+        return False
+
+
+def get_latest_complete_file(directory: str, pattern: str = "*.nc") -> str:
+    """
+    Get the latest complete file that has a marker file.
+    """
+    directory = Path(directory)
+    files = glob.glob(str(directory / pattern))
+
+    complete_files = []
+    for f in files:
+        if is_atomic_write_complete(f):
+            complete_files.append(f)
+
+    if not complete_files:
+        return None
+
+    # Return the most recent complete file
+    return max(complete_files, key=lambda f: Path(f).stat().st_mtime)
+
+
 def merge_near_real_time_region_v4_smart(
         region: str = "TEST",
         dates_to_merge: List[str] = None,
-        target_file_path: str = None,  # The file to merge INTO (the copy)
+        target_file_path: str = None,
         env_path: str = None,
         skip_if_already_merged: bool = True,
         verify_downloads_first: bool = True,
-        temp_dir: str = None
+        temp_dir: str = None,
+        backup_dir: str = None
 ):
     """
-    Merge data into a TARGET file (which is a copy of the historical file).
+    Merge data into a TARGET file with atomic writes.
 
-    This version merges new data into an existing target file, and handles
-    partial merges gracefully by checking if the region already has data
-    in the target file.
-
-    Args:
-        region: Region name
-        dates_to_merge: List of dates in "YYYY-MM" format
-        target_file_path: Path to the target file (the copy of historical data)
-        env_path: Optional path to .env file
-        skip_if_already_merged: If True, skip dates already in the target file
-        verify_downloads_first: If True, verify downloads are complete before merging
-        temp_dir: Optional temp directory for intermediate files
-
-    Returns:
-        dict: Merge result with status information
+    This version:
+    1. Checks if the target file exists and is complete
+    2. If not complete, recovers from backup or starts fresh
+    3. Merges new data into the target file atomically
+    4. Uses marker files to track completion
     """
     log_memory_usage(f"Merge V4 Smart start for region {region}")
 
@@ -4163,12 +4316,36 @@ def merge_near_real_time_region_v4_smart(
         return {'success': False, 'error': 'target_file_path is required'}
 
     target_path = Path(target_file_path)
-    if not target_path.exists():
-        logger.error(f"Target file does not exist: {target_file_path}")
-        return {'success': False, 'error': f'Target file does not exist: {target_file_path}'}
-
-    # Ensure directory exists
     target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # ========== CHECK IF TARGET FILE IS COMPLETE ==========
+    if target_path.exists():
+        if not is_atomic_write_complete(target_path):
+            logger.warning(f"Target file exists but is incomplete: {target_path}")
+
+            # Try to recover from backup
+            backup_files = sorted(target_path.parent.glob(f"{target_path.stem}_backup_*.nc"))
+            if backup_files:
+                latest_backup = backup_files[-1]
+                logger.info(f"Attempting recovery from backup: {latest_backup}")
+
+                if is_atomic_write_complete(latest_backup):
+                    shutil.copy2(latest_backup, target_path)
+                    logger.info(f"✅ Recovered from backup: {latest_backup}")
+                else:
+                    logger.error(f"Backup is also incomplete: {latest_backup}")
+                    # Try older backups
+                    for backup in reversed(backup_files[:-1]):
+                        if is_atomic_write_complete(backup):
+                            shutil.copy2(backup, target_path)
+                            logger.info(f"✅ Recovered from older backup: {backup}")
+                            break
+                    else:
+                        logger.error("No valid backup found. File may be corrupted.")
+                        return {'success': False, 'error': 'No valid backup found'}
+            else:
+                logger.error("No backup found. File may be corrupted.")
+                return {'success': False, 'error': 'No backup found'}
 
     # Normalize dates
     normalized_dates = []
@@ -4194,12 +4371,12 @@ def merge_near_real_time_region_v4_smart(
     logger.info(f"Target file: {target_file_path}")
     logger.info(f"Region: {region}, Dates to merge: {normalized_dates}")
 
-    # ========== CHECK IF REGION ALREADY HAS DATA IN TARGET ==========
+    # ========== CHECK IF REGION ALREADY HAS DATA ==========
     if skip_if_already_merged:
         status = has_region_been_merged_for_dates(
             region=region,
             dates_to_check=normalized_dates,
-            historical_file_path=str(target_path),  # ← Check the TARGET file
+            historical_file_path=str(target_path),
             env_path=env_path
         )
 
@@ -4215,7 +4392,7 @@ def merge_near_real_time_region_v4_smart(
                 'target_file': str(target_path)
             }
 
-        # Case 2: All dates are fully present in TARGET
+        # Case 2: All dates are fully present
         if status.get('all_dates_present', False):
             logger.info(f"✅ Region {region} already has ALL dates in target file")
             return {
@@ -4238,14 +4415,11 @@ def merge_near_real_time_region_v4_smart(
             logger.info(f"  Partially present: {partial_dates}")
             logger.info(f"  Missing: {missing_dates}")
 
-            # Determine what to merge
             if partial_dates:
-                # Partial dates - merge ALL dates to ensure full coverage
                 logger.info(f"Found partial dates {partial_dates}, merging all dates")
                 # Don't filter - merge all dates
                 pass
             elif missing_dates:
-                # Only merge missing dates
                 logger.info(f"Only missing dates remain: {missing_dates}")
                 normalized_dates = missing_dates
             else:
@@ -4298,7 +4472,7 @@ def merge_near_real_time_region_v4_smart(
             }
         logger.info("✅ All downloads verified successfully!")
 
-    # ========== PERFORM THE MERGE INTO TARGET FILE ==========
+    # ========== PERFORM THE MERGE ==========
     logger.info(f"Merging {len(normalized_dates)} date(s) into {target_path}")
 
     # Get downloaded files for the dates
@@ -4324,18 +4498,18 @@ def merge_near_real_time_region_v4_smart(
             'target_file': str(target_path)
         }
 
-    # Use temp directory if provided
+    # Use temp directory
     if temp_dir:
         temp_dir_path = Path(temp_dir)
         temp_dir_path.mkdir(parents=True, exist_ok=True)
-        temp_file = temp_dir_path / f"temp_merge_{region}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+        temp_file = temp_dir_path / f"temp_merge_{region}_{int(time.time())}.nc"
     else:
-        temp_file = target_path.parent / f"temp_merge_{region}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.nc"
+        temp_file = target_path.parent / f"temp_merge_{region}_{int(time.time())}.nc"
 
     logger.info(f"Using temp file: {temp_file}")
 
     try:
-        # Step 1: Load the target file (already has all historical data)
+        # Step 1: Load the target file
         logger.info(f"Loading target file: {target_path}")
         ds_target = xr.open_dataset(target_path)
         target_id_count = len(ds_target['id_geohash'])
@@ -4389,48 +4563,37 @@ def merge_near_real_time_region_v4_smart(
 
         logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
 
-        # Step 3: Ensure all variables are present in both datasets
+        # Step 3: Ensure all variables are present
         target_vars = list(ds_target.data_vars)
         combined_vars = list(combined.data_vars)
         all_vars = set(target_vars) | set(combined_vars)
 
-        # Add missing variables to combined
         for var_name in all_vars:
             if var_name not in combined.data_vars:
                 if var_name in target_vars:
-                    logger.info(f"Adding placeholder for variable in combined: {var_name}")
                     combined[var_name] = (('id_geohash', 'date'),
                                           np.full((len(combined['id_geohash']), len(combined['date'])), np.nan))
 
-        # Add missing variables to target
         for var_name in all_vars:
             if var_name not in ds_target.data_vars:
                 if var_name in combined_vars:
-                    logger.info(f"Adding placeholder for variable in target: {var_name}")
                     ds_target[var_name] = (('id_geohash', 'date'),
                                            np.full((len(ds_target['id_geohash']), len(ds_target['date'])), np.nan))
 
-        # Step 4: Merge target + combined
+        # Step 4: Merge
         logger.info("Merging target data with new data...")
-
-        # For the merge, we want to keep ALL IDs from both datasets
-        # but when there's overlap (same ID, same date), use the new data
         final_combined = xr.merge([ds_target, combined], compat='override')
-
-        # Sort by date and id
         final_combined = final_combined.sortby(['date', 'id_geohash'])
 
-        # Remove duplicate IDs if any
         _, unique_idx = np.unique(final_combined['id_geohash'].values, return_index=True)
         if len(unique_idx) < len(final_combined['id_geohash']):
             logger.info(f"Removing {len(final_combined['id_geohash']) - len(unique_idx)} duplicate IDs")
             final_combined = final_combined.isel(id_geohash=np.sort(unique_idx))
 
-        # Step 5: Write to temp file
-        logger.info(f"Writing merged data to temp file: {temp_file}")
-        logger.info(f"  IDs: {len(final_combined['id_geohash']):,}")
-        logger.info(f"  Dates: {len(final_combined['date'])}")
+        # Step 5: Atomic write
+        logger.info(f"Writing merged data atomically to: {target_path}")
 
+        # Write to temp file first
         encoding = {}
         for var in final_combined.data_vars:
             encoding[var] = {
@@ -4439,30 +4602,43 @@ def merge_near_real_time_region_v4_smart(
                 'shuffle': True
             }
 
-        # Write to temp file
         final_combined.to_netcdf(temp_file, encoding=encoding)
-        logger.info(f"✅ Temp file written: {temp_file}")
-        temp_size_gb = temp_file.stat().st_size / (1024 ** 3)
-        logger.info(f"  Size: {temp_size_gb:.2f} GB")
 
-        # Step 6: Backup target and replace with temp
+        # Verify temp file
+        if not temp_file.exists() or temp_file.stat().st_size == 0:
+            raise Exception("Temp file is empty or missing")
+
+        # Verify temp file is valid
+        try:
+            verify_ds = xr.open_dataset(temp_file)
+            verify_ds.close()
+        except Exception as e:
+            raise Exception(f"Temp file verification failed: {e}")
+
+        # Backup existing target
         if target_path.exists():
-            backup_file = target_path.parent / f"{target_path.stem}_backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}{target_path.suffix}"
-            logger.info(f"Backing up target to: {backup_file}")
+            backup_file = target_path.parent / f"{target_path.stem}_backup_{int(time.time())}{target_path.suffix}"
             shutil.move(str(target_path), str(backup_file))
+            logger.info(f"Backed up target to: {backup_file}")
 
-        # Move temp to target
+        # Atomic rename
         shutil.move(str(temp_file), str(target_path))
-        logger.info(f"✅ Target file updated: {target_path}")
 
-        # Step 7: Clean up
+        # Write completion marker
+        marker_file = target_path.parent / f".{target_path.name}.complete"
+        with open(marker_file, 'w') as f:
+            f.write(f"Completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"File size: {target_path.stat().st_size / (1024 ** 3):.2f} GB\n")
+            f.write(f"IDs: {len(final_combined['id_geohash']):,}\n")
+            f.write(f"Dates: {len(final_combined['date'])}\n")
+
+        # Step 6: Clean up
         ds_target.close()
         combined.close()
         final_combined.close()
         gc.collect()
 
-        # Step 8: Verify the final file
-        logger.info("Verifying final file...")
+        # Step 7: Verify the final file
         verify_ds = xr.open_dataset(target_path)
         final_id_count = len(verify_ds['id_geohash'])
         final_date_count = len(verify_ds['date'])
@@ -4477,7 +4653,8 @@ def merge_near_real_time_region_v4_smart(
             'file_size_gb': target_path.stat().st_size / (1024 ** 3),
             'dates_merged': normalized_dates,
             'region': region,
-            'variables_preserved': list(verify_vars)
+            'variables_preserved': list(verify_vars),
+            'atomic_write': True
         }
 
         logger.info(f"✅ Merge V4 completed successfully for region {region}!")
