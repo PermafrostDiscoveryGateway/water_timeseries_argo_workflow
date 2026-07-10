@@ -115,8 +115,8 @@ def main():
         most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
     logger.debug(f"Most recent dynamic world file {most_recent_dynamic_world_file}")
     # missing_dates_from_netcdf = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
-
-
+    dynamic_world_file_to_test = os.path.join(dynamic_world_data_dir, ' historical_data_20260710_052759.nc')
+    logger.debug(f"We want to check the file {dynamic_world_file_to_test}")
 
     TODAY =  datetime.now()
     TODAY_MONTH = TODAY.month
@@ -141,59 +141,10 @@ def main():
 
         for region in REGION_NAMES:
             downloads_complete = verify_downloads_complete(region=region, analysis_dates=date_to_run)
-            logger.debug(downloads_complete)
-            complete = downloads_complete['complete']
-            complete_dates = downloads_complete['complete_dates']
-            incomplete_dates = downloads_complete['incomplete_dates']
-            summary = downloads_complete['summary']
-            logger.debug(f"Total expected downloads {summary['total_expected_downloads']}")
-            logger.debug(f"Total successful downloads {summary['total_successful_downloads']}")
-            total_skipped_and_successful_downloads = summary['total_skipped_downloads'] + summary[
-                'total_successful_downloads']
-            total_expected_downloads = summary['total_expected_downloads']
-            percent_downloaded = float(total_skipped_and_successful_downloads) / float(total_expected_downloads)
-            logger.debug(f"Percent downloaded for {region}: {percent_downloaded}")
-            logger.debug(f"Percent downloaded: {percent_downloaded}")
-            if downloads_complete['complete'] or percent_downloaded > 0.99:
-                regions_downloaded += 1
-                regions_downloaded_names.append(region)
-        logger.debug(f"How many regions are finished downloading?")
-        logger.debug(f"{regions_downloaded} regions downloaded")
-        logger.debug(f"These regions are fully downloaded")
-
-        for region in regions_downloaded_names:
-            logger.debug(region)
-
-        successfully_merged_region_count = 0
-
-        if regions_downloaded == len(REGION_NAMES):
-            for region in REGION_NAMES:
-                logger.debug(f"Checking if we already merged region {region} for {date_to_run}")
-                # TODO we need to fill in this
-            for region in REGION_NAMES:
-                logger.debug(f"Not actually merging {region} yet")
-                logger.debug(f"Checking what is the most recent netcdf file")
-                all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-                most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
-                merge_result = merge_near_real_time_region_v3_smart(region=region, dates_to_merge=date_to_run, historical_file_path=most_recent_dynamic_world_file)
-                if merge_result['success']:
-                    successfully_merged_region_count +=1
-                    logger.debug(f"Merging was successful for {region}")
-                    new_netcdf_file = merge_result['final_file']
-                    logger.debug(f"New netcdf file {new_netcdf_file}")
-                    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-                    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
-                    logger.debug(f"Now the most recent dynamic world file is {most_recent_dynamic_world_file}")
-                    gc.collect()
-                    log_memory_usage(f"After merging region {region}")
-            logger.debug(f"Verifying merge finished for all regions properly")
-        else:
-            logger.debug(f"not all regions downloaded, do not merge")
-        logger.debug(f"Successfully merged {successfully_merged_region_count}")
-        if successfully_merged_region_count == len(REGION_NAMES):
-            logger.debug("All regions merged successfully")
-            shutil.move(most_recent_dynamic_world_file, name_of_final_merge_file)
-        logger.debug(f"Merging now finished")
+            has_been_merged = has_region_been_merged_for_dates(region=region,
+                                                               dates_to_check=date_to_run, historical_file_path=dynamic_world_file_to_test)
+            logger.debug(f"Result for region {region}")
+            logger.debug(has_been_merged)
 
 
 
