@@ -115,7 +115,7 @@ def main():
         most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
     logger.debug(f"Most recent dynamic world file {most_recent_dynamic_world_file}")
     # missing_dates_from_netcdf = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
-    dynamic_world_file_to_test = os.path.join(dynamic_world_data_dir, ' historical_data_20260710_052759.nc')
+    dynamic_world_file_to_test = os.path.join(dynamic_world_data_dir, 'historical_data_20260710_052759.nc')
     logger.debug(f"We want to check the file {dynamic_world_file_to_test}")
 
     TODAY =  datetime.now()
@@ -130,9 +130,6 @@ def main():
         date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
         dates_to_run_string = date_to_run[0].replace('-', '_')
         name_of_final_merge_file = f"{dynamic_world_data_dir}_lakes_dw_Vdc{dates_to_run_string}.nc"
-        logger.debug(f"New netcdf file will be {name_of_final_merge_file}")
-        logger.debug(f"Checking if we should merge")
-        logger.debug(f"Merge if {date_to_run} are downloaded for all regions")
         REGIONS = utils.region_boundaries.get_region_boundaries()
         REGION_NAMES = list(REGIONS.keys())
 
