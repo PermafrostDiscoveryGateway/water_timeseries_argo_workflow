@@ -453,7 +453,7 @@ def main():
                         output_file=local_merge_file,
                         env_path=env_path,
                         chunk_size=50000,  # Adjust based on memory
-                        temp_dir="/tmp/merge_temp"
+                        temp_dir="/tmp/merge_temp",
                     )
                 else:
                     # ===== OPTION 3: Use local disk merge with per-region cleanup =====

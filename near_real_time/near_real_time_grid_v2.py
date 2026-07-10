@@ -6240,7 +6240,8 @@ def merge_near_real_time_region_v3_chunked(
         output_file: str = None,
         env_path: str = None,
         chunk_size: int = 50000,  # Number of IDs per chunk
-        temp_dir: str = "/tmp/merge_temp"
+        temp_dir: str = "/tmp/merge_temp",
+        combine_batch_size: int = 10,  # Number of chunks to combine at once
 ):
     """
     Chunked merge function that processes data in chunks to stay under memory/disk limits.
@@ -6420,13 +6421,10 @@ def merge_near_real_time_region_v3_chunked(
             # Add missing variables to source_chunk_expanded
             for var_name in all_vars:
                 if var_name not in source_chunk_expanded.data_vars:
-                    # Need to add with correct dimensions
                     if var_name in combined_vars:
-                        # Copy from combined
                         source_chunk_expanded[var_name] = (('id_geohash', 'date'),
                                                            np.full((len(all_ids_list), len(combined['date'])), np.nan))
                     else:
-                        # This shouldn't happen, but just in case
                         source_chunk_expanded[var_name] = (('id_geohash', 'date'),
                                                            np.full((len(all_ids_list), len(source_chunk['date'])),
                                                                    np.nan))
@@ -6439,7 +6437,6 @@ def merge_near_real_time_region_v3_chunked(
                                                              np.full((len(all_ids_list), len(source_chunk['date'])),
                                                                      np.nan))
                     else:
-                        # Add empty variable
                         combined_chunk_expanded[var_name] = (('id_geohash', 'date'),
                                                              np.full((len(all_ids_list), 1), np.nan))
 
@@ -6482,11 +6479,16 @@ def merge_near_real_time_region_v3_chunked(
             temp_size_gb = temp_size / (1024 ** 3)
             logger.info(f"Temp directory usage: {temp_size_gb:.2f} GB")
 
-            # If temp directory is getting large, combine and compress chunks
-            if temp_size_gb > 8 and len(chunk_file_paths) > 2:
-                logger.warning(f"Temp directory at {temp_size_gb:.2f} GB, combining chunks...")
-                # Combine chunks into the output file
-                combine_success = combine_chunk_files(chunk_file_paths, output_file, temp_dir_path)
+            # If temp directory is getting large, combine and compress chunks in batches
+            if temp_size_gb > 8 and len(chunk_file_paths) > combine_batch_size:
+                logger.warning(
+                    f"Temp directory at {temp_size_gb:.2f} GB, combining chunks in batches of {combine_batch_size}...")
+                combine_success = combine_chunk_files(
+                    chunk_file_paths,
+                    output_file,
+                    temp_dir_path,
+                    batch_size=combine_batch_size
+                )
                 if combine_success:
                     # Clean up chunk files
                     for f in chunk_file_paths:
@@ -6495,15 +6497,18 @@ def merge_near_real_time_region_v3_chunked(
                         except:
                             pass
                     chunk_file_paths = []
-                    # Update the chunk_file_paths with the combined file
-                    # We'll start fresh with the next chunks
                     gc.collect()
                     logger.info("Chunks combined and cleaned up")
 
         # Step 3: Combine all remaining chunks into final file
         if chunk_file_paths:
-            logger.info(f"Combining {len(chunk_file_paths)} chunks into final file...")
-            combine_success = combine_chunk_files(chunk_file_paths, output_file, temp_dir_path)
+            logger.info(f"Combining {len(chunk_file_paths)} remaining chunks into final file...")
+            combine_success = combine_chunk_files(
+                chunk_file_paths,
+                output_file,
+                temp_dir_path,
+                batch_size=combine_batch_size
+            )
             if combine_success:
                 # Clean up chunk files
                 for f in chunk_file_paths:
@@ -6572,18 +6577,81 @@ def merge_near_real_time_region_v3_chunked(
         }
 
 
-def combine_chunk_files(chunk_files, output_file, temp_dir):
+def combine_chunk_files(chunk_files, output_file, temp_dir, batch_size=10):
     """
-    Combine chunk files into a single NetCDF file.
-    Returns True if successful, False otherwise.
+    Combine chunk files into a single NetCDF file in batches to avoid OOM.
+
+    Args:
+        chunk_files: List of chunk file paths
+        output_file: Path to the output file
+        temp_dir: Temporary directory for intermediate files
+        batch_size: Number of chunks to combine at once (default: 10)
+
+    Returns:
+        bool: True if successful, False otherwise
     """
     if not chunk_files:
         logger.warning("No chunk files to combine")
         return False
 
-    logger.info(f"Combining {len(chunk_files)} chunk files...")
+    logger.info(f"Combining {len(chunk_files)} chunk files in batches of {batch_size}...")
 
-    # Open all chunks and concatenate
+    # If fewer chunks than batch_size, combine directly
+    if len(chunk_files) <= batch_size:
+        return combine_chunks_direct(chunk_files, output_file)
+
+    # Process in batches
+    batch_files = []
+    for i in range(0, len(chunk_files), batch_size):
+        batch = chunk_files[i:i + batch_size]
+        batch_output = temp_dir / f"combined_batch_{i:04d}.nc"
+
+        logger.info(
+            f"Combining batch {i // batch_size + 1}/{(len(chunk_files) + batch_size - 1) // batch_size} ({len(batch)} chunks)")
+
+        # Combine this batch
+        success = combine_chunks_direct(batch, batch_output)
+        if not success:
+            logger.error(f"Failed to combine batch {i}")
+            return False
+
+        batch_files.append(batch_output)
+        if batch_output.exists():
+            logger.info(f"  Batch output: {batch_output} ({batch_output.stat().st_size / (1024 ** 3):.2f} GB)")
+
+        # Clean up the original chunk files after successful batch combine
+        for f in batch:
+            try:
+                if f.exists():
+                    f.unlink()
+            except:
+                pass
+
+    # If we have multiple batch files, combine them recursively
+    if len(batch_files) > 1:
+        logger.info(f"Combining {len(batch_files)} batch files...")
+        return combine_chunk_files(batch_files, output_file, temp_dir, batch_size=5)
+    elif len(batch_files) == 1:
+        # Only one batch file, just move it
+        shutil.move(batch_files[0], output_file)
+        logger.info(f"✅ Moved single batch file to {output_file}")
+        return True
+
+    return False
+
+
+def combine_chunks_direct(chunk_files, output_file):
+    """
+    Directly combine a list of chunk files (no batching).
+    Assumes the list is small enough to fit in memory.
+    """
+    if not chunk_files:
+        logger.warning("No chunk files to combine")
+        return False
+
+    logger.info(f"Combining {len(chunk_files)} chunks directly...")
+
+    # Open all chunks
     chunk_datasets = []
     valid_files = []
 
@@ -6637,13 +6705,16 @@ def combine_chunk_files(chunk_files, output_file, temp_dir):
         final_combined.close()
         gc.collect()
 
-        file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
-        logger.info(f"✅ Combined {len(chunk_datasets)} chunks into {output_file}")
-        logger.info(f"  Size: {file_size_gb:.2f} GB")
-        logger.info(f"  IDs: {len(final_combined['id_geohash']):,}")
-        logger.info(f"  Dates: {len(final_combined['date'])}")
-
-        return True
+        if Path(output_file).exists():
+            file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
+            logger.info(f"✅ Combined {len(chunk_datasets)} chunks into {output_file}")
+            logger.info(f"  Size: {file_size_gb:.2f} GB")
+            logger.info(f"  IDs: {len(final_combined['id_geohash']):,}")
+            logger.info(f"  Dates: {len(final_combined['date'])}")
+            return True
+        else:
+            logger.error(f"Output file not created: {output_file}")
+            return False
 
     except Exception as e:
         logger.error(f"Error combining chunks: {e}")
