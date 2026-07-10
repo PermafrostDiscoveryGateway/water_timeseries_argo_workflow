@@ -3636,34 +3636,8 @@ def has_region_been_merged_for_dates(
     """
     Check if a specific region already has the given dates merged.
 
-    This function uses the vector lake file to get region IDs (same method as download),
+    Uses the vector lake file to get region IDs (same method as download),
     then checks if those IDs have data in the NetCDF file.
-
-    IMPORTANT: If a region has NO IDs (no lakes), it's considered "complete"
-    because there's nothing to merge.
-
-    Args:
-        region: Region name (TEST, ALASKA, CANADA, EURASIA1, EURASIA2, EURASIA3)
-        dates_to_check: List of dates in "YYYY-MM" format
-        historical_file_path: Optional path to the historical file
-        env_path: Optional path to .env file
-
-    Returns:
-        dict: {
-            'all_dates_present': bool,      # All dates present for all region IDs
-            'some_dates_present': bool,     # Some dates present for some IDs
-            'none_dates_present': bool,     # No dates present for any IDs
-            'present_dates': List[str],     # Dates fully present (all IDs have data)
-            'missing_dates': List[str],     # Dates completely missing
-            'partial_dates': List[str],     # Dates partially present (some IDs missing)
-            'region_id_count': int,         # Total IDs in region
-            'region_ids_in_file': int,      # IDs found in NetCDF file
-            'region_ids_missing': int,      # IDs not in NetCDF file
-            'file_path': str,
-            'region_found': bool,
-            'region_has_ids': bool,         # True if region has any IDs (lakes)
-            'no_data_expected': bool        # True if region has no IDs (nothing to merge)
-        }
     """
     # Load environment
     if env_path:
@@ -3682,8 +3656,7 @@ def has_region_been_merged_for_dates(
                 'error': 'dynamic_world_data not set in environment',
                 'missing_dates': dates_to_check,
                 'present_dates': [],
-                'partial_dates': [],
-                'no_data_expected': False
+                'partial_dates': []
             }
 
         all_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
@@ -3695,25 +3668,23 @@ def has_region_been_merged_for_dates(
                 'error': 'No NetCDF files found',
                 'missing_dates': dates_to_check,
                 'present_dates': [],
-                'partial_dates': [],
-                'no_data_expected': False
+                'partial_dates': []
             }
 
         historical_file_path = max(all_files, key=lambda f: Path(f).stat().st_mtime)
 
     try:
-        # Step 1: Get IDs for this region from the vector file (same as download)
+        # Step 1: Get IDs for this region from the vector file
         region_ids = get_ids_for_region_from_vector_file(region, env_path)
 
-        # ========== CRITICAL: Handle regions with NO IDs ==========
+        # Handle regions with NO IDs
         if not region_ids:
             logger.info(f"Region {region} has NO IDs (no lakes in this region)")
-            logger.info(f"  → No data expected, marking as 'complete'")
             return {
-                'all_dates_present': True,  # No data needed = complete
+                'all_dates_present': True,
                 'some_dates_present': False,
                 'none_dates_present': False,
-                'present_dates': dates_to_check,  # All dates are "present" by definition
+                'present_dates': dates_to_check,
                 'missing_dates': [],
                 'partial_dates': [],
                 'region_id_count': 0,
@@ -3741,7 +3712,7 @@ def has_region_been_merged_for_dates(
 
         logger.info(f"Region {region}: {len(region_ids_in_file)} IDs in file, {len(region_ids_missing)} IDs missing")
 
-        # ========== HANDLE CASE: No region IDs in file ==========
+        # Handle case: No region IDs in file
         if not region_ids_in_file:
             ds.close()
             return {
@@ -3768,7 +3739,65 @@ def has_region_been_merged_for_dates(
 
         logger.info(f"Region {region} has {len(existing_date_strings)} dates in file")
 
-        # Step 4: Check which dates are present
+        # ========== DETERMINE WHICH VARIABLE TO USE FOR DATA CHECK ==========
+        # Based on inspection: the file has 'water' not 'water_observed'
+        # Priority order for checking data presence
+        data_vars = list(region_data.data_vars)
+        logger.debug(f"Available variables: {data_vars}")
+
+        var_candidates = ['water', 'water_observed', 'water_predicted', 'water_observed_qa']
+
+        data_var = None
+        for var in var_candidates:
+            if var in region_data.data_vars:
+                data_var = var
+                logger.info(f"Using '{data_var}' to check data presence")
+                break
+
+        if data_var is None:
+            # No suitable variable found - log warning and use date presence as proxy
+            logger.warning(f"No data variable found in file. Available: {data_vars}")
+            logger.warning("Using date presence as proxy for data availability")
+
+            # Fallback: just check if dates exist in the file
+            present_dates = []
+            missing_dates = []
+            partial_dates = []
+
+            for date_str in dates_to_check:
+                if date_str in existing_date_strings:
+                    present_dates.append(date_str)
+                else:
+                    missing_dates.append(date_str)
+
+            all_present = len(missing_dates) == 0 and len(partial_dates) == 0
+            some_present = len(present_dates) > 0 or len(partial_dates) > 0
+            none_present = len(present_dates) == 0 and len(partial_dates) == 0
+
+            ds.close()
+
+            result = {
+                'all_dates_present': all_present,
+                'some_dates_present': some_present,
+                'none_dates_present': none_present,
+                'present_dates': present_dates,
+                'missing_dates': missing_dates,
+                'partial_dates': partial_dates,
+                'file_path': historical_file_path,
+                'region_found': True,
+                'region_has_ids': True,
+                'region_id_count': len(region_ids),
+                'region_ids_in_file': len(region_ids_in_file),
+                'region_ids_missing': len(region_ids_missing),
+                'no_data_expected': False,
+                'data_var_used': 'date_presence_only',
+                'warning': 'No water data variable found, used date presence as proxy'
+            }
+
+            logger.warning(f"Using fallback check for region {region}: date presence only")
+            return result
+
+        # Step 4: Check which dates are present using the data variable
         present_dates = []
         missing_dates = []
         partial_dates = []
@@ -3781,23 +3810,30 @@ def has_region_been_merged_for_dates(
                     date_data = region_data.sel(date=date_ts)
 
                     # Count IDs with non-NaN data for this date
-                    if 'water_observed' in date_data.data_vars:
-                        has_data_mask = ~np.isnan(date_data['water_observed'].values)
+                    if data_var in date_data.data_vars:
+                        # Check if the data is all NaN (no data) or has values
+                        data_values = date_data[data_var].values
+
+                        # Check if any values are non-NaN
+                        has_data_mask = ~np.isnan(data_values)
                         ids_with_data = np.sum(has_data_mask)
                         total_ids = len(region_ids_in_file)
 
                         logger.debug(f"Date {date_str}: {ids_with_data}/{total_ids} IDs have data")
 
                         if ids_with_data == total_ids:
+                            # All IDs have data
                             present_dates.append(date_str)
                         elif ids_with_data > 0:
+                            # Some IDs have data, some don't
                             partial_dates.append(date_str)
                             missing_dates.append(date_str)
                         else:
+                            # No IDs have data
                             missing_dates.append(date_str)
                     else:
-                        # Can't check data presence, assume it's present
-                        logger.warning(f"water_observed not found, assuming date {date_str} is present")
+                        # Variable not in this subset - assume present
+                        logger.warning(f"{data_var} not found in date subset, assuming date {date_str} is present")
                         present_dates.append(date_str)
 
                 except Exception as e:
@@ -3826,22 +3862,24 @@ def has_region_been_merged_for_dates(
             'region_id_count': len(region_ids),
             'region_ids_in_file': len(region_ids_in_file),
             'region_ids_missing': len(region_ids_missing),
-            'no_data_expected': False
+            'no_data_expected': False,
+            'data_var_used': data_var
         }
 
         # Log summary
-        # logger.info(f"\n{'=' * 60}")
-        # logger.info(f"REGION CHECK: {region}")
-        # logger.info(f"{'=' * 60}")
-        # logger.info(f"Total IDs in region: {result['region_id_count']}")
-        # logger.info(f"IDs in file: {result['region_ids_in_file']}")
-        # logger.info(f"IDs missing: {result['region_ids_missing']}")
-        # logger.info(f"All dates present: {result['all_dates_present']}")
-        # logger.info(f"Some dates present: {result['some_dates_present']}")
-        # logger.info(f"None dates present: {result['none_dates_present']}")
-        # logger.info(f"Present dates: {result['present_dates']}")
-        # logger.info(f"Partial dates: {result['partial_dates']}")
-        # logger.info(f"Missing dates: {result['missing_dates']}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"REGION CHECK: {region}")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"Total IDs in region: {result['region_id_count']}")
+        logger.info(f"IDs in file: {result['region_ids_in_file']}")
+        logger.info(f"IDs missing: {result['region_ids_missing']}")
+        logger.info(f"Data variable used: {data_var}")
+        logger.info(f"All dates present: {result['all_dates_present']}")
+        logger.info(f"Some dates present: {result['some_dates_present']}")
+        logger.info(f"None dates present: {result['none_dates_present']}")
+        logger.info(f"Present dates: {result['present_dates']}")
+        logger.info(f"Partial dates: {result['partial_dates']}")
+        logger.info(f"Missing dates: {result['missing_dates']}")
 
         return result
 
