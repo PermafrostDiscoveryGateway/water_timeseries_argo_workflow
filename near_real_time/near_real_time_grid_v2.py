@@ -3636,8 +3636,11 @@ def has_region_been_merged_for_dates(
     """
     Check if a specific region already has the given dates merged.
 
-    Uses the vector lake file to get region IDs (same method as download),
+    This function uses the vector lake file to get region IDs (same method as download),
     then checks if those IDs have data in the NetCDF file.
+
+    IMPORTANT: If a region has NO IDs (no lakes), it's considered "complete"
+    because there's nothing to merge.
 
     Args:
         region: Region name (TEST, ALASKA, CANADA, EURASIA1, EURASIA2, EURASIA3)
@@ -3657,7 +3660,9 @@ def has_region_been_merged_for_dates(
             'region_ids_in_file': int,      # IDs found in NetCDF file
             'region_ids_missing': int,      # IDs not in NetCDF file
             'file_path': str,
-            'region_found': bool
+            'region_found': bool,
+            'region_has_ids': bool,         # True if region has any IDs (lakes)
+            'no_data_expected': bool        # True if region has no IDs (nothing to merge)
         }
     """
     # Load environment
@@ -3677,7 +3682,8 @@ def has_region_been_merged_for_dates(
                 'error': 'dynamic_world_data not set in environment',
                 'missing_dates': dates_to_check,
                 'present_dates': [],
-                'partial_dates': []
+                'partial_dates': [],
+                'no_data_expected': False
             }
 
         all_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
@@ -3689,29 +3695,38 @@ def has_region_been_merged_for_dates(
                 'error': 'No NetCDF files found',
                 'missing_dates': dates_to_check,
                 'present_dates': [],
-                'partial_dates': []
+                'partial_dates': [],
+                'no_data_expected': False
             }
 
         historical_file_path = max(all_files, key=lambda f: Path(f).stat().st_mtime)
 
     try:
-        # Step 1: Get IDs for this region from the vector file
-        region_ids = get_region_ids_from_vector_file(region, env_path)
+        # Step 1: Get IDs for this region from the vector file (same as download)
+        region_ids = get_ids_for_region_from_vector_file(region, env_path)
 
+        # ========== CRITICAL: Handle regions with NO IDs ==========
         if not region_ids:
+            logger.info(f"Region {region} has NO IDs (no lakes in this region)")
+            logger.info(f"  → No data expected, marking as 'complete'")
             return {
-                'all_dates_present': False,
+                'all_dates_present': True,  # No data needed = complete
                 'some_dates_present': False,
-                'none_dates_present': True,
-                'error': f'No IDs found for region {region} in vector file',
-                'missing_dates': dates_to_check,
-                'present_dates': [],
+                'none_dates_present': False,
+                'present_dates': dates_to_check,  # All dates are "present" by definition
+                'missing_dates': [],
                 'partial_dates': [],
-                'region_found': False,
                 'region_id_count': 0,
                 'region_ids_in_file': 0,
-                'region_ids_missing': 0
+                'region_ids_missing': 0,
+                'file_path': historical_file_path,
+                'region_found': True,
+                'region_has_ids': False,
+                'no_data_expected': True,
+                'message': f'Region {region} has no IDs - nothing to merge'
             }
+
+        logger.info(f"Region {region} has {len(region_ids)} IDs to check")
 
         # Step 2: Open the NetCDF file
         logger.info(f"Opening NetCDF file: {historical_file_path}")
@@ -3726,8 +3741,8 @@ def has_region_been_merged_for_dates(
 
         logger.info(f"Region {region}: {len(region_ids_in_file)} IDs in file, {len(region_ids_missing)} IDs missing")
 
+        # ========== HANDLE CASE: No region IDs in file ==========
         if not region_ids_in_file:
-            # None of the region IDs are in the file yet
             ds.close()
             return {
                 'all_dates_present': False,
@@ -3738,9 +3753,11 @@ def has_region_been_merged_for_dates(
                 'partial_dates': [],
                 'file_path': historical_file_path,
                 'region_found': True,
+                'region_has_ids': True,
                 'region_id_count': len(region_ids),
                 'region_ids_in_file': 0,
                 'region_ids_missing': len(region_ids),
+                'no_data_expected': False,
                 'message': f'No IDs for region {region} found in NetCDF file'
             }
 
@@ -3805,9 +3822,11 @@ def has_region_been_merged_for_dates(
             'partial_dates': partial_dates,
             'file_path': historical_file_path,
             'region_found': True,
+            'region_has_ids': True,
             'region_id_count': len(region_ids),
             'region_ids_in_file': len(region_ids_in_file),
-            'region_ids_missing': len(region_ids_missing)
+            'region_ids_missing': len(region_ids_missing),
+            'no_data_expected': False
         }
 
         # Log summary
@@ -3839,9 +3858,10 @@ def has_region_been_merged_for_dates(
             'present_dates': [],
             'partial_dates': [],
             'file_path': historical_file_path,
-            'region_found': False
+            'region_found': False,
+            'region_has_ids': False,
+            'no_data_expected': False
         }
-
 
 def get_region_ids_from_vector_file(
         region: str,
@@ -4074,8 +4094,11 @@ def merge_near_real_time_region_v4_smart(
     """
     Enhanced merge function that checks if the region already has the dates.
 
-    This version properly handles multiple regions by checking region-specific data
-    using the vector lake file for ID mapping.
+    This version properly handles:
+    - Regions with no IDs (no lakes) - skips gracefully
+    - Regions with partial merges - merges all dates to fill gaps
+    - Regions with fully merged data - skips
+    - Regions with no data - merges everything
     """
     log_memory_usage("Smart Merge function start")
 
@@ -4124,7 +4147,19 @@ def merge_near_real_time_region_v4_smart(
             env_path=env_path
         )
 
-        # Check the different merge scenarios
+        # ========== CASE 1: Region has NO IDs (no lakes) ==========
+        if status.get('no_data_expected', False):
+            logger.info(f"✅ Region {region} has no IDs (no lakes) - nothing to merge")
+            return {
+                'success': True,
+                'skipped': True,
+                'reason': 'No IDs in region - nothing to merge',
+                'status': status,
+                'region': region,
+                'dates_checked': normalized_dates
+            }
+
+        # ========== CASE 2: All dates are fully present ==========
         if status.get('all_dates_present', False):
             logger.info(f"✅ Region {region} already has ALL dates {normalized_dates} merged for all IDs")
             return {
@@ -4135,8 +4170,9 @@ def merge_near_real_time_region_v4_smart(
                 'region': region,
                 'dates_checked': normalized_dates
             }
-        elif status.get('some_dates_present', False):
-            # Some dates are partially or fully present
+
+        # ========== CASE 3: Some dates are present (partial or missing) ==========
+        if status.get('some_dates_present', False):
             present_dates = status.get('present_dates', [])
             partial_dates = status.get('partial_dates', [])
             missing_dates = status.get('missing_dates', [])
@@ -4178,8 +4214,8 @@ def merge_near_real_time_region_v4_smart(
             # Update dates_to_merge to only what's needed
             normalized_dates = dates_to_actually_merge
 
+        # ========== CASE 4: No dates present at all ==========
         elif status.get('none_dates_present', False):
-            # No dates present - merge everything
             logger.info(f"Region {region} has no dates present, merging all {normalized_dates}")
         else:
             # Unknown status - merge everything to be safe
