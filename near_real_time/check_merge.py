@@ -82,6 +82,7 @@ def is_file_ready(filepath, wait_seconds=0.5, checks=10):
 
 def main():
     logger.debug(f"Beginning historical run")
+    env_path = None
     if len(sys.argv) > 1:
         env_path = sys.argv[1]
         load_dotenv(dotenv_path=env_path)
@@ -146,7 +147,6 @@ def main():
 
 
         for region in REGION_NAMES:
-            downloads_complete = verify_downloads_complete(region=region, analysis_dates=date_to_run)
             has_been_merged = has_region_been_merged_for_dates(region=region,
                                                                dates_to_check=date_to_run, historical_file_path=dynamic_world_file_to_test)
             logger.debug(f"Result for region {region}")

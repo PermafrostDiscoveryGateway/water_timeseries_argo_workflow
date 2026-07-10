@@ -3537,7 +3537,7 @@ def merge_near_real_time_region_v3_simple(
 def get_ids_for_region_from_vector_file(region: str, env_path: str = None) -> List[str]:
     """
     Get IDs for a region from the vector lake file.
-    This is the same method used by the download function.
+    Handles both Point and Polygon geometries.
     """
     # Load environment
     if env_path:
@@ -3550,6 +3550,7 @@ def get_ids_for_region_from_vector_file(region: str, env_path: str = None) -> Li
     region_boundaries = get_region_boundaries()
 
     if region not in region_boundaries:
+        logger.error(f"Region {region} not found in boundaries")
         return []
 
     bounds = region_boundaries[region]
@@ -3558,28 +3559,72 @@ def get_ids_for_region_from_vector_file(region: str, env_path: str = None) -> Li
     y_min_start = bounds['Y_MIN_START']
     y_min_end = bounds['Y_MIN_END']
 
-    # Load the vector lake file (same as download function)
+    # Load the vector lake file
     vector_lake_file = os.environ.get('vector_lake_file')
     if not vector_lake_file:
         logger.error("vector_lake_file not set in environment")
         return []
 
-    # Load GDF and filter by bounding box
-    gdf = gpd.read_parquet(vector_lake_file)
+    if not Path(vector_lake_file).exists():
+        logger.error(f"Vector lake file not found: {vector_lake_file}")
+        return []
 
-    # Filter by bounding box (same method as download function)
-    gdf_subset = gdf[
-        (gdf.geometry.x >= x_min_start) &
-        (gdf.geometry.x <= x_min_end) &
-        (gdf.geometry.y >= y_min_start) &
-        (gdf.geometry.y <= y_min_end)
-        ]
+    try:
+        # Load GDF
+        gdf = gpd.read_parquet(vector_lake_file)
 
-    # Get the IDs
-    ids = gdf_subset['id_geohash'].values.tolist()
+        # Get geometry type
+        geom_type = gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None
 
-    logger.info(f"Found {len(ids)} IDs for region {region} from vector file")
-    return ids
+        # Get coordinates based on geometry type
+        if geom_type in ['Polygon', 'MultiPolygon']:
+            # Use centroids for polygon geometries
+            centroids = gdf.geometry.centroid
+            x_coords = centroids.x
+            y_coords = centroids.y
+        elif geom_type == 'Point':
+            # Use point coordinates directly
+            x_coords = gdf.geometry.x
+            y_coords = gdf.geometry.y
+        else:
+            # Fallback - try representative point
+            logger.warning(f"Unsupported geometry type: {geom_type}, using representative_point()")
+            rep_points = gdf.geometry.representative_point()
+            x_coords = rep_points.x
+            y_coords = rep_points.y
+
+        # Filter by bounding box
+        mask = (x_coords >= x_min_start) & (x_coords <= x_min_end) & \
+               (y_coords >= y_min_start) & (y_coords <= y_min_end)
+
+        gdf_subset = gdf[mask]
+
+        # Get the IDs
+        if 'id_geohash' in gdf_subset.columns:
+            ids = gdf_subset['id_geohash'].values.tolist()
+        else:
+            # Try alternative column names
+            id_column = None
+            for col in gdf_subset.columns:
+                if 'id' in col.lower() or 'geohash' in col.lower():
+                    id_column = col
+                    break
+
+            if id_column:
+                ids = gdf_subset[id_column].values.tolist()
+                logger.info(f"Using column '{id_column}' for IDs")
+            else:
+                logger.error("No ID column found in vector file")
+                return []
+
+        logger.info(f"Found {len(ids)} IDs for region {region} from vector file")
+        return ids
+
+    except Exception as e:
+        logger.error(f"Error getting region IDs from vector file: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 
 def has_region_been_merged_for_dates(
