@@ -3973,6 +3973,137 @@ def merge_near_real_time_region_v3_smart(
     return merge_result
 
 
+def merge_near_real_time_region_v4_smart(
+        region: str = "TEST",
+        dates_to_merge: List[str] = None,
+        historical_file_path: str = None,
+        env_path: str = None,
+        skip_if_already_merged: bool = True,
+        verify_downloads_first: bool = True
+):
+    """
+    Enhanced merge function that checks if the region already has the dates.
+
+    This version properly handles multiple regions by checking region-specific data.
+    """
+    log_memory_usage("Smart Merge function start")
+
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    # Normalize dates
+    normalized_dates = []
+    for date in dates_to_merge:
+        if isinstance(date, pd.Timestamp):
+            normalized_dates.append(date.strftime("%Y-%m"))
+        elif isinstance(date, datetime.datetime):
+            normalized_dates.append(date.strftime("%Y-%m"))
+        elif isinstance(date, str):
+            try:
+                if len(date) == 7 and date[4] == '-':
+                    normalized_dates.append(date)
+                else:
+                    dt = pd.to_datetime(date)
+                    normalized_dates.append(dt.strftime("%Y-%m"))
+            except:
+                logger.warning(f"Could not parse date: {date}")
+
+    if not normalized_dates:
+        logger.error("No valid dates provided")
+        return {'success': False, 'error': 'No valid dates provided'}
+
+    # Check if the region already has these dates
+    if skip_if_already_merged and historical_file_path:
+        status = has_region_been_merged_for_dates(
+            region=region,
+            dates_to_check=normalized_dates,
+            historical_file_path=historical_file_path,
+            env_path=env_path
+        )
+
+        # Check the different merge scenarios
+        if status.get('all_dates_present', False):
+            logger.info(f"✅ Region {region} already has ALL dates {normalized_dates} merged")
+            return {
+                'success': True,
+                'skipped': True,
+                'reason': 'All dates already merged for all IDs',
+                'status': status
+            }
+        elif status.get('some_dates_present', False):
+            # Some dates are partially or fully present
+            present_dates = status.get('present_dates', [])
+            partial_dates = status.get('partial_dates', [])
+            missing_dates = status.get('missing_dates', [])
+
+            logger.info(f"Region {region} has some dates present:")
+            logger.info(f"  Fully present: {present_dates}")
+            logger.info(f"  Partially present: {partial_dates}")
+            logger.info(f"  Missing: {missing_dates}")
+
+            # If there are partial dates, we need to merge all dates to fill gaps
+            if partial_dates and missing_dates:
+                # Some dates are partial - merge ALL dates to ensure complete coverage
+                logger.info(
+                    f"Found partial dates {partial_dates}, merging all {normalized_dates} to ensure full coverage")
+                # Don't filter - merge all dates
+                pass
+            elif missing_dates:
+                # Only missing dates - merge those
+                logger.info(f"Only missing dates remain: {missing_dates}")
+                normalized_dates = missing_dates
+            else:
+                # Only partial dates - merge them to fill gaps
+                logger.info(f"Only partial dates remain: {partial_dates}")
+                normalized_dates = partial_dates
+
+            if not normalized_dates:
+                logger.info(f"No dates need merging for region {region}")
+                return {
+                    'success': True,
+                    'skipped': True,
+                    'reason': 'All dates already have data',
+                    'status': status
+                }
+        elif status.get('none_dates_present', False):
+            # No dates present - merge everything
+            logger.info(f"Region {region} has no dates present, merging all {normalized_dates}")
+        else:
+            # Unknown status - merge everything to be safe
+            logger.warning(f"Unknown status for region {region}, merging all dates to be safe")
+
+        # Log what we're actually going to merge
+        logger.info(f"Proceeding to merge {len(normalized_dates)} date(s): {normalized_dates} for region {region}")
+
+    # Get the historical file if not provided
+    if historical_file_path is None:
+        dynamic_world_data_dir = os.environ['dynamic_world_data']
+        all_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+        if not all_files:
+            logger.error("No NetCDF files found")
+            return {'success': False, 'error': 'No NetCDF files found'}
+        historical_file_path = max(all_files, key=lambda f: Path(f).stat().st_mtime)
+
+    # Now proceed with the merge for the remaining dates
+    logger.info(f"Merging dates {normalized_dates} for region {region}")
+
+    merge_result = merge_near_real_time_region_v3_simple(
+        region=region,
+        dates_to_merge=normalized_dates,
+        historical_file_path=historical_file_path,
+        env_path=env_path,
+        verify_downloads_first=verify_downloads_first
+    )
+
+    # Add the status info to the result
+    if 'status' in locals():
+        merge_result['pre_merge_status'] = status
+
+    return merge_result
+
 def merge_near_real_time_region_v3_smart_local_disk(
         region: str = "TEST",
         dates_to_merge: List[str] = None,
