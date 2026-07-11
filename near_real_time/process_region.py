@@ -113,3 +113,6 @@ def main():
             logger.debug(f"Result is {process_result}")
     else:
         logger.debug(f"Too early in the month to run")
+
+if __name__ == '__main__':
+    main()
