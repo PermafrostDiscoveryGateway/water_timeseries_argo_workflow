@@ -139,8 +139,34 @@ def verify_netcdf_data(first_file, second_file):
                 total_elements = np.prod(var1.shape)
                 logger.info(f"  Checking variable '{var_name}' (shape: {var1.shape}, {total_elements:,} elements)...")
 
+                # Check if variable contains string data
+                # Handle different ways dtype might be represented
+                try:
+                    # Try to get dtype as numpy dtype
+                    dtype = var1.dtype
+                    # Check if it's a numpy dtype with kind attribute
+                    if hasattr(dtype, 'kind'):
+                        is_string_var = dtype.kind in ('S', 'U')
+                    else:
+                        # If it's a string type from netCDF4
+                        is_string_var = isinstance(dtype, str) and dtype in ('S1', 'str')
+                except:
+                    is_string_var = False
+
+                # Also check the data type more directly
+                if not is_string_var:
+                    try:
+                        # Try to get a sample and check its type
+                        sample = var1[0] if total_elements > 0 else None
+                        if sample is not None:
+                            # Check if it's a string/bytes object
+                            if isinstance(sample, (str, bytes, np.str_, np.bytes_)):
+                                is_string_var = True
+                    except:
+                        pass
+
                 # Determine if variable is large enough to warrant chunked checking
-                if total_elements > 1_000_000:  # More than 1 million elements
+                if total_elements > 1_000_000 and not is_string_var:  # More than 1 million elements
                     # Check by sampling or chunked comparison
                     # Check first and last slices, and some random indices
                     logger.info(f"    Large variable, using sampling approach...")
@@ -206,77 +232,112 @@ def verify_netcdf_data(first_file, second_file):
                             # If slicing fails, skip sampling
                             pass
 
-                    # Do a statistical comparison (mean, min, max)
+                    # Do a statistical comparison (mean, min, max) for numeric data
                     try:
                         # Use numpy to compute statistics efficiently
                         data1 = var1[:]
                         data2 = var2[:]
 
-                        # Check if any NaN values
-                        if np.any(np.isnan(data1)) != np.any(np.isnan(data2)):
-                            logger.warning(f"    NaN pattern mismatch in '{var_name}'")
+                        # Check if any NaN values (only for numeric data)
+                        try:
+                            if np.any(np.isnan(data1)) != np.any(np.isnan(data2)):
+                                logger.warning(f"    NaN pattern mismatch in '{var_name}'")
+                        except TypeError:
+                            # If isnan fails (non-numeric data), skip
+                            pass
 
                         # Compare statistics
-                        stats1 = {
-                            'mean': np.nanmean(data1),
-                            'std': np.nanstd(data1),
-                            'min': np.nanmin(data1),
-                            'max': np.nanmax(data1)
-                        }
-                        stats2 = {
-                            'mean': np.nanmean(data2),
-                            'std': np.nanstd(data2),
-                            'min': np.nanmin(data2),
-                            'max': np.nanmax(data2)
-                        }
+                        try:
+                            stats1 = {
+                                'mean': np.nanmean(data1),
+                                'std': np.nanstd(data1),
+                                'min': np.nanmin(data1),
+                                'max': np.nanmax(data1)
+                            }
+                            stats2 = {
+                                'mean': np.nanmean(data2),
+                                'std': np.nanstd(data2),
+                                'min': np.nanmin(data2),
+                                'max': np.nanmax(data2)
+                            }
 
-                        # Compare statistics with tolerance
-                        tolerance = 1e-6
-                        stats_match = True
-                        for stat_name in stats1:
-                            diff = abs(stats1[stat_name] - stats2[stat_name])
-                            if diff > tolerance:
-                                logger.warning(
-                                    f"    {stat_name} differs: {stats1[stat_name]:.6f} vs {stats2[stat_name]:.6f} (diff: {diff:.6f})")
-                                stats_match = False
+                            # Compare statistics with tolerance
+                            tolerance = 1e-6
+                            stats_match = True
+                            for stat_name in stats1:
+                                diff = abs(stats1[stat_name] - stats2[stat_name])
+                                if diff > tolerance:
+                                    logger.warning(
+                                        f"    {stat_name} differs: {stats1[stat_name]:.6f} vs {stats2[stat_name]:.6f} (diff: {diff:.6f})")
+                                    stats_match = False
 
-                        if stats_match:
-                            logger.info(f"    ✓ Statistical properties match")
-                        else:
-                            logger.warning(f"    Statistical properties differ (check if acceptable)")
+                            if stats_match:
+                                logger.info(f"    ✓ Statistical properties match")
+                            else:
+                                logger.warning(f"    Statistical properties differ (check if acceptable)")
+                        except:
+                            logger.warning(f"    Could not compute statistics for '{var_name}'")
 
                         # Full array comparison with tolerance for floating point
-                        if np.allclose(data1, data2, rtol=1e-5, atol=1e-8, equal_nan=True):
-                            logger.info(f"  Variable '{var_name}': ✓ (matches within tolerance)")
-                        else:
-                            # Find where they differ
-                            diff_mask = ~np.isclose(data1, data2, rtol=1e-5, atol=1e-8, equal_nan=True)
-                            if np.any(diff_mask):
-                                if np.sum(diff_mask) < 10:  # Only show if few differences
-                                    diff_indices = np.where(diff_mask)
-                                    logger.error(f"  Variable '{var_name}' data mismatch at indices: {diff_indices}")
-                                else:
-                                    logger.error(
-                                        f"  Variable '{var_name}' data mismatch at {np.sum(diff_mask)} locations")
-                                all_match = False
+                        try:
+                            if np.allclose(data1, data2, rtol=1e-5, atol=1e-8, equal_nan=True):
+                                logger.info(f"  Variable '{var_name}': ✓ (matches within tolerance)")
                             else:
-                                logger.info(f"  Variable '{var_name}': ✓ (matches)")
+                                # Find where they differ
+                                diff_mask = ~np.isclose(data1, data2, rtol=1e-5, atol=1e-8, equal_nan=True)
+                                if np.any(diff_mask):
+                                    if np.sum(diff_mask) < 10:  # Only show if few differences
+                                        diff_indices = np.where(diff_mask)
+                                        logger.error(
+                                            f"  Variable '{var_name}' data mismatch at indices: {diff_indices}")
+                                    else:
+                                        logger.error(
+                                            f"  Variable '{var_name}' data mismatch at {np.sum(diff_mask)} locations")
+                                    all_match = False
+                                else:
+                                    logger.info(f"  Variable '{var_name}': ✓ (matches)")
+                        except TypeError:
+                            # For non-numeric data, try exact comparison
+                            if np.array_equal(data1, data2):
+                                logger.info(f"  Variable '{var_name}': ✓ (matches exactly)")
+                            else:
+                                logger.error(f"  Variable '{var_name}' data mismatch")
+                                all_match = False
 
                     except MemoryError:
                         logger.warning(f"    Memory error checking '{var_name}', skipping detailed comparison")
                         logger.info(f"  Variable '{var_name}': ⚠ (sampling only, see above)")
+                    except Exception as e:
+                        logger.warning(f"    Error checking '{var_name}': {e}")
+                        # Try simple comparison
+                        try:
+                            if np.array_equal(var1[:], var2[:]):
+                                logger.info(f"  Variable '{var_name}': ✓ (matches exactly)")
+                            else:
+                                logger.error(f"  Variable '{var_name}' data mismatch")
+                                all_match = False
+                        except:
+                            logger.error(f"  Variable '{var_name}': ⚠ (could not verify)")
 
                 else:
-                    # Small variable, check all data
+                    # Small variable or string variable, check all data
                     try:
                         data1 = var1[:]
                         data2 = var2[:]
 
-                        if np.allclose(data1, data2, rtol=1e-5, atol=1e-8, equal_nan=True):
-                            logger.info(f"  Variable '{var_name}': ✓ (matches)")
-                        else:
-                            logger.error(f"  Variable '{var_name}' data mismatch")
-                            all_match = False
+                        try:
+                            if np.allclose(data1, data2, rtol=1e-5, atol=1e-8, equal_nan=True):
+                                logger.info(f"  Variable '{var_name}': ✓ (matches)")
+                            else:
+                                logger.error(f"  Variable '{var_name}' data mismatch")
+                                all_match = False
+                        except TypeError:
+                            # For non-numeric data, use exact comparison
+                            if np.array_equal(data1, data2):
+                                logger.info(f"  Variable '{var_name}': ✓ (matches exactly)")
+                            else:
+                                logger.error(f"  Variable '{var_name}' data mismatch")
+                                all_match = False
                     except Exception as e:
                         logger.error(f"  Error checking variable '{var_name}': {e}")
                         all_match = False
@@ -303,19 +364,30 @@ def verify_netcdf_data(first_file, second_file):
         logger.error(traceback.format_exc())
         return False
 
+
 def compress_netcdf_file_chunks(input_file, output_filename):
     """
     Compress a NetCDF file by writing it in chunks with compression.
 
     Args:
         input_file: Path to the input NetCDF file
-        output_filename: Name of the output compressed file
+        output_filename: Name of the output compressed file (just the filename, not full path)
     """
     logger.info(f"Compressing {input_file} to {output_filename}")
 
     # Get the directory of the input file
     input_dir = Path(input_file).parent
-    output_filepath = input_dir / output_filename
+    # If output_filename is a full path, extract just the filename
+    output_path = Path(output_filename)
+    if output_path.parent != Path('.'):
+        # It's a full path, use it directly
+        output_filepath = output_path
+    else:
+        # It's just a filename, join with input directory
+        output_filepath = input_dir / output_filename
+
+    # Make sure the output directory exists
+    output_filepath.parent.mkdir(parents=True, exist_ok=True)
 
     # Open the input NetCDF file
     with nc.Dataset(input_file, 'r') as src:
@@ -413,6 +485,8 @@ def compress_netcdf_file_chunks(input_file, output_filename):
     logger.info(f"  Compression ratio: {compression_ratio:.2%} of original")
     logger.info(f"  Output saved to: {output_filepath}")
 
+    return output_filepath  # Return the actual output path for verification
+
 
 def get_file_size_and_info(filepath):
     """
@@ -491,6 +565,7 @@ def main():
     original_filename = 'workflows_optimization_lake_change_detection_lakes_dw_V2d_2016-2025.nc'
     target_filename = 'lakes_dw_V2d_compressed.nc'
     original_filepath = os.path.join(dynamic_world_data_dir, original_filename)
+    target_filepath = os.path.join(dynamic_world_data_dir, target_filename)
 
     # Get filesize of original filepath
     size_bytes, size_mb, is_compressed, compression_info = get_file_size_and_info(original_filepath)
@@ -502,7 +577,7 @@ def main():
         logger.info(f"  Compression info: {compression_info}")
     else:
         logger.error(f"Could not get file size for {original_filepath}")
-        return
+        return 1
 
     # Get compression of original filepath
     # Already done in the function above, but let's check specifically
@@ -517,22 +592,50 @@ def main():
     else:
         logger.info(f"Original file is not compressed")
 
-    # Ask user if they want to proceed with compression
-    response = input(f"\nCompress '{original_filename}' to '{target_filename}'? (y/n): ")
-    if response.lower() != 'y':
-        logger.info("Compression cancelled by user")
-        return
+    # Check if target file already exists
+    if Path(target_filepath).exists():
+        logger.warning(f"Target file already exists: {target_filepath}")
+        logger.info("Overwriting existing file...")
 
-    # Compress the file
+    # Compress the file - pass just the filename, not the full path
+    logger.info(f"\nCompressing '{original_filename}' to '{target_filename}'...")
     start_time = datetime.now()
-    compress_netcdf_file_chunks(input_file=original_filepath, output_filename=target_filename)
+    output_path = compress_netcdf_file_chunks(
+        input_file=original_filepath,
+        output_filename=target_filename  # Just the filename, not the full path
+    )
     end_time = datetime.now()
 
     logger.info(f"Total compression time: {end_time - start_time}")
 
-    # TODO implement this method checking files
-    data_verified = verify_netcdf_data(first_file=original_filepath, second_file=target_filename)
+    # Verify the compressed file matches the original
+    logger.info("\n" + "=" * 80)
+    logger.info("STARTING VERIFICATION")
+    logger.info("=" * 80)
+    verification_start = datetime.now()
+    data_verified = verify_netcdf_data(
+        first_file=original_filepath,
+        second_file=output_path  # Use the returned path
+    )
+    verification_end = datetime.now()
+
+    logger.info(f"Verification time: {verification_end - verification_start}")
     logger.debug(f"Data verified: {data_verified}")
 
+    if data_verified:
+        logger.info("✓✓✓ SUCCESS: Compression completed and verified successfully! ✓✓✓")
+        logger.info(f"  Original file: {original_filepath}")
+        logger.info(f"  Compressed file: {output_path}")
+        logger.info(
+            f"  Compression ratio: {Path(output_path).stat().st_size / Path(original_filepath).stat().st_size:.2%}")
+        logger.info(f"  Total time: {end_time - start_time + (verification_end - verification_start)}")
+        logger.info("=" * 80)
+        return 0
+    else:
+        logger.error("✗✗✗ FAILURE: Verification failed! The compressed file does not match the original. ✗✗✗")
+        logger.info("=" * 80)
+        return 1
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

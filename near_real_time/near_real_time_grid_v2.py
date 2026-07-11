@@ -3626,6 +3626,36 @@ def get_ids_for_region_from_vector_file(region: str, env_path: str = None) -> Li
         traceback.print_exc()
         return []
 
+# TODO implement this method
+# note also just for a single date
+# return new file path and
+# data on its size
+# number of entries
+def merge_new_results(
+    region: str = 'TEST',
+    date_to_merge: str = None,
+    merged_file_path: str = None,
+    env_path: str = None
+):
+    logger.debug(f"Merging new results for {region} and {date_to_merge} into file {merged_file_path}")
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+# TODO finish this method
+# note just for a single date
+def is_all_new_data_in_file(
+        region: str = 'TEST',
+        date_to_check:str = None,
+        merged_file_path: str = None,
+        env_path: str = None
+):
+    logger.debug(f"Not implemented")
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
 
 def has_region_been_merged_for_dates(
         region: str,
