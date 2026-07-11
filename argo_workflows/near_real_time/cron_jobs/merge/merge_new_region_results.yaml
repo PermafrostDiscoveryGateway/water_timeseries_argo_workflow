@@ -179,6 +179,8 @@ spec:
             chmod -R 755 /data/water_timeseries
             mkdir -p /data/merge
             chmod -R 755 /data/merge
+            mkdir -p /data/water_timeseries/dynamic_world_data/merge
+            chmod -R 755 /data/water_timeseries/dynamic_world_data/merge
             
             # Set environment variables
             export TMPDIR=/data/water_timeseries/temp_netcdf

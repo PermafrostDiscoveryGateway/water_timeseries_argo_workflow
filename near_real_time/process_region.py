@@ -31,6 +31,15 @@ def is_file_ready(filepath, wait_seconds=0.5, checks=20):
 
 def main():
     logger.debug(f"Running processing cron job")
+    logger.debug(f"=== STARTING PROCESSING ===")
+    logger.debug(f"Current date: {datetime.now()}")
+    logger.debug(f"Environment variables: {dict(os.environ)}")
+
+    # Log all important env vars
+    logger.debug(f"REGION: {os.environ.get('region_name', 'NOT SET')}")
+    logger.debug(f"dynamic_world_data: {os.environ.get('dynamic_world_data', 'NOT SET')}")
+    logger.debug(f"dynamic_world_downloads: {os.environ.get('dynamic_world_downloads', 'NOT SET')}")
+    logger.debug(f"vector_lake_file: {os.environ.get('vector_lake_file', 'NOT SET')}")
     SHOULD_RUN = False
     REGION = os.environ.get("region_name", "TEST")
     summer_months = [6, 7, 8, 9]
