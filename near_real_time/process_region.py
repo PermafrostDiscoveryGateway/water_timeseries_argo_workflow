@@ -30,6 +30,14 @@ def is_file_ready(filepath, wait_seconds=0.5, checks=20):
     return len(set(sizes)) == 1
 
 def main():
+    env_path = None
+    if len(sys.argv) > 1:
+        env_path = sys.argv[1]
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
     logger.debug("=" * 80)
     logger.debug("PROCESS_REGION.PY STARTED")
     logger.debug("=" * 80)
