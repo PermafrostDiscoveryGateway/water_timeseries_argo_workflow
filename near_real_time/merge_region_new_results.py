@@ -442,6 +442,285 @@ def is_all_new_data_in_file(
 
 
 # =============================================================================
+# COMBINE REGION FILES
+# =============================================================================
+def combine_region_files(
+        region_files: List[str],
+        output_file: str,
+        date_to_check: str = None,
+        env_path: str = None
+) -> Dict[str, Any]:
+    """
+    Combine multiple region NetCDF files into a single combined file.
+
+    Args:
+        region_files: List of paths to region NetCDF files
+        output_file: Path for the combined output file
+        date_to_check: Date in "YYYY-MM" format for verification
+        env_path: Optional path to .env file
+
+    Returns:
+        dict: Result with status and statistics
+    """
+    logger.info(f"\n{'=' * 80}")
+    logger.info("COMBINING REGION FILES")
+    logger.info(f"{'=' * 80}")
+    logger.info(f"Number of files to combine: {len(region_files)}")
+    logger.info(f"Output file: {output_file}")
+
+    if not region_files:
+        logger.error("No region files to combine")
+        return {'success': False, 'error': 'No region files to combine'}
+
+    # Verify all files exist
+    missing_files = [f for f in region_files if not Path(f).exists()]
+    if missing_files:
+        logger.error(f"Missing files: {missing_files}")
+        return {'success': False, 'error': f'Missing files: {missing_files}'}
+
+    try:
+        # Load all region datasets
+        logger.info("Loading region datasets...")
+        datasets = []
+        file_info = []
+
+        for file_path in region_files:
+            try:
+                ds = xr.open_dataset(file_path)
+
+                # Get file info
+                id_count = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
+                date_count = len(ds['date']) if 'date' in ds.dims else 0
+                file_size_gb = Path(file_path).stat().st_size / (1024 ** 3)
+
+                file_info.append({
+                    'file': file_path,
+                    'id_count': id_count,
+                    'date_count': date_count,
+                    'file_size_gb': round(file_size_gb, 4)
+                })
+
+                datasets.append(ds)
+
+            except Exception as e:
+                logger.error(f"Error opening {file_path}: {e}")
+                # Close any datasets that were opened
+                for ds in datasets:
+                    try:
+                        ds.close()
+                    except:
+                        pass
+                return {'success': False, 'error': f'Error opening {file_path}: {e}'}
+
+        # Log file info
+        logger.info("\nFiles to combine:")
+        for info in file_info:
+            logger.info(
+                f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB")
+
+        # Combine all datasets
+        logger.info("Combining datasets...")
+        combined = None
+
+        for ds in datasets:
+            if combined is None:
+                combined = ds
+            else:
+                # Concatenate along id_geohash dimension
+                combined = xr.concat([combined, ds], dim='id_geohash')
+                # Remove duplicate IDs
+                _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
+                if len(unique_idx) < len(combined['id_geohash']):
+                    removed_count = len(combined['id_geohash']) - len(unique_idx)
+                    logger.info(f"Removed {removed_count} duplicate IDs")
+                    combined = combined.isel(id_geohash=np.sort(unique_idx))
+
+        if combined is None:
+            logger.error("No datasets to combine")
+            return {'success': False, 'error': 'No datasets to combine'}
+
+        # Sort by ID and date
+        combined = combined.sortby(['id_geohash', 'date'])
+
+        logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
+
+        # Write to output file with compression
+        logger.info(f"Writing combined file to {output_file}")
+
+        encoding = {}
+        for var in combined.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True
+            }
+
+        combined.to_netcdf(output_file, encoding=encoding)
+
+        # Get file size
+        file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
+
+        # Clean up
+        for ds in datasets:
+            try:
+                ds.close()
+            except:
+                pass
+        combined.close()
+        gc.collect()
+
+        result = {
+            'success': True,
+            'file_path': output_file,
+            'id_count': len(combined['id_geohash']),
+            'date_count': len(combined['date']),
+            'file_size_gb': round(file_size_gb, 4),
+            'files_combined': len(datasets),
+            'file_info': file_info
+        }
+
+        logger.info(f"✅ Combined file created successfully!")
+        logger.info(f"  File: {output_file}")
+        logger.info(f"  IDs: {result['id_count']:,}")
+        logger.info(f"  Dates: {result['date_count']}")
+        logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error combining files: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+
+
+def verify_combined_file(
+        combined_file_path: str,
+        region_files: List[str],
+        date_to_check: str = None,
+        env_path: str = None
+) -> Dict[str, Any]:
+    """
+    Verify that the combined file contains all data from the region files.
+
+    Args:
+        combined_file_path: Path to the combined file
+        region_files: List of region file paths
+        date_to_check: Date in "YYYY-MM" format to check
+        env_path: Optional path to .env file
+
+    Returns:
+        dict: Verification results
+    """
+    logger.info(f"\n{'=' * 80}")
+    logger.info("VERIFYING COMBINED FILE")
+    logger.info(f"{'=' * 80}")
+
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    # Check combined file exists
+    if not Path(combined_file_path).exists():
+        logger.error(f"Combined file does not exist: {combined_file_path}")
+        return {'success': False, 'error': 'Combined file not found'}
+
+    try:
+        # Open combined file
+        combined_ds = xr.open_dataset(combined_file_path)
+        combined_ids = set(combined_ds['id_geohash'].values)
+        combined_dates = set(pd.to_datetime(combined_ds['date'].values))
+        combined_date_strings = {d.strftime("%Y-%m") for d in combined_dates}
+
+        logger.info(f"Combined file has {len(combined_ids):,} IDs and {len(combined_dates)} dates")
+
+        # Check each region file
+        region_results = {}
+        all_present = True
+        total_ids = 0
+        total_missing = 0
+
+        for region_file in region_files:
+            region_name = Path(region_file).stem.replace('dw_', '')
+            logger.info(f"\nChecking region: {region_name}")
+
+            try:
+                region_ds = xr.open_dataset(region_file)
+                region_ids = set(region_ds['id_geohash'].values)
+
+                # Check if all region IDs are in combined file
+                missing_ids = region_ids - combined_ids
+                ids_present = region_ids - missing_ids
+
+                logger.info(f"  Region IDs: {len(region_ids):,}")
+                logger.info(f"  IDs in combined: {len(ids_present):,}")
+                logger.info(f"  IDs missing: {len(missing_ids):,}")
+
+                if missing_ids:
+                    all_present = False
+                    total_missing += len(missing_ids)
+                    logger.warning(f"  ⚠️ Missing {len(missing_ids)} IDs in combined file")
+                    # Show first few missing IDs
+                    sample_missing = list(missing_ids)[:5]
+                    logger.warning(f"  Sample missing IDs: {sample_missing}")
+
+                # Check if date is present
+                if date_to_check:
+                    if date_to_check in combined_date_strings:
+                        logger.info(f"  ✅ Date {date_to_check} present in combined file")
+                    else:
+                        logger.warning(f"  ⚠️ Date {date_to_check} NOT present in combined file")
+                        all_present = False
+
+                region_results[region_name] = {
+                    'total_ids': len(region_ids),
+                    'ids_present': len(ids_present),
+                    'ids_missing': len(missing_ids),
+                    'all_ids_present': len(missing_ids) == 0,
+                    'missing_ids': list(missing_ids)[:10]  # Store first 10 missing IDs
+                }
+
+                total_ids += len(region_ids)
+                region_ds.close()
+
+            except Exception as e:
+                logger.error(f"Error checking region {region_name}: {e}")
+                region_results[region_name] = {
+                    'error': str(e),
+                    'all_ids_present': False
+                }
+                all_present = False
+
+        combined_ds.close()
+
+        result = {
+            'success': all_present,
+            'combined_file': combined_file_path,
+            'total_ids_in_combined': len(combined_ids),
+            'total_region_ids': total_ids,
+            'total_missing_ids': total_missing,
+            'all_regions_present': all_present,
+            'region_results': region_results,
+            'date_present': date_to_check in combined_date_strings if date_to_check else None
+        }
+
+        if all_present:
+            logger.info("\n✅ All region data is present in the combined file!")
+        else:
+            logger.warning(f"\n⚠️ {total_missing} IDs are missing from the combined file")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error verifying combined file: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+
+
+# =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
 def get_file_size_gb(file_path: str) -> float:
@@ -642,6 +921,7 @@ def main():
     success_count = 0
     failure_count = 0
     skipped_count = 0
+    region_files = []
 
     for region in all_regions:
         try:
@@ -666,6 +946,10 @@ def main():
                 else:
                     success_count += 1
                     logger.info(f"✅ Region {region} processed successfully!")
+
+                # Track the merged file for combination
+                if 'merged_file' in result:
+                    region_files.append(result['merged_file'])
             else:
                 failure_count += 1
                 logger.error(f"❌ Region {region} failed: {result.get('reason', 'Unknown error')}")
@@ -705,6 +989,65 @@ def main():
         # Print any error details if available
         if 'error' in result:
             logger.info(f"      Error: {result['error']}")
+
+    # ========== COMBINE ALL REGION FILES ==========
+    if failure_count == 0 and region_files:
+        logger.info("\n" + "=" * 80)
+        logger.info("COMBINING ALL REGION FILES")
+        logger.info("=" * 80)
+        logger.info(f"Found {len(region_files)} region files to combine")
+
+        # Check if all regions are present
+        expected_files = [f"dw_{region}_{date_to_run}.nc" for region in all_regions]
+        missing_files = [f for f in expected_files if f not in [Path(f).name for f in region_files]]
+
+        if missing_files:
+            logger.warning(f"⚠️ Missing region files: {missing_files}")
+            logger.warning("Skipping combination due to missing files")
+        else:
+            # Create combined file name
+            combined_file_name = f"dynamic_world_combined_{date_to_run}.nc"
+            combined_file_path = os.path.join(dynamic_world_data_dir, combined_file_name)
+
+            logger.info(f"Combining into: {combined_file_path}")
+
+            # Combine the files
+            combine_result = combine_region_files(
+                region_files=region_files,
+                output_file=combined_file_path,
+                date_to_check=date_to_run,
+                env_path=env_path
+            )
+
+            if combine_result.get('success', False):
+                logger.info(f"✅ Combined file created successfully!")
+
+                # Verify the combined file
+                logger.info("Verifying combined file...")
+                verify_result = verify_combined_file(
+                    combined_file_path=combined_file_path,
+                    region_files=region_files,
+                    date_to_check=date_to_run,
+                    env_path=env_path
+                )
+
+                if verify_result.get('success', False):
+                    logger.info("✅ Combined file verification passed!")
+                    logger.info(f"  Combined file: {combined_file_path}")
+                    logger.info(f"  Total IDs: {verify_result['total_ids_in_combined']:,}")
+                    logger.info(f"  Total region IDs: {verify_result['total_region_ids']:,}")
+                else:
+                    logger.warning("⚠️ Combined file verification had issues:")
+                    for region, reg_result in verify_result.get('region_results', {}).items():
+                        if not reg_result.get('all_ids_present', False):
+                            logger.warning(f"  Region {region}: {reg_result.get('ids_missing', 0)} IDs missing")
+            else:
+                logger.error(f"❌ Failed to combine region files: {combine_result.get('error', 'Unknown error')}")
+    else:
+        if failure_count > 0:
+            logger.warning("⚠️ Not combining region files due to failures")
+        elif not region_files:
+            logger.warning("⚠️ No region files to combine")
 
     logger.info("\n" + "=" * 80)
     logger.info("SCRIPT COMPLETED")
