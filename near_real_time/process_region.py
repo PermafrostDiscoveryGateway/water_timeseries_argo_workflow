@@ -30,6 +30,35 @@ def is_file_ready(filepath, wait_seconds=0.5, checks=20):
     return len(set(sizes)) == 1
 
 def main():
+    logger.debug("=" * 80)
+    logger.debug("PROCESS_REGION.PY STARTED")
+    logger.debug("=" * 80)
+
+    # Log all environment variables that matter
+    env_vars_to_check = [
+        'dynamic_world_data',
+        'dynamic_world_downloads',
+        'vector_lake_file',
+        'output_dir',
+        'project',
+        'region_name'
+    ]
+
+    for var in env_vars_to_check:
+        value = os.environ.get(var, 'NOT SET')
+        logger.debug(f"{var} = {value}")
+
+    # Also check if the download directory actually exists
+    dynamic_world_download_dir = os.environ.get('dynamic_world_downloads')
+    if dynamic_world_download_dir:
+        download_path = Path(dynamic_world_download_dir) / REGION / 'download_2026-06'
+        logger.debug(f"Checking for downloads at: {download_path}")
+        logger.debug(f"Path exists: {download_path.exists()}")
+        if download_path.exists():
+            files = list(download_path.glob('*.nc'))
+            logger.debug(f"Found {len(files)} NetCDF files")
+            if files:
+                logger.debug(f"First few files: {files[:3]}")
     logger.debug(f"Running processing cron job")
     logger.debug(f"=== STARTING PROCESSING ===")
     logger.debug(f"Current date: {datetime.now()}")
