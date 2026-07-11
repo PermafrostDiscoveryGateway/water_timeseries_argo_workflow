@@ -48,6 +48,8 @@ def main():
         value = os.environ.get(var, 'NOT SET')
         logger.debug(f"{var} = {value}")
 
+    REGION = os.environ.get("region_name", "TEST")
+
     # Also check if the download directory actually exists
     dynamic_world_download_dir = os.environ.get('dynamic_world_downloads')
     if dynamic_world_download_dir:
@@ -70,7 +72,6 @@ def main():
     logger.debug(f"dynamic_world_downloads: {os.environ.get('dynamic_world_downloads', 'NOT SET')}")
     logger.debug(f"vector_lake_file: {os.environ.get('vector_lake_file', 'NOT SET')}")
     SHOULD_RUN = False
-    REGION = os.environ.get("region_name", "TEST")
     summer_months = [6, 7, 8, 9]
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
