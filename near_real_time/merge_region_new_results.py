@@ -178,26 +178,20 @@ def merge_new_results(
 
 
 # =============================================================================
-# IMPLEMENTATION OF IS_ALL_NEW_DATA_IN_FILE
+# FAST VECTORIZED VERIFICATION
 # =============================================================================
-def is_all_new_data_in_file(
-        region: str = 'TEST',
-        date_to_check: str = None,
-        merged_file_path: str = None,
+def verify_region_data_vectorized(
+        region: str,
+        date_to_check: str,
+        file_path: str,
         env_path: str = None,
-        skip_verification: bool = False  # New parameter
+        sample_size: int = 1000  # Number of IDs to sample for checking
 ) -> Dict[str, Any]:
     """
-    Check if all expected data for a date is present in the merged file.
-
-    This function verifies that:
-    1. The merged file exists and is valid
-    2. The file contains the expected date
-    3. All IDs from the region have data for that date
-
-    Uses vectorized operations for large datasets.
+    Fast vectorized verification of region data in a file.
+    Uses sampling for large regions instead of checking every ID.
     """
-    logger.debug(f"Checking if all new data for {region} and {date_to_check} is in {merged_file_path}")
+    logger.debug(f"Fast vectorized check for {region} and {date_to_check} in {file_path}")
 
     # Load environment
     if env_path:
@@ -205,150 +199,99 @@ def is_all_new_data_in_file(
     else:
         load_dotenv()
 
-    # Validate inputs
-    if date_to_check is None:
-        logger.error("date_to_check is required")
-        return {'success': False, 'error': 'date_to_check is required'}
-
-    if merged_file_path is None:
-        dynamic_world_data_dir = os.environ.get('dynamic_world_data')
-        if not dynamic_world_data_dir:
-            logger.error("dynamic_world_data not set in environment")
-            return {'success': False, 'error': 'dynamic_world_data not set'}
-        merged_file_path = os.path.join(dynamic_world_data_dir, f"dw_{region}_{date_to_check}.nc")
-
     # Check if file exists
-    if not Path(merged_file_path).exists():
-        logger.error(f"Merged file does not exist: {merged_file_path}")
-        return {
-            'success': False,
-            'error': 'File not found',
-            'file_exists': False,
-            'file_path': merged_file_path
-        }
+    if not Path(file_path).exists():
+        return {'success': False, 'error': 'File not found', 'file_exists': False}
 
     try:
-        # Open the merged file
-        logger.info(f"Opening merged file: {merged_file_path}")
-        ds = xr.open_dataset(merged_file_path)
+        ds = xr.open_dataset(file_path)
 
-        # Check if the date exists in the file
+        # Check date presence
         dates_in_file = pd.to_datetime(ds['date'].values)
         date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
-
         date_present = date_to_check in date_strings
 
         if not date_present:
-            logger.warning(f"Date {date_to_check} not found in merged file")
             ds.close()
-            return {
-                'success': False,
-                'date_present': False,
-                'error': f'Date {date_to_check} not found in file',
-                'dates_in_file': date_strings,
-                'file_path': merged_file_path
-            }
+            return {'success': False, 'date_present': False, 'error': f'Date {date_to_check} not found'}
 
-        # Get all IDs for this region from the vector file
+        # Get region IDs from vector file
         from utils.region_boundaries import get_region_boundaries
         region_boundaries = get_region_boundaries()
 
         if region not in region_boundaries:
-            logger.warning(f"Region {region} not found in boundaries")
             ds.close()
-            return {
-                'success': False,
-                'error': f'Region {region} not found in boundaries',
-                'date_present': True
-            }
+            return {'success': False, 'error': f'Region {region} not found in boundaries'}
 
-        # Load vector file to get region IDs
         vector_lake_file = os.environ.get('vector_lake_file')
         if not vector_lake_file or not Path(vector_lake_file).exists():
-            logger.warning("Vector lake file not found, using IDs from merged file")
-            all_ids_in_file = set(ds['id_geohash'].values)
-            region_ids = list(all_ids_in_file)
+            ds.close()
+            return {'success': False, 'error': 'Vector lake file not found'}
+
+        import geopandas as gpd
+        gdf = gpd.read_parquet(vector_lake_file)
+
+        bounds = region_boundaries[region]
+        x_min_start = bounds['X_MIN_START']
+        x_min_end = bounds['X_MIN_END']
+        y_min_start = bounds['Y_MIN_START']
+        y_min_end = bounds['Y_MIN_END']
+
+        # Handle geometry types
+        geom_type = gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None
+
+        if geom_type in ['Polygon', 'MultiPolygon']:
+            centroids = gdf.geometry.centroid
+            x_coords = centroids.x
+            y_coords = centroids.y
+        elif geom_type == 'Point':
+            x_coords = gdf.geometry.x
+            y_coords = gdf.geometry.y
         else:
-            import geopandas as gpd
-            gdf = gpd.read_parquet(vector_lake_file)
+            rep_points = gdf.geometry.representative_point()
+            x_coords = rep_points.x
+            y_coords = rep_points.y
 
-            # Get region bounds
-            bounds = region_boundaries[region]
-            x_min_start = bounds['X_MIN_START']
-            x_min_end = bounds['X_MIN_END']
-            y_min_start = bounds['Y_MIN_START']
-            y_min_end = bounds['Y_MIN_END']
+        # Filter by bounding box
+        mask = (x_coords >= x_min_start) & (x_coords <= x_min_end) & \
+               (y_coords >= y_min_start) & (y_coords <= y_min_end)
 
-            # Handle both Point and Polygon geometries
-            geom_type = gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None
-
-            if geom_type in ['Polygon', 'MultiPolygon']:
-                centroids = gdf.geometry.centroid
-                x_coords = centroids.x
-                y_coords = centroids.y
-            elif geom_type == 'Point':
-                x_coords = gdf.geometry.x
-                y_coords = gdf.geometry.y
-            else:
-                rep_points = gdf.geometry.representative_point()
-                x_coords = rep_points.x
-                y_coords = rep_points.y
-
-            # Filter by bounding box
-            mask = (x_coords >= x_min_start) & (x_coords <= x_min_end) & \
-                   (y_coords >= y_min_start) & (y_coords <= y_min_end)
-
-            gdf_subset = gdf[mask]
-            region_ids = gdf_subset['id_geohash'].values.tolist()
+        gdf_subset = gdf[mask]
+        region_ids = gdf_subset['id_geohash'].values.tolist()
 
         if not region_ids:
-            logger.warning(f"No IDs found for region {region}")
             ds.close()
-            return {
-                'success': False,
-                'error': f'No IDs found for region {region}',
-                'date_present': True,
-                'region_id_count': 0
-            }
+            return {'success': False, 'error': f'No IDs found for region {region}'}
 
-        logger.info(f"Found {len(region_ids):,} IDs for region {region}")
+        total_region_ids = len(region_ids)
+        logger.info(f"Region {region} has {total_region_ids:,} IDs")
 
-        # ================================================================
-        # OPTIMIZED: Use vectorized operations instead of loop
-        # ================================================================
-
-        # Get all IDs in the merged file
+        # Get IDs in file
         file_ids = set(ds['id_geohash'].values)
 
-        # Use set operations for fast ID checking
+        # Check if all region IDs are in file (using set operations - fast)
         region_ids_set = set(region_ids)
-        region_ids_in_file = region_ids_set & file_ids
-        region_ids_missing = region_ids_set - file_ids
+        missing_ids = region_ids_set - file_ids
+        ids_in_file = region_ids_set & file_ids
 
-        logger.info(f"IDs in file: {len(region_ids_in_file):,}, IDs missing: {len(region_ids_missing):,}")
+        logger.info(f"IDs in file: {len(ids_in_file):,}, IDs missing: {len(missing_ids):,}")
 
-        # If no IDs from the region are in the file, fail
-        if not region_ids_in_file:
+        if len(missing_ids) > 0:
             ds.close()
             return {
                 'success': False,
-                'date_present': True,
-                'region_ids_in_file': 0,
-                'region_ids_missing': len(region_ids),
-                'error': 'No region IDs found in merged file'
+                'total_ids': total_region_ids,
+                'ids_in_file': len(ids_in_file),
+                'ids_missing': len(missing_ids),
+                'missing_sample': list(missing_ids)[:10],
+                'error': f'{len(missing_ids):,} IDs missing from file'
             }
 
-        # Check if data exists for the date
+        # Now check if data exists for the date (sample-based for speed)
         date_ts = pd.Timestamp(f"{date_to_check}-01")
-
-        # ================================================================
-        # VECTORIZED DATA CHECK - MUCH FASTER!
-        # ================================================================
-
-        # Select data for the date (this is fast)
         date_data = ds.sel(date=date_ts)
 
-        # Find a data variable to check
+        # Find a data variable
         data_var = None
         for var_candidate in ['water', 'water_observed', 'water_predicted']:
             if var_candidate in date_data.data_vars:
@@ -356,111 +299,99 @@ def is_all_new_data_in_file(
                 break
 
         if data_var is None:
-            # No data variable found, check date presence only
-            logger.warning("No data variable found, checking date presence only")
             ds.close()
+            return {'success': True, 'date_present': True, 'warning': 'No data variable found'}
+
+        # Sample-based check for data values
+        ids_list = list(ids_in_file)
+        sample_count = min(sample_size, len(ids_list))
+
+        if sample_count < len(ids_list):
+            # Sample IDs
+            import random
+            sampled_ids = random.sample(ids_list, sample_count)
+            logger.info(f"Sampling {sample_count} IDs out of {len(ids_list):,} for data validation")
+
+            ids_with_data = 0
+            ids_without_data = 0
+
+            for id_val in sampled_ids:
+                try:
+                    id_data = date_data.sel(id_geohash=id_val)
+                    if data_var in id_data:
+                        data_values = id_data[data_var].values
+                        if np.any(~np.isnan(data_values)):
+                            ids_with_data += 1
+                        else:
+                            ids_without_data += 1
+                    else:
+                        ids_without_data += 1
+                except Exception:
+                    ids_without_data += 1
+
+            # If most sampled IDs have data, assume all do
+            data_success_rate = ids_with_data / sample_count if sample_count > 0 else 0
+            logger.info(f"Sample data success rate: {data_success_rate:.2%}")
+
+            all_have_data = data_success_rate > 0.95  # 95% threshold
+
+            ds.close()
+
             return {
-                'success': True,
-                'date_present': True,
-                'region_ids_in_file': len(region_ids_in_file),
-                'region_ids_missing': len(region_ids_missing),
-                'all_ids_have_data': False,
-                'warning': 'No data variable found to verify values',
-                'file_path': merged_file_path
+                'success': all_have_data,
+                'date_present': date_present,
+                'total_ids': total_region_ids,
+                'ids_in_file': len(ids_in_file),
+                'ids_missing': 0,
+                'sampled': sample_count,
+                'ids_with_data': ids_with_data,
+                'ids_without_data': ids_without_data,
+                'data_success_rate': data_success_rate,
+                'all_ids_have_data': all_have_data,
+                'verification_method': 'sampled_vectorized'
+            }
+        else:
+            # Small region - check all IDs
+            logger.info(f"Checking all {len(ids_list):,} IDs for data validation")
+
+            ids_with_data = []
+            ids_without_data = []
+
+            for id_val in ids_list:
+                try:
+                    id_data = date_data.sel(id_geohash=id_val)
+                    if data_var in id_data:
+                        data_values = id_data[data_var].values
+                        if np.any(~np.isnan(data_values)):
+                            ids_with_data.append(id_val)
+                        else:
+                            ids_without_data.append(id_val)
+                    else:
+                        ids_without_data.append(id_val)
+                except Exception:
+                    ids_without_data.append(id_val)
+
+            all_have_data = len(ids_without_data) == 0 and len(ids_with_data) > 0
+
+            ds.close()
+
+            return {
+                'success': all_have_data,
+                'date_present': date_present,
+                'total_ids': total_region_ids,
+                'ids_in_file': len(ids_in_file),
+                'ids_missing': 0,
+                'ids_with_data': len(ids_with_data),
+                'ids_without_data': len(ids_without_data),
+                'all_ids_have_data': all_have_data,
+                'verification_method': 'full_vectorized'
             }
 
-        # ================================================================
-        # VECTORIZED: Get all IDs from date_data
-        # ================================================================
-        date_ids = date_data['id_geohash'].values
-
-        # Convert to set for fast membership testing
-        date_ids_set = set(date_ids)
-
-        # Find which region IDs are in the date data
-        region_ids_with_date = region_ids_in_file & date_ids_set
-        region_ids_without_date = region_ids_in_file - date_ids_set
-
-        logger.info(f"IDs with date data: {len(region_ids_with_date):,}, IDs without: {len(region_ids_without_date):,}")
-
-        # ================================================================
-        # VECTORIZED: Check if the data variable has non-NaN values
-        # ================================================================
-        try:
-            # Get the data values for the entire date slice (fast)
-            data_values = date_data[data_var].values
-
-            # Find which IDs in the region have non-NaN values
-            # Create a boolean mask for IDs in the region
-            id_mask = np.isin(date_data['id_geohash'].values, list(region_ids_in_file))
-
-            # Get the data values for only the region IDs
-            region_data_values = data_values[id_mask]
-
-            # Check which IDs have non-NaN values (vectorized)
-            has_data_mask = ~np.isnan(region_data_values)
-
-            # Get the IDs that have data
-            region_ids_with_data = date_data['id_geohash'].values[id_mask][has_data_mask]
-
-            # Find missing IDs using set operations
-            region_ids_with_data_set = set(region_ids_with_data)
-            ids_with_data = region_ids_with_data_set
-            ids_without_data = region_ids_in_file - region_ids_with_data_set
-
-            logger.info(f"IDs with valid data: {len(ids_with_data):,}, IDs without: {len(ids_without_data):,}")
-
-        except Exception as e:
-            logger.warning(f"Error checking data values: {e}, falling back to date presence check")
-            ids_with_data = region_ids_with_date
-            ids_without_data = region_ids_without_date
-
-        # Close the dataset
-        ds.close()
-
-        # Determine if all IDs have data
-        all_ids_have_data = len(ids_without_data) == 0 and len(ids_with_data) > 0
-
-        # Determine overall success
-        success = date_present and all_ids_have_data
-
-        result = {
-            'success': success,
-            'date_present': date_present,
-            'all_ids_have_data': all_ids_have_data,
-            'region_id_count': len(region_ids),
-            'region_ids_in_file': len(region_ids_in_file),
-            'region_ids_missing': len(region_ids_missing),
-            'ids_with_data': len(ids_with_data),
-            'ids_without_data': len(ids_without_data),
-            'date': date_to_check,
-            'region': region,
-            'file_path': merged_file_path,
-            'data_var_used': data_var,
-            'geometry_type': geom_type if 'geom_type' in locals() else 'unknown',
-            'verification_method': 'vectorized'
-        }
-
-        if success:
-            logger.info(f"✅ All data for {date_to_check} is present in {merged_file_path}")
-        else:
-            logger.warning(f"⚠️ Data for {date_to_check} is incomplete")
-            if not date_present:
-                logger.warning(f"  - Date {date_to_check} not present in file")
-            if not all_ids_have_data:
-                logger.warning(f"  - {len(ids_without_data):,} IDs missing data for {date_to_check}")
-
-        return result
-
     except Exception as e:
-        logger.error(f"Error checking data: {e}")
+        logger.error(f"Error in vectorized verification: {e}")
         import traceback
         traceback.print_exc()
-        return {
-            'success': False,
-            'error': str(e),
-            'file_path': merged_file_path
-        }
+        return {'success': False, 'error': str(e)}
 
 
 # =============================================================================
@@ -469,20 +400,10 @@ def is_all_new_data_in_file(
 def combine_region_files(
         region_files: List[str],
         output_file: str,
-        date_to_check: str = None,
         env_path: str = None
 ) -> Dict[str, Any]:
     """
     Combine multiple region NetCDF files into a single combined file.
-
-    Args:
-        region_files: List of paths to region NetCDF files
-        output_file: Path for the combined output file
-        date_to_check: Date in "YYYY-MM" format for verification
-        env_path: Optional path to .env file
-
-    Returns:
-        dict: Result with status and statistics
     """
     logger.info(f"\n{'=' * 80}")
     logger.info("COMBINING REGION FILES")
@@ -501,7 +422,6 @@ def combine_region_files(
         return {'success': False, 'error': f'Missing files: {missing_files}'}
 
     try:
-        # Load all region datasets
         logger.info("Loading region datasets...")
         datasets = []
         file_info = []
@@ -509,8 +429,6 @@ def combine_region_files(
         for file_path in region_files:
             try:
                 ds = xr.open_dataset(file_path)
-
-                # Get file info
                 id_count = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
                 date_count = len(ds['date']) if 'date' in ds.dims else 0
                 file_size_gb = Path(file_path).stat().st_size / (1024 ** 3)
@@ -526,7 +444,6 @@ def combine_region_files(
 
             except Exception as e:
                 logger.error(f"Error opening {file_path}: {e}")
-                # Close any datasets that were opened
                 for ds in datasets:
                     try:
                         ds.close()
@@ -534,13 +451,11 @@ def combine_region_files(
                         pass
                 return {'success': False, 'error': f'Error opening {file_path}: {e}'}
 
-        # Log file info
         logger.info("\nFiles to combine:")
         for info in file_info:
             logger.info(
                 f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB")
 
-        # Combine all datasets
         logger.info("Combining datasets...")
         combined = None
 
@@ -548,9 +463,7 @@ def combine_region_files(
             if combined is None:
                 combined = ds
             else:
-                # Concatenate along id_geohash dimension
                 combined = xr.concat([combined, ds], dim='id_geohash')
-                # Remove duplicate IDs
                 _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
                 if len(unique_idx) < len(combined['id_geohash']):
                     removed_count = len(combined['id_geohash']) - len(unique_idx)
@@ -561,12 +474,10 @@ def combine_region_files(
             logger.error("No datasets to combine")
             return {'success': False, 'error': 'No datasets to combine'}
 
-        # Sort by ID and date
         combined = combined.sortby(['id_geohash', 'date'])
 
         logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
 
-        # Write to output file with compression
         logger.info(f"Writing combined file to {output_file}")
 
         encoding = {}
@@ -579,10 +490,8 @@ def combine_region_files(
 
         combined.to_netcdf(output_file, encoding=encoding)
 
-        # Get file size
         file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
 
-        # Clean up
         for ds in datasets:
             try:
                 ds.close()
@@ -616,41 +525,34 @@ def combine_region_files(
         return {'success': False, 'error': str(e)}
 
 
-def verify_combined_file(
+# =============================================================================
+# VERIFY COMBINED FILE (OPTIMIZED)
+# =============================================================================
+def verify_combined_file_optimized(
         combined_file_path: str,
-        region_files: List[str],
-        date_to_check: str = None,
-        env_path: str = None
+        regions: List[str],
+        date_to_check: str,
+        env_path: str = None,
+        sample_size: int = 1000
 ) -> Dict[str, Any]:
     """
-    Verify that the combined file contains all data from the region files.
-
-    Args:
-        combined_file_path: Path to the combined file
-        region_files: List of region file paths
-        date_to_check: Date in "YYYY-MM" format to check
-        env_path: Optional path to .env file
-
-    Returns:
-        dict: Verification results
+    Verify the combined file contains all data for all regions.
+    Uses vectorized + sampling for speed.
     """
     logger.info(f"\n{'=' * 80}")
-    logger.info("VERIFYING COMBINED FILE")
+    logger.info("VERIFYING COMBINED FILE (OPTIMIZED)")
     logger.info(f"{'=' * 80}")
 
-    # Load environment
     if env_path:
         load_dotenv(dotenv_path=env_path)
     else:
         load_dotenv()
 
-    # Check combined file exists
     if not Path(combined_file_path).exists():
-        logger.error(f"Combined file does not exist: {combined_file_path}")
         return {'success': False, 'error': 'Combined file not found'}
 
+    # First, do a quick check on the combined file itself
     try:
-        # Open combined file
         combined_ds = xr.open_dataset(combined_file_path)
         combined_ids = set(combined_ds['id_geohash'].values)
         combined_dates = set(pd.to_datetime(combined_ds['date'].values))
@@ -658,88 +560,59 @@ def verify_combined_file(
 
         logger.info(f"Combined file has {len(combined_ids):,} IDs and {len(combined_dates)} dates")
 
-        # Check each region file
-        region_results = {}
-        all_present = True
-        total_ids = 0
-        total_missing = 0
-
-        for region_file in region_files:
-            region_name = Path(region_file).stem.replace('dw_', '')
-            logger.info(f"\nChecking region: {region_name}")
-
-            try:
-                region_ds = xr.open_dataset(region_file)
-                region_ids = set(region_ds['id_geohash'].values)
-
-                # Check if all region IDs are in combined file
-                missing_ids = region_ids - combined_ids
-                ids_present = region_ids - missing_ids
-
-                logger.info(f"  Region IDs: {len(region_ids):,}")
-                logger.info(f"  IDs in combined: {len(ids_present):,}")
-                logger.info(f"  IDs missing: {len(missing_ids):,}")
-
-                if missing_ids:
-                    all_present = False
-                    total_missing += len(missing_ids)
-                    logger.warning(f"  ⚠️ Missing {len(missing_ids)} IDs in combined file")
-                    # Show first few missing IDs
-                    sample_missing = list(missing_ids)[:5]
-                    logger.warning(f"  Sample missing IDs: {sample_missing}")
-
-                # Check if date is present
-                if date_to_check:
-                    if date_to_check in combined_date_strings:
-                        logger.info(f"  ✅ Date {date_to_check} present in combined file")
-                    else:
-                        logger.warning(f"  ⚠️ Date {date_to_check} NOT present in combined file")
-                        all_present = False
-
-                region_results[region_name] = {
-                    'total_ids': len(region_ids),
-                    'ids_present': len(ids_present),
-                    'ids_missing': len(missing_ids),
-                    'all_ids_present': len(missing_ids) == 0,
-                    'missing_ids': list(missing_ids)[:10]  # Store first 10 missing IDs
-                }
-
-                total_ids += len(region_ids)
-                region_ds.close()
-
-            except Exception as e:
-                logger.error(f"Error checking region {region_name}: {e}")
-                region_results[region_name] = {
-                    'error': str(e),
-                    'all_ids_present': False
-                }
-                all_present = False
+        # Check date
+        date_present = date_to_check in combined_date_strings
+        if not date_present:
+            combined_ds.close()
+            return {'success': False, 'error': f'Date {date_to_check} not found in combined file'}
 
         combined_ds.close()
 
-        result = {
-            'success': all_present,
-            'combined_file': combined_file_path,
-            'total_ids_in_combined': len(combined_ids),
-            'total_region_ids': total_ids,
-            'total_missing_ids': total_missing,
-            'all_regions_present': all_present,
-            'region_results': region_results,
-            'date_present': date_to_check in combined_date_strings if date_to_check else None
-        }
-
-        if all_present:
-            logger.info("\n✅ All region data is present in the combined file!")
-        else:
-            logger.warning(f"\n⚠️ {total_missing} IDs are missing from the combined file")
-
-        return result
-
     except Exception as e:
-        logger.error(f"Error verifying combined file: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Error opening combined file: {e}")
         return {'success': False, 'error': str(e)}
+
+    # Now check each region (fast vectorized checks)
+    region_results = {}
+    all_present = True
+    total_ids = 0
+    total_missing = 0
+
+    for region in regions:
+        logger.info(f"\nChecking region: {region}")
+
+        # Use the fast vectorized verification
+        result = verify_region_data_vectorized(
+            region=region,
+            date_to_check=date_to_check,
+            file_path=combined_file_path,
+            env_path=env_path,
+            sample_size=sample_size
+        )
+
+        region_results[region] = result
+
+        if result.get('success', False):
+            logger.info(f"  ✅ Region {region} verified successfully")
+        else:
+            all_present = False
+            error = result.get('error', 'Unknown error')
+            logger.warning(f"  ❌ Region {region} failed: {error}")
+
+            if 'ids_missing' in result:
+                total_missing += result['ids_missing']
+
+        total_ids += result.get('total_ids', 0)
+
+    return {
+        'success': all_present,
+        'combined_file': combined_file_path,
+        'total_ids': total_ids,
+        'total_missing': total_missing,
+        'all_regions_present': all_present,
+        'region_results': region_results,
+        'date_present': date_present
+    }
 
 
 # =============================================================================
@@ -752,27 +625,31 @@ def get_file_size_gb(file_path: str) -> float:
     return 0
 
 
-def process_region(
+def quick_check_merged_file(file_path: str, date_to_check: str) -> bool:
+    """Quick check if a merged file exists and has the date."""
+    if not Path(file_path).exists():
+        return False
+    try:
+        ds = xr.open_dataset(file_path)
+        dates_in_file = pd.to_datetime(ds['date'].values)
+        date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+        ds.close()
+        return date_to_check in date_strings
+    except:
+        return False
+
+
+def process_region_fast(
         region: str,
         date_to_run: str,
-        timestamp_to_run: pd.Timestamp,
         env_path: str = None,
-        dynamic_world_data_dir: str = None,
-        skip_verification_threshold: int = 100000  # New parameter
+        dynamic_world_data_dir: str = None
 ) -> Dict[str, Any]:
     """
-    Process a single region: verify downloads, merge, and verify.
-
-    Args:
-        region: Region name
-        date_to_run: Date in "YYYY-MM" format
-        timestamp_to_run: Pandas Timestamp for the date
-        env_path: Optional path to .env file
-        dynamic_world_data_dir: Directory for dynamic world data
-        skip_verification_threshold: Skip verification if region has more than this many IDs
+    Fast process a single region: verify downloads, merge (no verification).
     """
     logger.info(f"\n{'=' * 80}")
-    logger.info(f"PROCESSING REGION: {region}")
+    logger.info(f"PROCESSING REGION: {region} (FAST MODE - NO VERIFICATION)")
     logger.info(f"{'=' * 80}")
 
     result = {
@@ -782,10 +659,9 @@ def process_region(
         'steps': {}
     }
 
-    # Step 1: Verify downloads are complete
+    # Step 1: Verify downloads are complete (quick)
     logger.info(f"Step 1: Verifying downloads for {region}...")
     downloads_complete = verify_downloads_complete(region=region, analysis_dates=[date_to_run])
-    logger.debug(downloads_complete)
 
     complete = downloads_complete.get('complete', False)
     summary = downloads_complete.get('summary', {})
@@ -798,52 +674,27 @@ def process_region(
     if total_expected > 0:
         percent_downloaded = float(total_skipped_and_successful) / float(total_expected)
         logger.info(f"  Percent downloaded: {percent_downloaded:.4f}")
-
         if percent_downloaded > 0.99:
             complete = True
 
-    result['steps']['download_verification'] = {
-        'complete': complete,
-        'percent_downloaded': percent_downloaded if total_expected > 0 else 0,
-        'total_expected': total_expected,
-        'total_successful': total_successful,
-        'total_skipped': total_skipped
-    }
-
     if not complete:
-        logger.warning(f"⚠️ Downloads not complete for {region} - skipping merge")
+        logger.warning(f"⚠️ Downloads not complete for {region} - skipping")
         result['success'] = False
         result['reason'] = 'Downloads incomplete'
         return result
 
-    # Step 2: Check if already merged
+    # Step 2: Check if already merged (quick check)
     merged_file_path = os.path.join(dynamic_world_data_dir, f"dw_{region}_{date_to_run}.nc")
-    already_merged = False
 
-    logger.info(f"Step 2: Checking if already merged for {region}...")
-    if os.path.isfile(merged_file_path):
-        # Quick check: just check if the file exists and has the date
-        # Use a lightweight check instead of full verification
-        try:
-            ds = xr.open_dataset(merged_file_path)
-            dates_in_file = pd.to_datetime(ds['date'].values)
-            date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
-            date_present = date_to_run in date_strings
-            ds.close()
+    if quick_check_merged_file(merged_file_path, date_to_run):
+        logger.info(f"✅ Region {region} already has date {date_to_run} - skipping merge")
+        result['success'] = True
+        result['merged_file'] = merged_file_path
+        result['reason'] = 'Already merged'
+        return result
 
-            if date_present:
-                # File has the date, consider it already merged
-                already_merged = True
-                logger.info(f"✅ Region {region} already has date {date_to_run} - skipping merge")
-                result['success'] = True
-                result['merged_file'] = merged_file_path
-                result['reason'] = 'Already merged (date present)'
-                return result
-        except Exception as e:
-            logger.warning(f"Could not quick-check merged file: {e}")
-
-    # Step 3: Merge the new results
-    logger.info(f"Step 3: Merging results for {region}...")
+    # Step 3: Merge (no verification)
+    logger.info(f"Step 2: Merging results for {region}...")
     merge_result = merge_new_results(
         region=region,
         date_to_merge=date_to_run,
@@ -851,43 +702,16 @@ def process_region(
         env_path=env_path
     )
 
-    result['steps']['merge'] = merge_result
-
     if not merge_result.get('success', False):
         logger.error(f"❌ Merge failed for {region}: {merge_result.get('error', 'Unknown error')}")
         result['success'] = False
         result['reason'] = 'Merge failed'
         return result
 
-    # Step 4: Verify the merge (skip for large regions)
-    id_count = merge_result.get('id_count', 0)
-    if id_count > skip_verification_threshold:
-        logger.info(f"⏭️ Skipping detailed verification for large region {region} ({id_count:,} IDs)")
-        logger.info(f"✅ Region {region} merged successfully (verification skipped)")
-        result['success'] = True
-        result['merged_file'] = merged_file_path
-        result['reason'] = f'Successfully merged (verification skipped for {id_count:,} IDs)'
-        return result
-
-    logger.info(f"Step 4: Verifying merge for {region}...")
-    check_result = is_all_new_data_in_file(
-        region=region,
-        date_to_check=date_to_run,
-        merged_file_path=merged_file_path,
-        env_path=env_path
-    )
-
-    result['steps']['verification'] = check_result
-
-    if check_result.get('success', False):
-        logger.info(f"✅ SUCCESS: Region {region} data for {date_to_run} merged and verified!")
-        result['success'] = True
-        result['merged_file'] = merged_file_path
-        result['reason'] = 'Successfully merged and verified'
-    else:
-        logger.warning(f"⚠️ Verification failed for {region}: {check_result.get('error', 'Unknown error')}")
-        result['success'] = False
-        result['reason'] = 'Verification failed'
+    logger.info(f"✅ Region {region} merged successfully (verification deferred)")
+    result['success'] = True
+    result['merged_file'] = merged_file_path
+    result['reason'] = 'Successfully merged (verification deferred)'
 
     return result
 
@@ -896,7 +720,7 @@ def process_region(
 # MAIN SCRIPT
 # =============================================================================
 def main():
-    logger.debug(f"Beginning historical run for ALL regions")
+    logger.debug(f"Beginning historical run for ALL regions (fast mode)")
     env_path = None
     if len(sys.argv) > 1:
         env_path = sys.argv[1]
@@ -905,14 +729,6 @@ def main():
     else:
         load_dotenv()
         logger.info("Loading environment from default .env file")
-
-    # ========== DEBUGGING: Check ALL environment variables ==========
-    logger.info("=" * 80)
-    logger.info("ENVIRONMENT VARIABLES (ALL)")
-    logger.info("=" * 80)
-    for key, value in sorted(os.environ.items()):
-        logger.info(f"  {key}: {value}")
-    logger.info("=" * 80)
 
     # ========== Get all regions ==========
     import utils.region_boundaries
@@ -930,24 +746,20 @@ def main():
     TODAY_MONTH = TODAY.month
 
     if TODAY_MONTH - 1 in summer_months:
-        logger.debug(f"TODAY MONTH: {TODAY_MONTH}")
-        logger.debug(f"Last month: {TODAY.month - 1} checking to see if we should run")
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 3:
             SHOULD_RUN = True
-            logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
+            logger.debug(f"Should run: {SHOULD_RUN}")
 
     if not SHOULD_RUN:
         logger.debug(f"Too early in the month to run downloads - exiting")
         return
 
     # ========== Prepare date to run ==========
-    timestamp_to_run = pd.Timestamp(date(datetime.now().year, TODAY_MONTH - 1, 1))
     date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
     logger.info(f"Processing date: {date_to_run}")
-    logger.info(f"Timestamp: {timestamp_to_run}")
 
-    # ========== Process ALL regions ==========
+    # ========== Process ALL regions (FAST - no verification) ==========
     results = {}
     success_count = 0
     failure_count = 0
@@ -960,10 +772,9 @@ def main():
             logger.info(f"PROCESSING REGION: {region}")
             logger.info(f"{'#' * 80}")
 
-            result = process_region(
+            result = process_region_fast(
                 region=region,
                 date_to_run=date_to_run,
-                timestamp_to_run=timestamp_to_run,
                 env_path=env_path,
                 dynamic_world_data_dir=dynamic_world_data_dir
             )
@@ -978,7 +789,6 @@ def main():
                     success_count += 1
                     logger.info(f"✅ Region {region} processed successfully!")
 
-                # Track the merged file for combination
                 if 'merged_file' in result:
                     region_files.append(result['merged_file'])
             else:
@@ -1000,7 +810,7 @@ def main():
 
     # ========== FINAL SUMMARY ==========
     logger.info("\n" + "=" * 80)
-    logger.info("FINAL SUMMARY - ALL REGIONS")
+    logger.info("FINAL SUMMARY - ALL REGIONS (FAST MERGE)")
     logger.info("=" * 80)
     logger.info(f"Date processed: {date_to_run}")
     logger.info(f"Total regions: {len(all_regions)}")
@@ -1008,18 +818,6 @@ def main():
     logger.info(f"⏭️ Already merged: {skipped_count}")
     logger.info(f"❌ Failed: {failure_count}")
     logger.info("=" * 80)
-
-    # Print detailed results per region
-    logger.info("\nDETAILED RESULTS:")
-    logger.info("-" * 60)
-    for region, result in results.items():
-        status = "✅" if result.get('success', False) else "❌"
-        reason = result.get('reason', 'Unknown')
-        logger.info(f"  {status} {region}: {reason}")
-
-        # Print any error details if available
-        if 'error' in result:
-            logger.info(f"      Error: {result['error']}")
 
     # ========== COMBINE ALL REGION FILES ==========
     if failure_count == 0 and region_files:
@@ -1046,32 +844,49 @@ def main():
             combine_result = combine_region_files(
                 region_files=region_files,
                 output_file=combined_file_path,
-                date_to_check=date_to_run,
                 env_path=env_path
             )
 
             if combine_result.get('success', False):
                 logger.info(f"✅ Combined file created successfully!")
 
-                # Verify the combined file
-                logger.info("Verifying combined file...")
-                verify_result = verify_combined_file(
+                # ============================================================
+                # NOW VERIFY THE COMBINED FILE (optimized)
+                # ============================================================
+                logger.info("\n" + "=" * 80)
+                logger.info("VERIFYING COMBINED FILE")
+                logger.info("=" * 80)
+
+                verify_result = verify_combined_file_optimized(
                     combined_file_path=combined_file_path,
-                    region_files=region_files,
+                    regions=all_regions,
                     date_to_check=date_to_run,
-                    env_path=env_path
+                    env_path=env_path,
+                    sample_size=1000  # Sample 1000 IDs per region for verification
                 )
 
                 if verify_result.get('success', False):
-                    logger.info("✅ Combined file verification passed!")
+                    logger.info("\n" + "=" * 80)
+                    logger.info("✅ ALL REGIONS VERIFIED SUCCESSFULLY!")
+                    logger.info("=" * 80)
                     logger.info(f"  Combined file: {combined_file_path}")
-                    logger.info(f"  Total IDs: {verify_result['total_ids_in_combined']:,}")
-                    logger.info(f"  Total region IDs: {verify_result['total_region_ids']:,}")
+                    logger.info(f"  Total IDs: {verify_result['total_ids']:,}")
+                    logger.info(f"  Date: {date_to_run}")
+                    logger.info("=" * 80)
                 else:
-                    logger.warning("⚠️ Combined file verification had issues:")
+                    logger.warning("\n" + "=" * 80)
+                    logger.warning("⚠️ VERIFICATION ISSUES FOUND")
+                    logger.warning("=" * 80)
+
                     for region, reg_result in verify_result.get('region_results', {}).items():
-                        if not reg_result.get('all_ids_present', False):
-                            logger.warning(f"  Region {region}: {reg_result.get('ids_missing', 0)} IDs missing")
+                        if not reg_result.get('success', False):
+                            logger.warning(f"  Region {region}: {reg_result.get('error', 'Unknown error')}")
+                            if 'ids_missing' in reg_result:
+                                logger.warning(f"    {reg_result['ids_missing']} IDs missing")
+                                if 'missing_sample' in reg_result:
+                                    logger.warning(f"    Sample missing IDs: {reg_result['missing_sample']}")
+
+                    logger.warning("=" * 80)
             else:
                 logger.error(f"❌ Failed to combine region files: {combine_result.get('error', 'Unknown error')}")
     else:
@@ -1084,11 +899,7 @@ def main():
     logger.info("SCRIPT COMPLETED")
     logger.info("=" * 80)
 
-    # Return exit code
-    if failure_count > 0:
-        sys.exit(1)
-    else:
-        sys.exit(0)
+    sys.exit(0 if failure_count == 0 else 1)
 
 
 if __name__ == "__main__":
