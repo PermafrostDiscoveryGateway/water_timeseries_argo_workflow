@@ -1,6 +1,6 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region , \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
-                                    merge_near_real_time_region_v2, merge_near_real_time_region_v3_simple, \
+                                     merge_near_real_time_region_v3_simple, \
                  compare_netcdf_files, verify_merged_netcdf, verify_merged_data
 import sys
 import utils.download_new_dynamic_world_data as download_new_dynamic_world_data
