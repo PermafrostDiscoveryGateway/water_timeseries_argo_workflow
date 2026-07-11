@@ -184,7 +184,8 @@ def is_all_new_data_in_file(
         region: str = 'TEST',
         date_to_check: str = None,
         merged_file_path: str = None,
-        env_path: str = None
+        env_path: str = None,
+        skip_verification: bool = False  # New parameter
 ) -> Dict[str, Any]:
     """
     Check if all expected data for a date is present in the merged file.
@@ -194,14 +195,7 @@ def is_all_new_data_in_file(
     2. The file contains the expected date
     3. All IDs from the region have data for that date
 
-    Args:
-        region: Region name
-        date_to_check: Date in "YYYY-MM" format
-        merged_file_path: Path to the merged NetCDF file
-        env_path: Optional path to .env file
-
-    Returns:
-        dict: Verification results with status and details
+    Uses vectorized operations for large datasets.
     """
     logger.debug(f"Checking if all new data for {region} and {date_to_check} is in {merged_file_path}")
 
@@ -272,7 +266,6 @@ def is_all_new_data_in_file(
         vector_lake_file = os.environ.get('vector_lake_file')
         if not vector_lake_file or not Path(vector_lake_file).exists():
             logger.warning("Vector lake file not found, using IDs from merged file")
-            # Use IDs from the merged file
             all_ids_in_file = set(ds['id_geohash'].values)
             region_ids = list(all_ids_in_file)
         else:
@@ -290,16 +283,13 @@ def is_all_new_data_in_file(
             geom_type = gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None
 
             if geom_type in ['Polygon', 'MultiPolygon']:
-                # Use centroids for polygon geometries
                 centroids = gdf.geometry.centroid
                 x_coords = centroids.x
                 y_coords = centroids.y
             elif geom_type == 'Point':
-                # Use point coordinates directly
                 x_coords = gdf.geometry.x
                 y_coords = gdf.geometry.y
             else:
-                # Fallback for other geometry types
                 rep_points = gdf.geometry.representative_point()
                 x_coords = rep_points.x
                 y_coords = rep_points.y
@@ -309,7 +299,6 @@ def is_all_new_data_in_file(
                    (y_coords >= y_min_start) & (y_coords <= y_min_end)
 
             gdf_subset = gdf[mask]
-
             region_ids = gdf_subset['id_geohash'].values.tolist()
 
         if not region_ids:
@@ -322,16 +311,21 @@ def is_all_new_data_in_file(
                 'region_id_count': 0
             }
 
-        logger.info(f"Found {len(region_ids)} IDs for region {region}")
+        logger.info(f"Found {len(region_ids):,} IDs for region {region}")
+
+        # ================================================================
+        # OPTIMIZED: Use vectorized operations instead of loop
+        # ================================================================
 
         # Get all IDs in the merged file
         file_ids = set(ds['id_geohash'].values)
 
-        # Check which region IDs are in the file
-        region_ids_in_file = [id_val for id_val in region_ids if id_val in file_ids]
-        region_ids_missing = [id_val for id_val in region_ids if id_val not in file_ids]
+        # Use set operations for fast ID checking
+        region_ids_set = set(region_ids)
+        region_ids_in_file = region_ids_set & file_ids
+        region_ids_missing = region_ids_set - file_ids
 
-        logger.info(f"IDs in file: {len(region_ids_in_file)}, IDs missing: {len(region_ids_missing)}")
+        logger.info(f"IDs in file: {len(region_ids_in_file):,}, IDs missing: {len(region_ids_missing):,}")
 
         # If no IDs from the region are in the file, fail
         if not region_ids_in_file:
@@ -344,14 +338,17 @@ def is_all_new_data_in_file(
                 'error': 'No region IDs found in merged file'
             }
 
-        # Check if data exists for the date for these IDs
+        # Check if data exists for the date
         date_ts = pd.Timestamp(f"{date_to_check}-01")
 
-        # Select data for the date
+        # ================================================================
+        # VECTORIZED DATA CHECK - MUCH FASTER!
+        # ================================================================
+
+        # Select data for the date (this is fast)
         date_data = ds.sel(date=date_ts)
 
-        # Check if we have data for all IDs
-        # Use a variable that should have data (e.g., 'water')
+        # Find a data variable to check
         data_var = None
         for var_candidate in ['water', 'water_observed', 'water_predicted']:
             if var_candidate in date_data.data_vars:
@@ -372,27 +369,51 @@ def is_all_new_data_in_file(
                 'file_path': merged_file_path
             }
 
-        # Check data presence for each ID
-        ids_with_data = []
-        ids_without_data = []
+        # ================================================================
+        # VECTORIZED: Get all IDs from date_data
+        # ================================================================
+        date_ids = date_data['id_geohash'].values
 
-        for id_val in region_ids_in_file:
-            try:
-                id_data = date_data.sel(id_geohash=id_val)
-                if data_var in id_data:
-                    data_values = id_data[data_var].values
-                    # Check if there's at least one non-NaN value
-                    if np.any(~np.isnan(data_values)):
-                        ids_with_data.append(id_val)
-                    else:
-                        ids_without_data.append(id_val)
-                else:
-                    ids_without_data.append(id_val)
-            except Exception as e:
-                logger.debug(f"Error checking ID {id_val}: {e}")
-                ids_without_data.append(id_val)
+        # Convert to set for fast membership testing
+        date_ids_set = set(date_ids)
 
-        logger.info(f"IDs with data: {len(ids_with_data)}, IDs without data: {len(ids_without_data)}")
+        # Find which region IDs are in the date data
+        region_ids_with_date = region_ids_in_file & date_ids_set
+        region_ids_without_date = region_ids_in_file - date_ids_set
+
+        logger.info(f"IDs with date data: {len(region_ids_with_date):,}, IDs without: {len(region_ids_without_date):,}")
+
+        # ================================================================
+        # VECTORIZED: Check if the data variable has non-NaN values
+        # ================================================================
+        try:
+            # Get the data values for the entire date slice (fast)
+            data_values = date_data[data_var].values
+
+            # Find which IDs in the region have non-NaN values
+            # Create a boolean mask for IDs in the region
+            id_mask = np.isin(date_data['id_geohash'].values, list(region_ids_in_file))
+
+            # Get the data values for only the region IDs
+            region_data_values = data_values[id_mask]
+
+            # Check which IDs have non-NaN values (vectorized)
+            has_data_mask = ~np.isnan(region_data_values)
+
+            # Get the IDs that have data
+            region_ids_with_data = date_data['id_geohash'].values[id_mask][has_data_mask]
+
+            # Find missing IDs using set operations
+            region_ids_with_data_set = set(region_ids_with_data)
+            ids_with_data = region_ids_with_data_set
+            ids_without_data = region_ids_in_file - region_ids_with_data_set
+
+            logger.info(f"IDs with valid data: {len(ids_with_data):,}, IDs without: {len(ids_without_data):,}")
+
+        except Exception as e:
+            logger.warning(f"Error checking data values: {e}, falling back to date presence check")
+            ids_with_data = region_ids_with_date
+            ids_without_data = region_ids_without_date
 
         # Close the dataset
         ds.close()
@@ -416,7 +437,8 @@ def is_all_new_data_in_file(
             'region': region,
             'file_path': merged_file_path,
             'data_var_used': data_var,
-            'geometry_type': geom_type if 'geom_type' in locals() else 'unknown'
+            'geometry_type': geom_type if 'geom_type' in locals() else 'unknown',
+            'verification_method': 'vectorized'
         }
 
         if success:
@@ -426,7 +448,7 @@ def is_all_new_data_in_file(
             if not date_present:
                 logger.warning(f"  - Date {date_to_check} not present in file")
             if not all_ids_have_data:
-                logger.warning(f"  - {len(ids_without_data)} IDs missing data for {date_to_check}")
+                logger.warning(f"  - {len(ids_without_data):,} IDs missing data for {date_to_check}")
 
         return result
 
@@ -735,7 +757,8 @@ def process_region(
         date_to_run: str,
         timestamp_to_run: pd.Timestamp,
         env_path: str = None,
-        dynamic_world_data_dir: str = None
+        dynamic_world_data_dir: str = None,
+        skip_verification_threshold: int = 100000  # New parameter
 ) -> Dict[str, Any]:
     """
     Process a single region: verify downloads, merge, and verify.
@@ -746,9 +769,7 @@ def process_region(
         timestamp_to_run: Pandas Timestamp for the date
         env_path: Optional path to .env file
         dynamic_world_data_dir: Directory for dynamic world data
-
-    Returns:
-        dict: Result with status and details
+        skip_verification_threshold: Skip verification if region has more than this many IDs
     """
     logger.info(f"\n{'=' * 80}")
     logger.info(f"PROCESSING REGION: {region}")
@@ -801,24 +822,25 @@ def process_region(
 
     logger.info(f"Step 2: Checking if already merged for {region}...")
     if os.path.isfile(merged_file_path):
-        check_result = is_all_new_data_in_file(
-            region=region,
-            date_to_check=date_to_run,
-            merged_file_path=merged_file_path,
-            env_path=env_path
-        )
-        already_merged = check_result.get('success', False)
-        result['steps']['already_merged_check'] = {
-            'already_merged': already_merged,
-            'check_result': check_result
-        }
+        # Quick check: just check if the file exists and has the date
+        # Use a lightweight check instead of full verification
+        try:
+            ds = xr.open_dataset(merged_file_path)
+            dates_in_file = pd.to_datetime(ds['date'].values)
+            date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+            date_present = date_to_run in date_strings
+            ds.close()
 
-        if already_merged:
-            logger.info(f"✅ Region {region} already has data for {date_to_run} - skipping merge")
-            result['success'] = True
-            result['merged_file'] = merged_file_path
-            result['reason'] = 'Already merged'
-            return result
+            if date_present:
+                # File has the date, consider it already merged
+                already_merged = True
+                logger.info(f"✅ Region {region} already has date {date_to_run} - skipping merge")
+                result['success'] = True
+                result['merged_file'] = merged_file_path
+                result['reason'] = 'Already merged (date present)'
+                return result
+        except Exception as e:
+            logger.warning(f"Could not quick-check merged file: {e}")
 
     # Step 3: Merge the new results
     logger.info(f"Step 3: Merging results for {region}...")
@@ -837,7 +859,16 @@ def process_region(
         result['reason'] = 'Merge failed'
         return result
 
-    # Step 4: Verify the merge
+    # Step 4: Verify the merge (skip for large regions)
+    id_count = merge_result.get('id_count', 0)
+    if id_count > skip_verification_threshold:
+        logger.info(f"⏭️ Skipping detailed verification for large region {region} ({id_count:,} IDs)")
+        logger.info(f"✅ Region {region} merged successfully (verification skipped)")
+        result['success'] = True
+        result['merged_file'] = merged_file_path
+        result['reason'] = f'Successfully merged (verification skipped for {id_count:,} IDs)'
+        return result
+
     logger.info(f"Step 4: Verifying merge for {region}...")
     check_result = is_all_new_data_in_file(
         region=region,

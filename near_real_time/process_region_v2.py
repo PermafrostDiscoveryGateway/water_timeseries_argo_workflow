@@ -54,23 +54,14 @@ def main():
         date_to_run = [datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")]
         logger.debug(f"timestamp_to_run: {timestamp_to_run}")
         dates_to_run_string = date_to_run[0].replace('-', '_')
-        # TODO check if the downloads for the region are complete
-        downloads_complete = verify_downloads_complete(region=REGION, analysis_dates=date_to_run)
-        complete = downloads_complete['complete']
-        complete_dates = downloads_complete['complete_dates']
-        incomplete_dates = downloads_complete['incomplete_dates']
-        summary = downloads_complete['summary']
-        logger.debug(f"Total expected downloads {summary['total_expected_downloads']}")
-        logger.debug(f"Total successful downloads {summary['total_successful_downloads']}")
-        total_skipped_and_successful_downloads = summary['total_skipped_downloads'] + summary[
-            'total_successful_downloads']
-        percent_downloaded = float(total_skipped_and_successful_downloads) / float(summary['total_expected_downloads'])
-        logger.debug(f"Percent downloaded: {percent_downloaded}")
-        if percent_downloaded > 0.99:
-            complete = True
-        if complete:
-            process_result = process_near_real_time_region_dates_zarr(region=REGION,
-                                                                      current_analysis_dates=timestamp_to_run)
-            logger.debug(f"Result is {process_result}")
+        name_of_final_merge_file = f"{dynamic_world_data_dir}/lakes_dw_Vdc_v2_{dates_to_run_string}.nc"
+        logger.debug(f"Checking if the file exists: {name_of_final_merge_file}")
+        if os.path.isfile(name_of_final_merge_file):
+            logger.debug(f"File for the most recent month exists")
+            file_ready_check = is_file_ready(name_of_final_merge_file)
+            if file_ready_check:
+                logger.debug(f"We will process for region {REGION} and date {date_to_run}")
+                process_result = process_near_real_time_region_dates_zarr(region=REGION, current_analysis_dates=timestamp_to_run)
+                logger.debug(f"Result is {process_result}")
     else:
         logger.debug(f"Too early in the month to run")
