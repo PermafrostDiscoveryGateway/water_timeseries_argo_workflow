@@ -530,11 +530,39 @@ def main():
             if percent_downloaded > 0.99:
                 complete = True
 
+        already_merged = False
+        merged_file_path = os.path.join(dynamic_world_data_dir, f"dw_{REGION}_{date_to_run[0]}.nc")
+        if os.path.isfile(merged_file_path):
+            check_result = is_all_new_data_in_file(
+                region=REGION,
+                date_to_check=date_to_run[0],
+                merged_file_path=merged_file_path,
+                env_path=env_path
+            )
+            already_merged = check_result['success']
+
+
         if complete:
             logger.debug(f"Merge all the results for {REGION} and {date_to_run[0]}")
 
             # Create the merged file path
             merged_file_path = os.path.join(dynamic_world_data_dir, f"dw_{REGION}_{date_to_run[0]}.nc")
+            already_merged = False
+            if os.path.isfile(merged_file_path):
+                logger.debug(f"File {merged_file_path} already exists, checking if it is complete")
+                check_result = is_all_new_data_in_file(
+                    region=REGION,
+                    date_to_check=date_to_run[0],
+                    merged_file_path=merged_file_path,
+                    env_path=env_path
+                )
+                logger.debug(check_result)
+                if check_result.get('success', False) == False:
+                    logger.debug(f"We need to merge")
+                else:
+                    logger.debug(f"We already merged {merged_file_path}")
+                    return 0
+
 
             # Merge the new results
             merge_result = merge_new_results(
