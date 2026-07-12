@@ -1,9 +1,9 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region, \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
-    merge_near_real_time_region_v3_simple, find_matching_lake_ids, \
+    merge_near_real_time_region_v3_simple, process_region_direct, find_matching_lake_ids, \
     compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_new_results, is_all_new_data_in_file
 import sys
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import shutil
 import gc
 import utils.download_new_dynamic_world_data as download_new_dynamic_world_data
@@ -135,7 +135,8 @@ def process_summer_months_for_region(
         region: str,
         years: List[int],
         env_path: str = None,
-        force_processing: bool = False
+        force_processing: bool = False,
+        use_direct_method: bool = True
 ) -> Dict[str, Any]:
     """
     Process summer months (June-September) for a region over multiple years.
@@ -145,6 +146,8 @@ def process_summer_months_for_region(
         years: List of years to process
         env_path: Optional path to .env file
         force_processing: If True, process even if data availability is low
+        use_direct_method: If True, use process_region_direct (faster, more reliable).
+                           If False, use process_near_real_time_region_dates_zarr (grid-based).
 
     Returns:
         dict: Processing results for each month
@@ -153,6 +156,7 @@ def process_summer_months_for_region(
     logger.info(f"PROCESSING SUMMER MONTHS FOR REGION: {region}")
     logger.info(f"{'=' * 80}")
     logger.info(f"Years to process: {years}")
+    logger.info(f"Using direct processing method: {use_direct_method}")
 
     if env_path:
         load_dotenv(dotenv_path=env_path)
@@ -163,7 +167,8 @@ def process_summer_months_for_region(
         'region': region,
         'years': years,
         'months_processed': [],
-        'results': {}
+        'results': {},
+        'use_direct_method': use_direct_method
     }
 
     for year in years:
@@ -196,21 +201,42 @@ def process_summer_months_for_region(
             # Process the month
             try:
                 logger.info(f"  Processing {region} for {month_str}...")
-                process_result = process_near_real_time_region_dates_zarr(
-                    region=region,
-                    current_analysis_dates=[timestamp],
-                    env_path=env_path
-                )
+
+                if use_direct_method:
+                    # Use the direct processing method (bypasses grid, uses IDs directly)
+                    process_result = process_region_direct(
+                        region=region,
+                        analysis_date=month_str,  # Pass as string, not list
+                        env_path=env_path,
+                        batch_size=1000
+                    )
+                else:
+                    # Use the original grid-based method
+                    process_result = process_near_real_time_region_dates_zarr(
+                        region=region,
+                        current_analysis_dates=[timestamp],
+                        env_path=env_path
+                    )
 
                 results['results'][month_str] = {
-                    'success': process_result,
+                    'success': process_result.get('success', False) if isinstance(process_result,
+                                                                                  dict) else process_result,
                     'timestamp': timestamp,
                     'year': year,
                     'month': month_str,
                     'availability': availability
                 }
 
-                if process_result:
+                # Add additional info if direct method was used
+                if use_direct_method and isinstance(process_result, dict):
+                    results['results'][month_str].update({
+                        'total_ids': process_result.get('total_ids', 0),
+                        'processed': process_result.get('processed', 0),
+                        'breakpoints_found': process_result.get('breakpoints_found', 0),
+                        'zarr_path': process_result.get('zarr_path', None)
+                    })
+
+                if results['results'][month_str]['success']:
                     logger.info(f"  ✅ Successfully processed {region} {month_str}")
                     results['months_processed'].append(month_str)
                 else:
@@ -218,6 +244,8 @@ def process_summer_months_for_region(
 
             except Exception as e:
                 logger.error(f"  ❌ Error processing {region} {month_str}: {e}")
+                import traceback
+                traceback.print_exc()
                 results['results'][month_str] = {
                     'success': False,
                     'error': str(e),
@@ -246,6 +274,16 @@ def process_summer_months_for_region(
     if processed_count > 0:
         success_rate = (processed_count / total_count) * 100
         logger.info(f"Success rate: {success_rate:.1f}%")
+
+        # Show breakpoints found if using direct method
+        if use_direct_method:
+            total_breakpoints = sum(
+                r.get('breakpoints_found', 0)
+                for r in results['results'].values()
+                if r.get('success', False)
+            )
+            if total_breakpoints > 0:
+                logger.info(f"Total breakpoints found: {total_breakpoints:,}")
 
     return results
 
@@ -297,7 +335,6 @@ def main():
     current_year = datetime.now().year
 
     # Process current year and previous year
-    # You can adjust this range as needed
     years_to_process = [
         current_year - 2,  # Two years ago
         current_year - 1,  # Last year
@@ -338,13 +375,20 @@ def main():
     # Process each region
     all_results = {}
 
+    # Determine which regions to process with direct method vs grid method
+    # Direct method is better for regions with sparse data or grid filtering issues
+    direct_method_regions = ['EURASIA3', 'EURASIA2', 'TEST']  # Add regions that have issues with grid filtering
+    use_direct_method = True  # Default to direct method
+
     for region in regions_to_process:
         logger.info(f"\n{'=' * 80}")
         logger.info(f"Processing region: {region}")
         logger.info(f"{'=' * 80}")
 
+        # Use direct method for problematic regions, otherwise use grid method
+        use_direct = region in direct_method_regions
+
         # Check if we have any data for this region
-        # Try the most recent summer month first to see if region has data
         test_date = f"{current_year}-06"
         availability = check_data_availability_for_date(region, test_date, env_path)
 
@@ -367,14 +411,26 @@ def main():
                 region=region,
                 years=years_to_process,
                 env_path=env_path,
-                force_processing=False
+                force_processing=False,
+                use_direct_method=use_direct
             )
             all_results[region] = result
 
             # Log summary for this region
             processed_count = sum(1 for r in result['results'].values() if r.get('success', False))
             total_count = len(result['results'])
-            logger.info(f"\n✅ Region {region}: {processed_count}/{total_count} months processed successfully")
+            method_used = "DIRECT" if use_direct else "GRID"
+            logger.info(
+                f"\n✅ Region {region} ({method_used}): {processed_count}/{total_count} months processed successfully")
+
+            if use_direct:
+                total_breakpoints = sum(
+                    r.get('breakpoints_found', 0)
+                    for r in result['results'].values()
+                    if r.get('success', False)
+                )
+                if total_breakpoints > 0:
+                    logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
 
             # List which months succeeded
             successful_months = [m for m, r in result['results'].items() if r.get('success', False)]
@@ -397,6 +453,7 @@ def main():
 
     total_successful = 0
     total_attempted = 0
+    total_breakpoints_all = 0
 
     for region, result in all_results.items():
         if 'results' in result:
@@ -404,13 +461,29 @@ def main():
             region_total = len(result['results'])
             total_successful += region_success
             total_attempted += region_total
-            logger.info(f"  {region}: {region_success}/{region_total} months successful")
+
+            method_used = "DIRECT" if result.get('use_direct_method', False) else "GRID"
+
+            # Count breakpoints if direct method
+            if result.get('use_direct_method', False):
+                region_breakpoints = sum(
+                    r.get('breakpoints_found', 0)
+                    for r in result['results'].values()
+                    if r.get('success', False)
+                )
+                total_breakpoints_all += region_breakpoints
+                logger.info(
+                    f"  {region} ({method_used}): {region_success}/{region_total} months successful, {region_breakpoints:,} breakpoints")
+            else:
+                logger.info(f"  {region} ({method_used}): {region_success}/{region_total} months successful")
         else:
             logger.info(f"  {region}: Error - {result.get('error', 'Unknown error')}")
 
     if total_attempted > 0:
         success_rate = (total_successful / total_attempted) * 100
         logger.info(f"\nOverall success rate: {success_rate:.1f}% ({total_successful}/{total_attempted})")
+        if total_breakpoints_all > 0:
+            logger.info(f"Total breakpoints found across all regions: {total_breakpoints_all:,}")
 
     logger.info("=" * 80)
     logger.info("PROCESS_REGION.PY COMPLETED")

@@ -6627,6 +6627,198 @@ def find_matching_lake_ids(region: str, analysis_date: str, env_path: str = None
     return result
 
 
+def process_region_direct(
+        region: str,
+        analysis_date: str,
+        env_path: str = None,
+        batch_size: int = 1000
+) -> Dict[str, Any]:
+    """
+    Process breakpoints by directly using matching IDs, bypassing grid filtering.
+    This is more reliable for regions where the grid filtering is too coarse.
+    """
+    from near_real_time_grid_v2 import find_matching_lake_ids, NRTBreakpoint, DWDataset
+    from water_timeseries.dataset import LakeDataset
+
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    logger.info(f"\n{'=' * 80}")
+    logger.info(f"PROCESSING {region} BY DIRECT ID MATCHING")
+    logger.info(f"{'=' * 80}")
+
+    # 1. Get matching IDs
+    match_result = find_matching_lake_ids(
+        region=region,
+        analysis_date=analysis_date,
+        env_path=env_path
+    )
+
+    if not match_result['success']:
+        logger.error(f"Failed to find matching IDs: {match_result.get('error')}")
+        return {'success': False, 'error': match_result.get('error')}
+
+    matching_ids = match_result['all_matching_ids']
+    total_ids = len(matching_ids)
+
+    logger.info(f"Found {total_ids:,} matching IDs for {region}")
+
+    if total_ids == 0:
+        logger.warning(f"No matching IDs found for {region} {analysis_date}")
+        return {'success': False, 'reason': 'No matching IDs'}
+
+    # 2. Load data files
+    dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+    merge_dir = Path(dynamic_world_data_dir) / 'merge'
+
+    historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
+    new_data_file = merge_dir / f"dw_{region}_{analysis_date}.nc"
+
+    if not historical_file.exists():
+        logger.error(f"Historical file not found: {historical_file}")
+        return {'success': False, 'error': 'Historical file not found'}
+
+    if not new_data_file.exists():
+        logger.error(f"New data file not found: {new_data_file}")
+        return {'success': False, 'error': 'New data file not found'}
+
+    # 3. Load datasets
+    import xarray as xr
+    import pandas as pd
+    import numpy as np
+    import gc
+
+    ds_historical = xr.open_dataset(str(historical_file))
+    ds_new_data = xr.open_dataset(str(new_data_file))
+
+    # Filter to matching IDs
+    ds_historical = ds_historical.sel(id_geohash=matching_ids)
+    ds_new_data = ds_new_data.sel(id_geohash=matching_ids)
+
+    logger.info(f"Filtered historical to {len(ds_historical.id_geohash)} IDs")
+    logger.info(f"Filtered new data to {len(ds_new_data.id_geohash)} IDs")
+
+    # 4. Process in batches
+    analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
+    bp = NRTBreakpoint()
+
+    output_dir = os.environ['output_dir']
+    output_dir = Path(output_dir) / region
+    zarr_output_dir = output_dir / 'breakpoint_zarr'
+    zarr_output_dir.mkdir(exist_ok=True, parents=True)
+    zarr_path = zarr_output_dir / f'breakpoints_{analysis_date}.zarr'
+
+    # Parquet backup
+    current_breakpoint_dir = output_dir / f'breakpoint_{analysis_date}'
+    current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
+
+    all_results = []
+    total_processed = 0
+    total_breakpoints = 0
+
+    # Process in batches to manage memory
+    all_ids = list(matching_ids)
+    total_batches = (len(all_ids) + batch_size - 1) // batch_size
+
+    for batch_idx in range(total_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(all_ids))
+        batch_ids = all_ids[start_idx:end_idx]
+
+        logger.info(f"Batch {batch_idx + 1}/{total_batches}: {len(batch_ids)} IDs")
+
+        try:
+            # Get data for this batch
+            ds_historical_batch = ds_historical.sel(id_geohash=batch_ids)
+            ds_new_batch = ds_new_data.sel(id_geohash=batch_ids)
+
+            # Combine historical and new data
+            ds_combined = xr.concat([ds_historical_batch, ds_new_batch], dim='date')
+            ds_combined = ds_combined.sortby('date')
+
+            # Create DWDataset
+            dwds = DWDataset(ds_combined)
+
+            # Check if analysis date exists
+            if analysis_date not in dwds.dates_:
+                logger.warning(f"Analysis date {analysis_date} not in dataset dates for batch {batch_idx + 1}")
+                continue
+
+            # Calculate breakpoints for all IDs in batch
+            # The calculate_break method expects a single ID, so we need to loop
+            for id_val in batch_ids:
+                try:
+                    # Get data for this specific ID
+                    ds_single = ds_combined.sel(id_geohash=id_val)
+                    # Create a single-ID dataset
+                    dwds_single = DWDataset(ds_single)
+
+                    breaks = bp.calculate_break(dataset=dwds_single, analysis_date=analysis_date)
+                    if breaks is not None and not breaks.empty:
+                        breaks['id_geohash'] = id_val
+                        all_results.append(breaks)
+                        total_breakpoints += len(breaks)
+                    total_processed += 1
+                except Exception as e:
+                    logger.error(f"Error processing ID {id_val}: {e}")
+                    continue
+
+            # Clean up
+            ds_historical_batch.close()
+            ds_new_batch.close()
+            ds_combined.close()
+            gc.collect()
+
+        except Exception as e:
+            logger.error(f"Error processing batch {batch_idx + 1}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+
+    # 5. Combine results and save
+    if all_results:
+        try:
+            breaks_merged = pd.concat(all_results, ignore_index=True)
+            logger.info(f"Total breakpoints calculated: {len(breaks_merged)}")
+
+            # Convert to xarray and save as Zarr
+            ds_breaks = breaks_merged.set_index('id_geohash').to_xarray()
+            ds_breaks.to_zarr(zarr_path, mode='w')
+            logger.info(f"Zarr saved to {zarr_path}")
+
+            # Also save as Parquet
+            path_to_joined_file = current_breakpoint_dir / f'drain_{analysis_date}.parquet'
+            breaks_merged.to_parquet(path_to_joined_file)
+            logger.info(f"Parquet saved to {path_to_joined_file}")
+
+        except Exception as e:
+            logger.error(f"Error saving results: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'success': False, 'error': str(e)}
+    else:
+        logger.warning(f"No breakpoints found for {region} {analysis_date}")
+
+    # Clean up
+    ds_historical.close()
+    ds_new_data.close()
+    gc.collect()
+
+    logger.info(f"Processed {total_processed} IDs, found {total_breakpoints} breakpoints")
+
+    return {
+        'success': True,
+        'region': region,
+        'analysis_date': analysis_date,
+        'total_ids': total_ids,
+        'processed': total_processed,
+        'breakpoints_found': total_breakpoints,
+        'zarr_path': str(zarr_path)
+    }
+
+
 def process_near_real_time_region_dates_zarr(
         region: str = "TEST",
         run_start_label: str = None,
