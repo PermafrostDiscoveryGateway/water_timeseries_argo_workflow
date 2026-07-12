@@ -193,6 +193,16 @@ spec:
             export DASK_SCHEDULER=threads
             export DASK_NUM_THREADS=$(nproc)
             
+            echo "=== SETTING UP GCLOUD AUTHENTICATION ==="
+            export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+            gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS
+
+            # Make sure gsutil uses the right project
+            gcloud config set project pdg-project-406720
+            
+            # Test authentication
+            gsutil ls gs://pdg-storage-default/
+            
             # Clean PYTHONPATH - use only the venv
             export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
             

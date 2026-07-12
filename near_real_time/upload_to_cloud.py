@@ -6,6 +6,9 @@ import os
 from loguru import logger
 import subprocess
 import shutil
+from google.cloud import storage
+from google.oauth2 import service_account
+import os
 
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -20,6 +23,49 @@ def check_gsutil_installed():
         return False
     return True
 
+
+
+
+
+def sync_with_gcs_client(output_dir: str, bucket_name: str, path_to_cloud_folder: str):
+    """
+    Sync using Google Cloud Storage client library
+    """
+    try:
+        # Get credentials from the mounted file
+        creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+        if creds_path and os.path.exists(creds_path):
+            credentials = service_account.Credentials.from_service_account_file(creds_path)
+            client = storage.Client(credentials=credentials, project=os.environ.get('EE_PROJECT'))
+        else:
+            client = storage.Client(project=os.environ.get('EE_PROJECT'))
+
+        bucket = client.bucket(bucket_name)
+
+        # Walk through local directory and upload files
+        local_dir = Path(output_dir)
+        if not local_dir.exists():
+            logger.error(f"Local directory {output_dir} does not exist")
+            return False
+
+        uploaded_count = 0
+        for file_path in local_dir.rglob('*'):
+            if file_path.is_file():
+                # Calculate relative path for cloud storage
+                rel_path = file_path.relative_to(local_dir)
+                blob_path = f"{path_to_cloud_folder}/{rel_path}"
+
+                blob = bucket.blob(blob_path)
+                blob.upload_from_filename(str(file_path))
+                uploaded_count += 1
+                logger.info(f"Uploaded: {rel_path}")
+
+        logger.info(f"Successfully uploaded {uploaded_count} files")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error during sync: {e}")
+        return False
 
 def sync_with_gsutil(output_dir: str, bucket_name: str, path_to_cloud_folder: str,
                      delete_extra_files: bool = False, dry_run: bool = False):
@@ -131,12 +177,10 @@ def main():
     logger.info(f"Syncing {output_dir} to gs://{bucket_name}/{path_to_cloud_folder}")
 
     # Option 1: Normal sync - only uploads changed/new files
-    success = sync_with_gsutil(
+    success = sync_with_gcs_client(
         output_dir,
         bucket_name,
         path_to_cloud_folder,
-        delete_extra_files=False,  # Set to True if you want to delete cloud files not in local
-        dry_run=False  # Set to True to preview changes
     )
 
     if success:
