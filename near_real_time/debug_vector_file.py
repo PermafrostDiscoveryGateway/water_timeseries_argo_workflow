@@ -1,6 +1,6 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region, \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
-    merge_near_real_time_region_v3_simple,find_matching_lake_ids, \
+    merge_near_real_time_region_v3_simple, find_matching_lake_ids, \
     compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_new_results, is_all_new_data_in_file
 import sys
 import utils.download_new_dynamic_world_data as download_new_dynamic_world_data
@@ -17,7 +17,7 @@ import xarray as xr
 import numpy as np
 import shutil
 import gc
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
@@ -25,9 +25,334 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 
-def debug_vector_file(region: str = "EURASIA3", env_path: str = None):
+def compare_vector_files(
+        old_file_path: str,
+        new_file_path: str,
+        region: Optional[str] = None,
+        env_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Compare old and new vector files to understand differences.
+
+    Args:
+        old_file_path: Path to the old vector file
+        new_file_path: Path to the new vector file
+        region: Optional region name to filter by
+        env_path: Optional path to .env file
+
+    Returns:
+        dict: Comprehensive comparison results
+    """
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    print(f"{'=' * 80}")
+    print("COMPARING VECTOR FILES")
+    print(f"{'=' * 80}")
+    print(f"Old file: {old_file_path}")
+    print(f"New file: {new_file_path}")
+
+    result = {
+        'old_file': old_file_path,
+        'new_file': new_file_path,
+        'region': region,
+        'old_file_exists': Path(old_file_path).exists(),
+        'new_file_exists': Path(new_file_path).exists(),
+        'comparison': {}
+    }
+
+    if not result['old_file_exists']:
+        result['error'] = f'Old file not found: {old_file_path}'
+        return result
+
+    if not result['new_file_exists']:
+        result['error'] = f'New file not found: {new_file_path}'
+        return result
+
+    try:
+        import geopandas as gpd
+        import pandas as pd
+        import numpy as np
+
+        # ========== LOAD BOTH FILES ==========
+        print("\n📁 Loading files...")
+        gdf_old = gpd.read_parquet(old_file_path)
+        gdf_new = gpd.read_parquet(new_file_path)
+
+        print(f"  Old file: {len(gdf_old):,} rows")
+        print(f"  New file: {len(gdf_new):,} rows")
+
+        # ========== BASIC INFO COMPARISON ==========
+        print("\n📊 BASIC INFO:")
+        print(f"  Old columns: {gdf_old.columns.tolist()}")
+        print(f"  New columns: {gdf_new.columns.tolist()}")
+
+        old_geom_types = gdf_old.geometry.geom_type.unique()
+        new_geom_types = gdf_new.geometry.geom_type.unique()
+        print(f"  Old geometry types: {old_geom_types}")
+        print(f"  New geometry types: {new_geom_types}")
+
+        print(f"  Old CRS: {gdf_old.crs}")
+        print(f"  New CRS: {gdf_new.crs}")
+
+        # ========== ID COLUMN COMPARISON ==========
+        id_col_candidates = ['id_geohash', 'id', 'geohash']
+        old_id_col = None
+        new_id_col = None
+
+        for col in id_col_candidates:
+            if col in gdf_old.columns:
+                old_id_col = col
+                break
+
+        for col in id_col_candidates:
+            if col in gdf_new.columns:
+                new_id_col = col
+                break
+
+        if old_id_col:
+            print(f"\n🆔 Old ID column: {old_id_col}")
+            print(f"  Type: {gdf_old[old_id_col].dtype}")
+            print(f"  Sample: {gdf_old[old_id_col].head(3).tolist()}")
+            print(f"  Unique count: {gdf_old[old_id_col].nunique():,}")
+        else:
+            print(f"\n⚠️ No ID column found in old file!")
+
+        if new_id_col:
+            print(f"\n🆔 New ID column: {new_id_col}")
+            print(f"  Type: {gdf_new[new_id_col].dtype}")
+            print(f"  Sample: {gdf_new[new_id_col].head(3).tolist()}")
+            print(f"  Unique count: {gdf_new[new_id_col].nunique():,}")
+        else:
+            print(f"\n⚠️ No ID column found in new file!")
+
+        # ========== GEOMETRY COMPARISON ==========
+        print("\n🌍 GEOMETRY COMPARISON:")
+
+        # Handle Polygon geometries - convert to centroids for coordinate access
+        def get_coordinates(gdf, geom_col='geometry'):
+            geom_type = gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None
+
+            if geom_type in ['Polygon', 'MultiPolygon']:
+                centroids = gdf.geometry.centroid
+                return centroids.x, centroids.y
+            elif geom_type == 'Point':
+                return gdf.geometry.x, gdf.geometry.y
+            else:
+                rep_points = gdf.geometry.representative_point()
+                return rep_points.x, rep_points.y
+
+        old_x, old_y = get_coordinates(gdf_old)
+        new_x, new_y = get_coordinates(gdf_new)
+
+        print(f"  Old coordinate range:")
+        print(f"    Longitude: {old_x.min():.2f} to {old_x.max():.2f}")
+        print(f"    Latitude: {old_y.min():.2f} to {old_y.max():.2f}")
+
+        print(f"  New coordinate range:")
+        print(f"    Longitude: {new_x.min():.2f} to {new_x.max():.2f}")
+        print(f"    Latitude: {new_y.min():.2f} to {new_y.max():.2f}")
+
+        # ========== REGION COMPARISON ==========
+        print("\n📍 REGION COMPARISON:")
+
+        if 'region' in gdf_old.columns:
+            print(f"  Old has region column")
+            old_regions = gdf_old['region'].unique()
+            print(f"  Old regions: {sorted(old_regions)}")
+            for reg in sorted(old_regions):
+                count = len(gdf_old[gdf_old['region'] == reg])
+                print(f"    {reg}: {count:,} lakes")
+        else:
+            print("  Old has NO region column")
+
+        if 'region' in gdf_new.columns:
+            print(f"  New has region column")
+            new_regions = gdf_new['region'].unique()
+            print(f"  New regions: {sorted(new_regions)}")
+            for reg in sorted(new_regions):
+                count = len(gdf_new[gdf_new['region'] == reg])
+                print(f"    {reg}: {count:,} lakes")
+        else:
+            print("  New has NO region column")
+
+        # ========== ID OVERLAP COMPARISON ==========
+        if old_id_col and new_id_col:
+            print("\n🔗 ID OVERLAP:")
+            old_ids = set(gdf_old[old_id_col].values)
+            new_ids = set(gdf_new[new_id_col].values)
+
+            print(f"  Old unique IDs: {len(old_ids):,}")
+            print(f"  New unique IDs: {len(new_ids):,}")
+
+            overlap = old_ids.intersection(new_ids)
+            old_only = old_ids - new_ids
+            new_only = new_ids - old_ids
+
+            print(f"  Overlapping IDs: {len(overlap):,}")
+            print(f"  IDs only in old: {len(old_only):,}")
+            print(f"  IDs only in new: {len(new_only):,}")
+
+            # Check if ID types match
+            old_sample = next(iter(old_ids)) if old_ids else None
+            new_sample = next(iter(new_ids)) if new_ids else None
+
+            print(f"\n  ID type check:")
+            print(f"    Old ID type: {type(old_sample)}")
+            print(f"    New ID type: {type(new_sample)}")
+            print(f"    Types match: {type(old_sample) == type(new_sample)}")
+
+            if old_sample and new_sample:
+                print(f"    Old ID example: {old_sample}")
+                print(f"    New ID example: {new_sample}")
+
+        # ========== REGION-SPECIFIC FILTERING ==========
+        if region:
+            print(f"\n📌 REGION-SPECIFIC FILTERING: {region}")
+
+            # Get region boundaries
+            from utils.region_boundaries import get_region_boundaries
+            boundaries = get_region_boundaries()
+
+            if region in boundaries:
+                bbox = boundaries[region]
+                print(f"  Boundaries: {bbox}")
+
+                # Filter old file
+                mask_old = (old_x >= bbox['X_MIN_START']) & (old_x <= bbox['X_MIN_END']) & \
+                           (old_y >= bbox['Y_MIN_START']) & (old_y <= bbox['Y_MIN_END'])
+                old_in_region = gdf_old[mask_old]
+
+                # Filter new file
+                mask_new = (new_x >= bbox['X_MIN_START']) & (new_x <= bbox['X_MIN_END']) & \
+                           (new_y >= bbox['Y_MIN_START']) & (new_y <= bbox['Y_MIN_END'])
+                new_in_region = gdf_new[mask_new]
+
+                print(f"\n  Lakes in {region} boundaries:")
+                print(f"    Old: {len(old_in_region):,}")
+                print(f"    New: {len(new_in_region):,}")
+
+                # Check ID overlap within region
+                if old_id_col and new_id_col and len(old_in_region) > 0 and len(new_in_region) > 0:
+                    old_region_ids = set(old_in_region[old_id_col].values)
+                    new_region_ids = set(new_in_region[new_id_col].values)
+                    overlap_region = old_region_ids.intersection(new_region_ids)
+
+                    print(f"\n  ID overlap within {region}:")
+                    print(f"    Old region IDs: {len(old_region_ids):,}")
+                    print(f"    New region IDs: {len(new_region_ids):,}")
+                    print(f"    Overlapping: {len(overlap_region):,}")
+                    print(f"    IDs only in old: {len(old_region_ids - new_region_ids):,}")
+                    print(f"    IDs only in new: {len(new_region_ids - old_region_ids):,}")
+
+                    if len(overlap_region) > 0:
+                        print(f"    Sample overlapping IDs: {list(overlap_region)[:5]}")
+            else:
+                print(f"  ⚠️ Region {region} not found in boundaries!")
+
+        # ========== COMPARE WITH DATA FILES ==========
+        print("\n📊 COMPARING WITH DATA FILES:")
+
+        dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+        if dynamic_world_data_dir:
+            date_to_check = "2026-06"  # Or pass this as a parameter
+            data_file = Path(dynamic_world_data_dir) / 'merge' / f'dw_{region}_{date_to_check}.nc' if region else None
+
+            if data_file and data_file.exists():
+                try:
+                    ds = xr.open_dataset(str(data_file))
+                    data_ids = set(ds.id_geohash.values)
+                    ds.close()
+
+                    print(f"  Data file: {data_file}")
+                    print(f"  IDs in data file: {len(data_ids):,}")
+
+                    if old_id_col:
+                        old_ids_set = set(gdf_old[old_id_col].values)
+                        overlap_old = data_ids.intersection(old_ids_set)
+                        print(f"  Overlap old vs data: {len(overlap_old):,}")
+
+                    if new_id_col:
+                        new_ids_set = set(gdf_new[new_id_col].values)
+                        overlap_new = data_ids.intersection(new_ids_set)
+                        print(f"  Overlap new vs data: {len(overlap_new):,}")
+
+                    if old_id_col and new_id_col:
+                        old_only_data = data_ids - set(gdf_old[old_id_col].values)
+                        new_only_data = data_ids - set(gdf_new[new_id_col].values)
+                        print(f"  IDs in data but not old: {len(old_only_data):,}")
+                        print(f"  IDs in data but not new: {len(new_only_data):,}")
+
+                except Exception as e:
+                    print(f"  Error checking data file: {e}")
+            else:
+                print(f"  No data file found for {region} {date_to_check}")
+
+        # ========== SAMPLE COMPARISON ==========
+        print("\n📋 SAMPLE COMPARISON (first 5 rows):")
+        print("  Old file:")
+        if old_id_col:
+            print(gdf_old[[old_id_col, 'geometry']].head(5))
+        else:
+            print(gdf_old.head(5))
+
+        print("\n  New file:")
+        if new_id_col:
+            print(gdf_new[[new_id_col, 'geometry']].head(5))
+        else:
+            print(gdf_new.head(5))
+
+        result['comparison'] = {
+            'old_count': len(gdf_old),
+            'new_count': len(gdf_new),
+            'old_columns': gdf_old.columns.tolist(),
+            'new_columns': gdf_new.columns.tolist(),
+            'old_geom_types': list(old_geom_types),
+            'new_geom_types': list(new_geom_types),
+            'old_coords': {'x_min': float(old_x.min()), 'x_max': float(old_x.max()),
+                           'y_min': float(old_y.min()), 'y_max': float(old_y.max())},
+            'new_coords': {'x_min': float(new_x.min()), 'x_max': float(new_x.max()),
+                           'y_min': float(new_y.min()), 'y_max': float(new_y.max())},
+        }
+
+        if old_id_col and new_id_col:
+            result['comparison']['id_overlap'] = {
+                'overlap_count': len(overlap),
+                'old_only_count': len(old_only),
+                'new_only_count': len(new_only),
+                'overlap_sample': list(overlap)[:10],
+                'old_only_sample': list(old_only)[:10],
+                'new_only_sample': list(new_only)[:10],
+            }
+
+        if region and region in boundaries:
+            result['comparison']['region_specific'] = {
+                'old_in_region': len(old_in_region),
+                'new_in_region': len(new_in_region),
+                'old_ids_in_region': len(old_region_ids) if old_id_col and len(old_in_region) > 0 else 0,
+                'new_ids_in_region': len(new_region_ids) if new_id_col and len(new_in_region) > 0 else 0,
+                'overlap_in_region': len(overlap_region) if old_id_col and new_id_col and len(
+                    old_in_region) > 0 and len(new_in_region) > 0 else 0,
+            }
+
+        print("\n✅ Comparison complete!")
+        return result
+
+    except Exception as e:
+        print(f"❌ Error comparing files: {e}")
+        import traceback
+        traceback.print_exc()
+        result['error'] = str(e)
+        return result
+
+
+def debug_vector_file(region: str = "EURASIA3", env_path: str = None, use_new_vector: bool = False):
     """
     Debug the vector file to understand why lakes aren't being found for a region.
+    Can optionally use the new vector file for comparison.
     """
     # Load environment
     if env_path:
@@ -53,15 +378,20 @@ def debug_vector_file(region: str = "EURASIA3", env_path: str = None):
         import numpy as np
 
         gdf = gpd.read_parquet(vector_file)
+
+        # Handle Polygon geometries - convert to centroids for coordinate access
+        geom_type = gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None
+
+        if geom_type in ['Polygon', 'MultiPolygon']:
+            print("⚠️ Converting Polygon geometries to centroids for coordinate access")
+            gdf['centroid'] = gdf.geometry.centroid
+            gdf = gdf.set_geometry('centroid')
+
         print(f"\n📊 VECTOR FILE INFO:")
         print(f"  Total lakes: {len(gdf)}")
         print(f"  Columns: {gdf.columns.tolist()}")
-        print(f"  Geometry type: {gdf.geometry.geom_type.unique()}")
+        print(f"  Geometry type: {geom_type}")
         print(f"  CRS: {gdf.crs}")
-
-        # Check geometry types
-        geom_types = gdf.geometry.geom_type.value_counts()
-        print(f"  Geometry types: {geom_types.to_dict()}")
 
         # Check coordinate ranges
         print(f"\n🌍 COORDINATE RANGES:")
@@ -152,9 +482,6 @@ def debug_vector_file(region: str = "EURASIA3", env_path: str = None):
         import traceback
         traceback.print_exc()
 
-
-# Run the debug
-debug_vector_file(region="EURASIA3", env_path="/data/merge/.env")
 
 # =============================================================================
 # IMPLEMENTATION OF MERGE_NEW_RESULTS
@@ -851,7 +1178,7 @@ def process_region_fast(
 # MAIN SCRIPT
 # =============================================================================
 def main():
-    logger.debug(f"Beginning historical run for ALL regions (fast mode)")
+    logger.debug(f"Beginning historical run for ALL regions")
     env_path = None
     if len(sys.argv) > 1:
         env_path = sys.argv[1]
@@ -860,6 +1187,51 @@ def main():
     else:
         load_dotenv()
         logger.info("Loading environment from default .env file")
+
+    # ========== Compare vector files ==========
+    old_vector_file = os.environ.get('vector_lake_file')
+    new_vector_file = '/data/water_timeseries/vector_dataset_file/lake_polygons.parquet'
+
+    logger.info("=" * 80)
+    logger.info("COMPARING VECTOR FILES")
+    logger.info("=" * 80)
+    logger.info(f"Old vector file: {old_vector_file}")
+    logger.info(f"New vector file: {new_vector_file}")
+
+    # Run comparison for all regions
+    regions_to_check = ['TEST', 'ALASKA', 'CANADA', 'EURASIA1', 'EURASIA2', 'EURASIA3']
+
+    for region in regions_to_check:
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"COMPARING FOR REGION: {region}")
+        logger.info(f"{'=' * 60}")
+
+        result = compare_vector_files(
+            old_file_path=old_vector_file,
+            new_file_path=new_vector_file,
+            region=region,
+            env_path=env_path
+        )
+
+        if result.get('error'):
+            logger.error(f"Error comparing for {region}: {result['error']}")
+        else:
+            comparison = result.get('comparison', {})
+            region_specific = comparison.get('region_specific', {})
+
+            if region_specific:
+                logger.info(f"  Old lakes in {region}: {region_specific.get('old_in_region', 0):,}")
+                logger.info(f"  New lakes in {region}: {region_specific.get('new_in_region', 0):,}")
+                logger.info(f"  Overlap in {region}: {region_specific.get('overlap_in_region', 0):,}")
+
+                if region_specific.get('new_in_region', 0) > region_specific.get('old_in_region', 0):
+                    logger.info(
+                        f"  ✅ New file has {region_specific['new_in_region'] - region_specific['old_in_region']:,} more lakes")
+                elif region_specific.get('new_in_region', 0) < region_specific.get('old_in_region', 0):
+                    logger.info(
+                        f"  ⚠️ Old file has {region_specific['old_in_region'] - region_specific['new_in_region']:,} more lakes")
+                else:
+                    logger.info(f"  Same number of lakes in both files")
 
     # ========== Get all regions ==========
     import utils.region_boundaries
@@ -898,10 +1270,39 @@ def main():
     region_files = []
 
     for region in all_regions:
-        if env_path:
-            matching_ids = debug_vector_file(region=region, env_path=env_path)
+        result = process_region_fast(
+            region=region,
+            date_to_run=date_to_run,
+            env_path=env_path,
+            dynamic_world_data_dir=dynamic_world_data_dir
+        )
+
+        if result['success']:
+            success_count += 1
+            if 'merged_file' in result:
+                region_files.append(result['merged_file'])
         else:
-            matching_ids = debug_vector_file(region=region)
+            failure_count += 1
+
+        results[region] = result
+
+    # ========== Summary ==========
+    logger.info(f"\n{'=' * 80}")
+    logger.info("SUMMARY")
+    logger.info(f"{'=' * 80}")
+    logger.info(f"Total regions: {len(all_regions)}")
+    logger.info(f"Successfully processed: {success_count}")
+    logger.info(f"Failed: {failure_count}")
+    logger.info(f"Skipped: {skipped_count}")
+
+    # Log which regions succeeded/failed
+    for region, result in results.items():
+        status = "✅" if result['success'] else "❌"
+        reason = result.get('reason', '')
+        logger.info(f"  {status} {region}: {reason}")
+
+    logger.info("Done!")
+
 
 if __name__ == "__main__":
     main()
