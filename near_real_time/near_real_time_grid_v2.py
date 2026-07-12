@@ -7147,7 +7147,6 @@ def process_near_real_time_region_dates_zarr(
     logger.info(f"Processing completed for region: {REGION_NAME}")
     return True
 
-
 def verify_downloads_complete(
         region: str = "TEST",
         analysis_dates: List[str] = None,
