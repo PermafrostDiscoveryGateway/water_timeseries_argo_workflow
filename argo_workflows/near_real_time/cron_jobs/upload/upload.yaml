@@ -6,19 +6,11 @@ metadata:
   annotations:
     workflows.argoproj.io/pod-keep: "OnCompletion"
 spec:
-  # Run daily at 3:30 PM CST (21:30 UTC)
-  # Adjust timezone as needed - this is UTC time
-  # NOTE "45 17 * * *" is 1245 CSTx
   schedule: "45 17 * * *"
-  # Forbid - prevents new workflow from starting if one is already running
   concurrencyPolicy: "Forbid"
-  # How long to wait for the workflow to start before giving up (5 minutes)
   startingDeadlineSeconds: 300
-  # How many successful workflow executions to keep
   successfulJobsHistoryLimit: 3
-  # How many failed workflow executions to keep
   failedJobsHistoryLimit: 3
-  # Suspend the cron workflow if needed (false by default)
   suspend: false
   workflowSpec:
     ttlStrategy:
@@ -114,7 +106,7 @@ spec:
             mkdir -p /tmp
             exec > >(tee -a /tmp/workflow_output.log) 2>&1
             
-            echo "=== STARTING NEAR REAL-TIME BREAKPOINT JOB (AUTOPILOT) ==="
+            echo "=== STARTING CLOUD SYNC JOB ==="
             echo "Timestamp: $(date)"
             echo "Pod: ${POD_NAME:-unknown}"
             
@@ -139,20 +131,10 @@ spec:
             
             # Fix Earth Engine credentials - copy to writable location and redirect
             echo "=== FIXING EARTH ENGINE CREDENTIALS ==="
-            
-            # Create a writable directory with the same structure
             mkdir -p /tmp/home/.config/earthengine
-            
-            # Copy the credentials from the read-only mount to writable location
             cp -L /root/.config/earthengine/credentials /tmp/home/.config/earthengine/credentials
-            
-            # Set HOME to point to our writable directory
             export HOME=/tmp/home
-            
-            # Also set explicit token path
             export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
-            
-            # For geemap, also set the config directory
             export EE_CONFIG_DIR=/tmp/home/.config/earthengine
             
             # Verify the copied credentials
@@ -167,53 +149,18 @@ spec:
                 print(f'✓ Credentials valid! Keys: {list(data.keys())}')
             "
             
-            # Set other environment variables
+            # Set environment variables
             export EE_CLOUD_PROJECT=pdg-wg-workflow
             export EE_PROJECT=pdg-project-406720
             export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
             
-            # Create directories on PVC
-            echo "=== CREATING DIRECTORIES ==="
-            mkdir -p /data/water_timeseries/{dynamic_world_data,split_lakes,input,new_dynamic_world,split_new_dynamic_world,output,checkpoint,temp_netcdf,subsets,breakpoints}
-            mkdir -p /data/water_timeseries/dask_work_space
-            chmod -R 755 /data/water_timeseries
-            mkdir -p /data/merge
-            chmod -R 755 /data/merge
-            
-            # Set environment variables
+            # Set temporary directory variables
             export TMPDIR=/data/water_timeseries/temp_netcdf
             export TEMP=/data/water_timeseries/temp_netcdf
             export TMP=/data/water_timeseries/temp_netcdf
             
-            # Dask-specific environment variables
-            export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
-            export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
-            export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
-            export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
-            export DASK_SCHEDULER=threads
-            export DASK_NUM_THREADS=$(nproc)
-            
-            echo "=== SETTING UP GCLOUD AUTHENTICATION ==="
-            export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
-            gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS
-
-            # Make sure gsutil uses the right project
-            gcloud config set project pdg-project-406720
-            
-            # Test authentication
-            gsutil ls gs://pdg-storage-default/
-            
             # Clean PYTHONPATH - use only the venv
             export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
-            
-            echo "=== VERIFYING GEEMAP ==="
-            python << 'EOF'
-            import os
-            import geemap
-            print(f"geemap version: {geemap.__version__}")
-            print(f"Has ee_initialize: {hasattr(geemap, 'ee_initialize')}")
-            print(f"EARTHENGINE_TOKEN: {os.environ.get('EARTHENGINE_TOKEN', 'NOT SET')}")
-            EOF
             
             # Check PVC space
             echo "=== PVC STORAGE ==="
@@ -237,12 +184,6 @@ spec:
             echo "=== SAVING ENVIRONMENT INFO ==="
             env | sort > "$DEBUG_DIR/environment.txt"
             pip list > "$DEBUG_DIR/pip_list.txt"
-            
-            # Copy environment info to artifact log as well
-            echo "=== ENVIRONMENT VARIABLES ==="
-            env | sort
-            echo "=== PIP PACKAGES ==="
-            pip list
             
             # Run the script with unbuffered output
             echo "=== RUNNING SCRIPT ==="
@@ -268,10 +209,6 @@ spec:
             
             exit $SCRIPT_EXIT_CODE
         env:
-        - name: lake_chunk_size
-          value: "20000"
-        - name: ENV_FILE_PATH
-          value: "/data/.env"
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: /root/.config/gcloud/application_default_credentials.json
         - name: EE_CLOUD_PROJECT

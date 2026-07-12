@@ -4,9 +4,8 @@ from dotenv import load_dotenv
 import os
 from loguru import logger
 from google.cloud import storage
-from google.oauth2 import service_account
-from datetime import datetime
-import time
+from google.auth import default
+from google.oauth2 import credentials
 
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -14,27 +13,32 @@ if str(project_root) not in sys.path:
 
 
 def get_storage_client():
-    """Get authenticated storage client"""
+    """Get authenticated storage client using application default credentials"""
     try:
+        # Use the default credentials - this handles both service accounts and OAuth2 user credentials
         creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
 
         if creds_path and os.path.exists(creds_path):
             logger.info(f"Using credentials from: {creds_path}")
-            credentials = service_account.Credentials.from_service_account_file(
-                creds_path,
-                scopes=['https://www.googleapis.com/auth/cloud-platform']
-            )
+
+            # Use the default credentials loader
+            # This will work with both service account keys and OAuth2 user credentials
+            credentials, project = default()
+
             client = storage.Client(
                 credentials=credentials,
                 project=os.environ.get('EE_PROJECT', 'pdg-project-406720')
             )
-        else:
-            logger.warning("No credentials file found, using default credentials")
-            client = storage.Client(project=os.environ.get('EE_PROJECT', 'pdg-project-406720'))
 
-        return client
+            logger.info("✅ Storage client created successfully")
+            return client
+        else:
+            logger.error(f"Credentials file not found at: {creds_path}")
+            return None
+
     except Exception as e:
         logger.error(f"Failed to create storage client: {e}")
+        logger.error("Make sure your credentials file is valid and has the right permissions")
         return None
 
 
@@ -60,6 +64,7 @@ def sync_directory_to_gcs(output_dir: str, bucket_name: str, path_to_cloud_folde
         # Verify bucket exists and is accessible
         if not bucket.exists():
             logger.error(f"Bucket {bucket_name} does not exist or is not accessible")
+            logger.error("Make sure the bucket name is correct and you have permissions")
             return False
 
         logger.info(f"Connected to bucket: {bucket_name}")
@@ -107,8 +112,6 @@ def sync_directory_to_gcs(output_dir: str, bucket_name: str, path_to_cloud_folde
 
             # Check if file already exists
             if blob.exists():
-                # Optionally check if file has changed (by size or modification time)
-                # For now, skip existing files
                 skipped_count += 1
                 continue
 
