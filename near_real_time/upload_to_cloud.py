@@ -182,7 +182,7 @@ def main():
     os.environ["CLOUDSDK_CORE_PROJECT"] = project
 
     bucket_name = 'pdg-storage-default'
-    path_to_cloud_folder = 'water-timeseries-v2/data/output'
+    path_to_cloud_folder = 'water_timeseries_v2/data/output'
 
     # Sync local output_dir to cloud
     logger.info(f"Syncing {output_dir} to gs://{bucket_name}/{path_to_cloud_folder}")
