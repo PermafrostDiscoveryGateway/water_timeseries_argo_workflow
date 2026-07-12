@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
 metadata:
-  name: quality_check
+  name: quality-check
   namespace: argo
   annotations:
     workflows.argoproj.io/pod-keep: "OnCompletion"

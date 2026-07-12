@@ -7398,54 +7398,99 @@ def check_breakpoint_quality(
     if not output_dir:
         raise ValueError("output_dir not set in environment")
 
-    zarr_path = Path(output_dir) / region / 'breakpoint_zarr' / f'breakpoints_{analysis_date}.zarr'
+    # The Zarr files are saved directly under output_dir/breakpoint_zarr/
+    # NOT under region subdirectory
+    zarr_path = Path(output_dir) / 'breakpoint_zarr' / f'breakpoints_{analysis_date}.zarr'
 
     if not zarr_path.exists():
-        return {'error': f'Zarr file not found: {zarr_path}'}
+        # Try the region-specific path as fallback
+        fallback_path = Path(output_dir) / region / 'breakpoint_zarr' / f'breakpoints_{analysis_date}.zarr'
+        if fallback_path.exists():
+            zarr_path = fallback_path
+        else:
+            return {
+                'error': f'Zarr file not found at {zarr_path} or {fallback_path}',
+                'region': region,
+                'date': analysis_date
+            }
 
     try:
+        import xarray as xr
+        import numpy as np
+
         ds = xr.open_zarr(zarr_path)
 
+        # Check dimensions
         n_lakes = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
+
+        # Also check if there are any data variables
+        data_vars = list(ds.data_vars)
 
         result = {
             'date': analysis_date,
             'region': region,
+            'zarr_path': str(zarr_path),
             'total_lakes': n_lakes,
             'has_confidence': False,
             'has_water_data': False,
-            'quality_score': 0
+            'quality_score': 0,
+            'data_vars': data_vars
         }
 
+        # Check for confidence data
         if 'drainage_confidence' in ds.data_vars:
             conf_data = ds['drainage_confidence'].values
             result['has_confidence'] = True
 
-            # Count by confidence
-            low = int(np.sum(conf_data == 1))
-            medium = int(np.sum(conf_data == 2))
-            high = int(np.sum(conf_data == 3))
-
-            result['low_confidence'] = low
-            result['medium_confidence'] = medium
-            result['high_confidence'] = high
-
-            # Count quality breakpoints (meeting min_confidence)
-            quality_breakpoints = int(np.sum(conf_data >= min_confidence))
-            result['quality_breakpoints'] = quality_breakpoints
-            result['quality_rate'] = quality_breakpoints / n_lakes * 100 if n_lakes > 0 else 0
-
-            # Quality score (0-100)
+            # Check if there's any actual data (not all NaN)
             if n_lakes > 0:
-                # Weighted score: 50% for high confidence, 30% for medium, 20% for any breakpoint
-                score = (high / n_lakes * 50) + (medium / n_lakes * 30) + ((high + medium) / n_lakes * 20)
-                result['quality_score'] = round(score, 2)
+                # Count by confidence
+                low = int(np.sum(conf_data == 1))
+                medium = int(np.sum(conf_data == 2))
+                high = int(np.sum(conf_data == 3))
+                # Count NaN values
+                nan_count = int(np.sum(np.isnan(conf_data)))
 
+                result['low_confidence'] = low
+                result['medium_confidence'] = medium
+                result['high_confidence'] = high
+                result['nan_confidence'] = nan_count
+
+                # Count quality breakpoints (meeting min_confidence)
+                quality_breakpoints = int(np.sum(conf_data >= min_confidence))
+                result['quality_breakpoints'] = quality_breakpoints
+                result['quality_rate'] = quality_breakpoints / n_lakes * 100 if n_lakes > 0 else 0
+
+                # Quality score (0-100)
+                if n_lakes > 0 and (high + medium + low) > 0:
+                    # Weighted score: 50% for high confidence, 30% for medium, 20% for any breakpoint
+                    valid_conf = conf_data[~np.isnan(conf_data)]
+                    if len(valid_conf) > 0:
+                        high_pct = np.sum(valid_conf == 3) / len(valid_conf) * 50
+                        medium_pct = np.sum(valid_conf == 2) / len(valid_conf) * 30
+                        any_pct = len(valid_conf) / n_lakes * 20
+                        result['quality_score'] = round(high_pct + medium_pct + any_pct, 2)
+            else:
+                # No lakes found
+                result['low_confidence'] = 0
+                result['medium_confidence'] = 0
+                result['high_confidence'] = 0
+                result['quality_breakpoints'] = 0
+                result['quality_rate'] = 0
+
+        # Check for water data
         if 'water_observed' in ds.data_vars:
             result['has_water_data'] = True
-            # Check if any water data is non-nan
             water_data = ds['water_observed'].values
-            result['has_non_nan_water'] = bool(np.any(~np.isnan(water_data)))
+            # Check if any water data is non-nan
+            has_non_nan = bool(np.any(~np.isnan(water_data)))
+            result['has_non_nan_water'] = has_non_nan
+
+            # Count how many lakes have water data
+            if n_lakes > 0:
+                non_nan_count = int(np.sum(~np.isnan(water_data)))
+                result['lakes_with_water_data'] = non_nan_count
+                result['water_data_coverage'] = non_nan_count / n_lakes * 100 if n_lakes > 0 else 0
 
         ds.close()
 
@@ -7459,10 +7504,28 @@ def check_breakpoint_quality(
         else:
             result['quality_assessment'] = 'POOR'
 
+        # Add summary if there's data
+        if n_lakes > 0:
+            if 'high_confidence' in result:
+                result['summary'] = (
+                    f"Total: {n_lakes} lakes, "
+                    f"High: {result.get('high_confidence', 0)}, "
+                    f"Medium: {result.get('medium_confidence', 0)}, "
+                    f"Low: {result.get('low_confidence', 0)}, "
+                    f"Quality: {result.get('quality_assessment', 'UNKNOWN')}"
+                )
+            else:
+                result['summary'] = f"Total: {n_lakes} lakes, No confidence data"
+
         return result
 
     except Exception as e:
-        return {'error': str(e)}
+        return {
+            'error': str(e),
+            'region': region,
+            'date': analysis_date,
+            'zarr_path': str(zarr_path)
+        }
 
 def verify_process_complete(
         region: str = "TEST",
