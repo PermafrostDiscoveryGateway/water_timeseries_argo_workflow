@@ -6454,6 +6454,179 @@ def process_near_real_time_region_dates(
     return True
 
 
+def find_matching_lake_ids(region: str, analysis_date: str, env_path: str = None) -> Dict[str, Any]:
+    """
+    Find matching lake IDs between historical data and new region-specific data.
+
+    Args:
+        region: Region name (e.g., "ALASKA", "CANADA", "EURASIA1", etc.)
+        analysis_date: Date in "YYYY-MM" format (e.g., "2026-06")
+        env_path: Optional path to .env file
+
+    Returns:
+        dict: {
+            'success': bool,
+            'historical_file': str,
+            'new_data_file': str,
+            'historical_ids': int,  # Number of IDs in historical data
+            'new_data_ids': int,    # Number of IDs in new data
+            'matching_ids': int,    # Number of overlapping IDs
+            'matching_id_list': list,  # List of matching IDs (first 20)
+            'all_matching_ids': list,  # All matching IDs (use with caution)
+            'region': str,
+            'analysis_date': str,
+            'error': str  # Only present if success is False
+        }
+    """
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
+
+    dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+    if not dynamic_world_data_dir:
+        return {
+            'success': False,
+            'error': 'dynamic_world_data_dir not set in environment'
+        }
+
+    # ========== FIND HISTORICAL FILE ==========
+    historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
+    if not historical_file.exists():
+        # Try alternative historical file names
+        alt_historical = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed_latest.nc'
+        if alt_historical.exists():
+            historical_file = alt_historical
+        else:
+            # Look for any historical file
+            historical_candidates = list(Path(dynamic_world_data_dir).glob('lakes_dw_V2d*.nc'))
+            if historical_candidates:
+                historical_file = max(historical_candidates, key=lambda f: f.stat().st_mtime)
+                logger.info(f"Using alternative historical file: {historical_file}")
+            else:
+                return {
+                    'success': False,
+                    'error': f'No historical file found in {dynamic_world_data_dir}'
+                }
+
+    logger.info(f"📊 Historical file: {historical_file}")
+
+    # ========== FIND NEW DATA FILE ==========
+    # Try multiple locations
+    possible_paths = [
+        Path(dynamic_world_data_dir) / 'merge' / f'dw_{region}_{analysis_date}.nc',
+        Path(dynamic_world_data_dir) / f'dw_{region}_{analysis_date}.nc',
+        Path(dynamic_world_data_dir) / 'merge' / f'{region}_{analysis_date}.nc',
+        Path(dynamic_world_data_dir) / f'{region}_{analysis_date}.nc',
+    ]
+
+    new_data_file = None
+    for path in possible_paths:
+        if path.exists():
+            new_data_file = path
+            logger.info(f"📊 Found new data file: {new_data_file}")
+            break
+
+    if not new_data_file:
+        # Try wildcard search
+        search_patterns = [
+            f"*{region}*{analysis_date}*.nc",
+            f"*{analysis_date}*{region}*.nc",
+        ]
+        for pattern in search_patterns:
+            candidates = list(Path(dynamic_world_data_dir).glob(f"**/{pattern}"))
+            if candidates:
+                new_data_file = candidates[0]
+                logger.info(f"📊 Found new data file via wildcard: {new_data_file}")
+                break
+
+    if not new_data_file:
+        return {
+            'success': False,
+            'error': f'No new data file found for {region} {analysis_date} in {dynamic_world_data_dir}'
+        }
+
+    # ========== LOAD AND COMPARE FILES ==========
+    try:
+        logger.info("Loading historical dataset...")
+        ds_historical = xr.open_dataset(str(historical_file))
+        historical_ids = set(ds_historical['id_geohash'].values)
+        logger.info(f"Historical IDs: {len(historical_ids)}")
+    except Exception as e:
+        ds_historical.close() if 'ds_historical' in locals() else None
+        return {
+            'success': False,
+            'error': f'Error loading historical file: {e}'
+        }
+
+    try:
+        logger.info("Loading new data dataset...")
+        ds_new_data = xr.open_dataset(str(new_data_file))
+        new_data_ids = set(ds_new_data['id_geohash'].values)
+        logger.info(f"New data IDs: {len(new_data_ids)}")
+
+        # Also check what dates are in the new data
+        if 'date' in ds_new_data.coords:
+            dates = pd.to_datetime(ds_new_data.date.values).strftime('%Y-%m')
+            unique_dates = set(dates)
+            logger.info(f"Dates in new data: {sorted(unique_dates)}")
+            if analysis_date not in unique_dates:
+                logger.warning(f"⚠️ Analysis date {analysis_date} not found in new data dates!")
+                logger.info(f"Available dates: {sorted(unique_dates)[:10]}")
+    except Exception as e:
+        ds_historical.close()
+        ds_new_data.close() if 'ds_new_data' in locals() else None
+        return {
+            'success': False,
+            'error': f'Error loading new data file: {e}'
+        }
+
+    # ========== FIND MATCHING IDs ==========
+    matching_ids = historical_ids.intersection(new_data_ids)
+
+    # Also check if there are IDs in new data but not in historical
+    new_only = new_data_ids - historical_ids
+    historical_only = historical_ids - new_data_ids
+
+    logger.info(f"📊 Matching IDs: {len(matching_ids)}")
+    logger.info(f"   IDs only in new data: {len(new_only)}")
+    logger.info(f"   IDs only in historical: {len(historical_only)}")
+
+    # ========== BUILD RESULT ==========
+    result = {
+        'success': True,
+        'historical_file': str(historical_file),
+        'new_data_file': str(new_data_file),
+        'historical_ids': len(historical_ids),
+        'new_data_ids': len(new_data_ids),
+        'matching_ids': len(matching_ids),
+        'matching_id_list': list(matching_ids)[:20],  # First 20 for display
+        'all_matching_ids': list(matching_ids),
+        'new_only_ids': list(new_only)[:20],
+        'historical_only_ids': list(historical_only)[:20],
+        'region': region,
+        'analysis_date': analysis_date,
+        'has_analysis_date': analysis_date in (
+            pd.to_datetime(ds_new_data.date.values).strftime('%Y-%m') if 'date' in ds_new_data.coords else []),
+    }
+
+    # Check if analysis date exists
+    if 'date' in ds_new_data.coords:
+        dates = pd.to_datetime(ds_new_data.date.values).strftime('%Y-%m')
+        result['has_analysis_date'] = analysis_date in dates
+        if not result['has_analysis_date']:
+            result['available_dates'] = sorted(set(dates))[:10]
+
+    # Clean up
+    ds_historical.close()
+    ds_new_data.close()
+
+    return result
+
+
 def process_near_real_time_region_dates_zarr(
         region: str = "TEST",
         run_start_label: str = None,
