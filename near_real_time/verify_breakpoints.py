@@ -1,7 +1,7 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region , \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
                                      merge_near_real_time_region_v3_simple, \
-                 compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_near_real_time_region_v3_smart, \
+                 compare_netcdf_files, check_breakpoint_quality, verify_merged_netcdf, verify_merged_data, merge_near_real_time_region_v3_smart, \
             enable_memory_tracking, log_memory_usage, has_region_been_merged_for_dates, get_ids_for_region_from_vector_file
 import sys
 import shutil
@@ -138,6 +138,9 @@ def main():
 
         for region in REGION_NAMES:
             logger.debug(f"Checking breakpoint quality for region {region}")
+            quality = check_breakpoint_quality(region=region, analysis_date=date_to_run[0])
+            logger.debug(f"Breakpoint quality")
+            logger.debug(quality)
 
 
 
