@@ -6637,8 +6637,8 @@ def process_region_direct(
     Process breakpoints by directly using matching IDs, bypassing grid filtering.
     This is more reliable for regions where the grid filtering is too coarse.
     """
-    from near_real_time_grid_v2 import find_matching_lake_ids, NRTBreakpoint, DWDataset
     from water_timeseries.dataset import LakeDataset
+    from water_timeseries.breakpoint import NRTBreakpoint, DWDataset
 
     if env_path:
         load_dotenv(dotenv_path=env_path)
@@ -6690,7 +6690,9 @@ def process_region_direct(
     import numpy as np
     import gc
 
+    logger.info(f"Loading historical dataset: {historical_file}")
     ds_historical = xr.open_dataset(str(historical_file))
+    logger.info(f"Loading new data dataset: {new_data_file}")
     ds_new_data = xr.open_dataset(str(new_data_file))
 
     # Filter to matching IDs
@@ -6700,10 +6702,7 @@ def process_region_direct(
     logger.info(f"Filtered historical to {len(ds_historical.id_geohash)} IDs")
     logger.info(f"Filtered new data to {len(ds_new_data.id_geohash)} IDs")
 
-    # 4. Process in batches
-    analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
-    bp = NRTBreakpoint()
-
+    # 4. Setup output directories
     output_dir = os.environ['output_dir']
     output_dir = Path(output_dir) / region
     zarr_output_dir = output_dir / 'breakpoint_zarr'
@@ -6714,11 +6713,28 @@ def process_region_direct(
     current_breakpoint_dir = output_dir / f'breakpoint_{analysis_date}'
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
 
+    # 5. Process in batches
+    bp = NRTBreakpoint()
     all_results = []
     total_processed = 0
     total_breakpoints = 0
 
-    # Process in batches to manage memory
+    # Convert analysis_date to proper format for checking
+    analysis_date_ts = pd.Timestamp(f"{analysis_date}-01")
+
+    # Get the date object from the new data to check format
+    if 'date' in ds_new_data.coords:
+        sample_date = ds_new_data.date.values[0]
+        logger.info(f"Sample date format from new data: {sample_date}")
+        # Convert to string in the same format as the data
+        if isinstance(sample_date, np.datetime64):
+            analysis_date_check = pd.Timestamp(sample_date).strftime("%Y-%m")
+        else:
+            analysis_date_check = str(sample_date)[:7]  # Get YYYY-MM
+        logger.info(f"Using date check format: {analysis_date_check}")
+    else:
+        analysis_date_check = analysis_date
+
     all_ids = list(matching_ids)
     total_batches = (len(all_ids) + batch_size - 1) // batch_size
 
@@ -6741,13 +6757,33 @@ def process_region_direct(
             # Create DWDataset
             dwds = DWDataset(ds_combined)
 
-            # Check if analysis date exists
-            if analysis_date not in dwds.dates_:
-                logger.warning(f"Analysis date {analysis_date} not in dataset dates for batch {batch_idx + 1}")
+            # Check if analysis date exists - check in the proper format
+            date_found = False
+            for d in dwds.dates_:
+                if isinstance(d, pd.Timestamp):
+                    if d.strftime("%Y-%m") == analysis_date:
+                        date_found = True
+                        break
+                elif isinstance(d, str):
+                    if d[:7] == analysis_date:
+                        date_found = True
+                        break
+                elif isinstance(d, np.datetime64):
+                    if pd.Timestamp(d).strftime("%Y-%m") == analysis_date:
+                        date_found = True
+                        break
+
+            if not date_found:
+                logger.warning(f"Analysis date {analysis_date} not found in dataset dates for batch {batch_idx + 1}")
+                logger.debug(f"Available dates in batch: {[str(d)[:7] for d in dwds.dates_[:5]]}")
+                # Clean up and continue
+                ds_historical_batch.close()
+                ds_new_batch.close()
+                ds_combined.close()
+                gc.collect()
                 continue
 
             # Calculate breakpoints for all IDs in batch
-            # The calculate_break method expects a single ID, so we need to loop
             for id_val in batch_ids:
                 try:
                     # Get data for this specific ID
@@ -6777,7 +6813,7 @@ def process_region_direct(
             traceback.print_exc()
             continue
 
-    # 5. Combine results and save
+    # 6. Combine results and save
     if all_results:
         try:
             breaks_merged = pd.concat(all_results, ignore_index=True)
@@ -6793,13 +6829,42 @@ def process_region_direct(
             breaks_merged.to_parquet(path_to_joined_file)
             logger.info(f"Parquet saved to {path_to_joined_file}")
 
+            # Log Zarr file size
+            if zarr_path.exists():
+                zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
+                logger.info(f"Zarr file size: {zarr_size_gb:.2f} GB")
+
         except Exception as e:
             logger.error(f"Error saving results: {e}")
             import traceback
             traceback.print_exc()
+            ds_historical.close()
+            ds_new_data.close()
             return {'success': False, 'error': str(e)}
     else:
         logger.warning(f"No breakpoints found for {region} {analysis_date}")
+        # Create empty Zarr file
+        try:
+            empty_result = pd.DataFrame(columns=[
+                'date', 'water_observed', 'water_predicted', 'water_residual',
+                'water_predicted_lower_90', 'water_predicted_upper_90',
+                'water_historical_mean', 'water_historical_median',
+                'water_historical_std', 'water_historical_min',
+                'water_historical_max', 'drainage_confidence'
+            ])
+            empty_ds = empty_result.to_xarray()
+            empty_ds.attrs.update({
+                'region': region,
+                'analysis_date': analysis_date,
+                'created_at': datetime.now().isoformat(),
+                'complete': False,
+                'empty': True
+            })
+            empty_ds.to_zarr(zarr_path, mode='w')
+            logger.info(f"Created empty Zarr file for {analysis_date}")
+            empty_ds.close()
+        except Exception as e:
+            logger.error(f"Error creating empty Zarr: {e}")
 
     # Clean up
     ds_historical.close()
