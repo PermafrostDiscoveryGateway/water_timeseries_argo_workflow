@@ -10,7 +10,8 @@ RUN uv pip install \
     dask[dataframe] \
     pyarrow \
     geemap==0.37.2 \
-    gsutil
+    gsutil \
+    gcloud
 
 # Alternatively, prevent upgrading any packages that are already installed:
 # RUN uv pip install --no-deps \  # This would skip dependencies but might break things
