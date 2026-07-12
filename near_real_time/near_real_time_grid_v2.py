@@ -6464,18 +6464,7 @@ def process_near_real_time_region_dates_zarr(
     """
     Process near-real-time breakpoint analysis for specific dates and save to Zarr.
 
-    Uses region-specific historical file (merged for that region) and the newly downloaded
-    region-specific data file. No global merging required!
-
-    Args:
-        region: Region name (e.g., "TEST", "ALASKA", "CANADA")
-        run_start_label: Optional label for tracking runs
-        env_path: Optional path to .env file
-        current_analysis_dates: List of pandas Timestamps to process
-        zarr_compression_level: Compression level for Zarr (0-9)
-
-    Returns:
-        bool: True if processing completed successfully
+    Uses region-specific files from the merge directory.
     """
     log_memory_usage("Processing function start")
 
@@ -6515,6 +6504,11 @@ def process_near_real_time_region_dates_zarr(
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
 
+    # ========== SET UP MERGE DIRECTORY PATHS ==========
+    merge_dir = Path(dynamic_world_data_dir) / 'merge'
+    merge_dir.mkdir(exist_ok=True, parents=True)
+    logger.info(f"Looking for files in: {merge_dir}")
+
     # Get the analysis date string (YYYY-MM)
     analysis_date_str = current_analysis_dates[0].strftime("%Y-%m") if current_analysis_dates else None
     if not analysis_date_str:
@@ -6523,75 +6517,58 @@ def process_near_real_time_region_dates_zarr(
 
     logger.info(f"Processing region: {REGION_NAME} for date: {analysis_date_str}")
 
-    # ========== FIND REGION-SPECIFIC FILES ==========
+    # ========== FIND REGION-SPECIFIC FILES IN MERGE DIRECTORY ==========
 
-    # 1. Find the region-specific merged historical file
-    # Pattern: lakes_dw_V2d_compressed_{REGION}.nc or similar
-    # Or the region-specific merged file: lakes_dw_{REGION}_merged.nc
-    historical_candidates = glob.glob(os.path.join(dynamic_world_data_dir, f"*{REGION_NAME}*.nc"))
-
-    # Filter out the new data files (dw_*) and look for historical/merged files
-    historical_candidates = [
-        f for f in historical_candidates
-        if not os.path.basename(f).startswith(f"dw_{REGION_NAME}")
-    ]
-
-    if not historical_candidates:
-        # Fallback: try to find any historical file for this region
-        logger.warning(f"No historical file found for {REGION_NAME}, looking for any available...")
-        all_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-        # Exclude new data files (dw_*) and combined files
-        historical_candidates = [
-            f for f in all_files
-            if not os.path.basename(f).startswith("dw_")
-               and "combined" not in os.path.basename(f)
-        ]
-
-    if historical_candidates:
-        # Use the most recent historical file
-        historical_file = max(historical_candidates, key=lambda f: Path(f).stat().st_mtime)
-        logger.info(f"📊 Using historical file: {historical_file}")
-    else:
-        logger.error(f"No historical file found for region {REGION_NAME}")
+    # 1. Find the historical file (lakes_dw_V2d_compressed.nc) - this stays in the main directory
+    historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
+    if not historical_file.exists():
+        logger.error(f"Historical file not found: {historical_file}")
         return False
+    logger.info(f"📊 Using historical file: {historical_file}")
 
-    # 2. Find the region-specific new data file
-    # Pattern: dw_{REGION}_{YYYY-MM}.nc
-    new_data_pattern = os.path.join(dynamic_world_data_dir, f"dw_{REGION_NAME}_{analysis_date_str}.nc")
-    new_data_files = glob.glob(new_data_pattern)
+    # 2. Find the region-specific new data file in the merge directory
+    # Pattern: merge/dw_{REGION}_{YYYY-MM}.nc
+    new_data_file = merge_dir / f"dw_{REGION_NAME}_{analysis_date_str}.nc"
 
-    if new_data_files:
-        new_data_file = new_data_files[0]  # Should only be one
-        logger.info(f"📊 Using new data file: {new_data_file}")
-    else:
-        # Try alternative pattern without region in filename
-        alt_pattern = os.path.join(dynamic_world_data_dir, f"*{analysis_date_str}*.nc")
-        alt_files = [f for f in glob.glob(alt_pattern) if REGION_NAME in f]
+    if not new_data_file.exists():
+        # Try without region prefix if not found
+        alt_files = list(merge_dir.glob(f"*{analysis_date_str}*.nc"))
         if alt_files:
-            new_data_file = alt_files[0]
-            logger.info(f"📊 Using alternative new data file: {new_data_file}")
+            # Filter by region name in filename
+            region_files = [f for f in alt_files if REGION_NAME in f.name]
+            if region_files:
+                new_data_file = region_files[0]
+                logger.info(f"📊 Found alternative new data file: {new_data_file}")
+            else:
+                logger.error(f"No region-specific file found for {REGION_NAME} in {merge_dir}")
+                logger.info(f"Available files in merge directory:")
+                for f in sorted(merge_dir.glob("*.nc")):
+                    logger.info(f"  - {f.name}")
+                return False
         else:
             logger.error(f"No new data file found for {REGION_NAME} {analysis_date_str}")
-            logger.info(f"Looking for: {new_data_pattern}")
-            logger.info(f"Available files in {dynamic_world_data_dir}:")
-            for f in sorted(glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))):
-                logger.info(f"  - {os.path.basename(f)}")
+            logger.info(f"Looking for: {new_data_file}")
+            logger.info(f"Available files in merge directory:")
+            for f in sorted(merge_dir.glob("*.nc")):
+                logger.info(f"  - {f.name}")
             return False
+
+    logger.info(f"📊 Using new data file: {new_data_file}")
 
     # ========== LOAD AND VALIDATE FILES ==========
 
     logger.info(f"📊 Historical file: {historical_file}")
-    hist_file_size_gb = get_file_size_gb(historical_file)
+    hist_file_size_gb = get_file_size_gb(str(historical_file))
     logger.info(f"Historical file size: {hist_file_size_gb:.2f} GB")
 
     logger.info(f"📊 New data file: {new_data_file}")
-    new_file_size_gb = get_file_size_gb(new_data_file)
+    new_file_size_gb = get_file_size_gb(str(new_data_file))
     logger.info(f"New data file size: {new_file_size_gb:.2f} GB")
 
     # Load historical dataset to get valid IDs
     logger.info("Loading historical dataset...")
     try:
-        ds_historical = xr.open_dataset(historical_file)
+        ds_historical = xr.open_dataset(str(historical_file))
         valid_historical_ids = set(ds_historical['id_geohash'].values)
         logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
     except Exception as e:
@@ -6601,7 +6578,7 @@ def process_near_real_time_region_dates_zarr(
     # Load new data dataset for the analysis date
     logger.info("Loading new data dataset...")
     try:
-        ds_new_data = xr.open_dataset(new_data_file)
+        ds_new_data = xr.open_dataset(str(new_data_file))
         logger.info(f"New data has {len(ds_new_data.id_geohash)} IDs and {len(ds_new_data.date)} dates")
     except Exception as e:
         logger.error(f"Error loading new data file: {e}")
@@ -6780,7 +6757,6 @@ def process_near_real_time_region_dates_zarr(
                 ds_historical_subset = ds_historical.sel(id_geohash=id_list)
 
                 # Get new data for this tile and the analysis date
-                # The new data might have multiple dates, select the specific one
                 ds_new_subset = ds_new_data.sel(id_geohash=id_list)
                 # Filter to the analysis date (or closest if not exact)
                 try:
@@ -6865,8 +6841,8 @@ def process_near_real_time_region_dates_zarr(
                             'created_at': datetime.datetime.now().isoformat(),
                             'compression_level': zarr_compression_level,
                             'partial': True,
-                            'historical_file': os.path.basename(historical_file),
-                            'new_data_file': os.path.basename(new_data_file)
+                            'historical_file': historical_file.name,
+                            'new_data_file': new_data_file.name
                         })
 
                         # Configure Zarr encoding with compression
@@ -6905,8 +6881,8 @@ def process_near_real_time_region_dates_zarr(
                         'created_at': datetime.datetime.now().isoformat(),
                         'compression_level': zarr_compression_level,
                         'complete': True,
-                        'historical_file': os.path.basename(historical_file),
-                        'new_data_file': os.path.basename(new_data_file),
+                        'historical_file': historical_file.name,
+                        'new_data_file': new_data_file.name,
                         'total_processed_tiles': total_processed_tiles,
                         'total_breakpoints_calculated': total_breakpoints_calculated
                     })
@@ -6960,8 +6936,8 @@ def process_near_real_time_region_dates_zarr(
                         'created_at': datetime.datetime.now().isoformat(),
                         'complete': False,
                         'empty': True,
-                        'historical_file': os.path.basename(historical_file),
-                        'new_data_file': os.path.basename(new_data_file)
+                        'historical_file': historical_file.name,
+                        'new_data_file': new_data_file.name
                     })
                     empty_ds.to_zarr(zarr_path, mode='w')
                     logger.info(f"Created empty Zarr file for {ANALYSIS_DATE}")
@@ -6972,6 +6948,8 @@ def process_near_real_time_region_dates_zarr(
         # Log summary for this date
         logger.info(f"=== SUMMARY FOR {ANALYSIS_DATE} ===")
         logger.info(f"  Region: {REGION_NAME}")
+        logger.info(f"  Historical file: {historical_file.name}")
+        logger.info(f"  New data file: {new_data_file.name}")
         logger.info(f"  Tiles processed: {total_processed_tiles}")
         logger.info(f"  Tiles skipped (no lakes): {total_skipped_no_lakes}")
         logger.info(f"  Tiles skipped (no historical): {total_skipped_no_historical}")
