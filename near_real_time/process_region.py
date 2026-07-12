@@ -3,6 +3,7 @@ from near_real_time_grid_v2 import verify_downloads_complete, verify_process_com
     merge_near_real_time_region_v3_simple, find_matching_lake_ids, \
     compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_new_results, is_all_new_data_in_file
 import sys
+from typing import List, Dict, Any
 import shutil
 import gc
 import utils.download_new_dynamic_world_data as download_new_dynamic_world_data
