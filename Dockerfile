@@ -1,7 +1,18 @@
 FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:main
 
+# Install Google Cloud SDK (includes gcloud and gsutil)
+RUN apt-get update && apt-get install -y \
+    curl \
+    gnupg \
+    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+    | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list \
+    && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+    | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add - \
+    && apt-get update && apt-get install -y google-cloud-sdk \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install additional Python dependencies using uv
-# Pin geemap to prevent it from upgrading
 RUN uv pip install \
     python-dotenv \
     google-cloud-storage \
@@ -9,15 +20,7 @@ RUN uv pip install \
     toml \
     dask[dataframe] \
     pyarrow \
-    geemap==0.37.2 \
-    gsutil \
-    gcloud
-
-# Alternatively, prevent upgrading any packages that are already installed:
-# RUN uv pip install --no-deps \  # This would skip dependencies but might break things
-#     python-dotenv \
-#     google-cloud-storage \
-#     ...
+    geemap==0.37.2
 
 # Copy your application code
 COPY google_cloud_utils/ /app/google_cloud_utils/
