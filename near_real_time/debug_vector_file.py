@@ -1192,6 +1192,104 @@ def main():
     old_vector_file = os.environ.get('vector_lake_file')
     new_vector_file = '/data/water_timeseries/vector_dataset_file/lake_polygons.parquet'
 
+    def debug_eurasia3_specific(env_path: str = None):
+        """Debug EURASIA3 specifically to find why lakes aren't being processed."""
+
+        if env_path:
+            load_dotenv(dotenv_path=env_path)
+        else:
+            load_dotenv()
+
+        import geopandas as gpd
+        import xarray as xr
+        import pandas as pd
+
+        # Load the correct vector file
+        vector_file = os.environ.get('vector_lake_file')
+        gdf = gpd.read_parquet(vector_file)
+
+        # Handle Polygon geometries
+        if 'Polygon' in gdf.geometry.geom_type.unique():
+            gdf['centroid'] = gdf.geometry.centroid
+            gdf = gdf.set_geometry('centroid')
+
+        # Load EURASIA3 data file
+        data_file = '/data/water_timeseries/dynamic_world_data/merge/dw_EURASIA3_2026-06.nc'
+        ds = xr.open_dataset(data_file)
+        data_ids = set(ds.id_geohash.values)
+        ds.close()
+
+        print(f"EURASIA3 data file has {len(data_ids):,} IDs")
+
+        # Get EURASIA3 boundaries
+        boundaries = {
+            'EURASIA3': {'Y_MIN_START': 55, 'Y_MIN_END': 80, 'X_MIN_START': -180, 'X_MIN_END': -169}
+        }
+        bbox = boundaries['EURASIA3']
+
+        # Filter vector file by bounding box
+        in_bbox = gdf[
+            (gdf.geometry.x >= bbox['X_MIN_START']) &
+            (gdf.geometry.x <= bbox['X_MIN_END']) &
+            (gdf.geometry.y >= bbox['Y_MIN_START']) &
+            (gdf.geometry.y <= bbox['Y_MIN_END'])
+            ]
+        print(f"Lakes in EURASIA3 bounding box: {len(in_bbox):,}")
+
+        # Check overlap with data IDs
+        vector_ids_in_bbox = set(in_bbox['id_geohash'].values)
+        overlap = data_ids.intersection(vector_ids_in_bbox)
+
+        print(f"Data IDs overlapping with vector IDs in bbox: {len(overlap):,}")
+
+        if len(overlap) == 0:
+            print("\n⚠️ NO OVERLAP! Possible issues:")
+            print("1. The data IDs don't exist in the vector file")
+            print("2. The IDs exist but are outside the bounding box")
+            print("3. The vector file uses different ID format")
+
+            # Check if ANY data IDs exist in the vector file (regardless of bbox)
+            all_vector_ids = set(gdf['id_geohash'].values)
+            any_overlap = data_ids.intersection(all_vector_ids)
+            print(f"\nData IDs that exist ANYWHERE in vector file: {len(any_overlap):,}")
+
+            if len(any_overlap) > 0:
+                print("✅ Data IDs DO exist in the vector file, but outside the bbox!")
+                print("   The region boundaries might be wrong for EURASIA3")
+
+                # Show where these IDs are located
+                gdf_overlap = gdf[gdf['id_geohash'].isin(any_overlap)]
+                print(f"\nLocations of overlapping EURASIA3 data IDs:")
+                print(f"  Longitude: {gdf_overlap.geometry.x.min():.2f} to {gdf_overlap.geometry.x.max():.2f}")
+                print(f"  Latitude: {gdf_overlap.geometry.y.min():.2f} to {gdf_overlap.geometry.y.max():.2f}")
+
+                print(f"\nSuggested new boundaries for EURASIA3:")
+                print(f"  X_MIN_START: {int(gdf_overlap.geometry.x.min())}")
+                print(f"  X_MIN_END: {int(gdf_overlap.geometry.x.max()) + 1}")
+                print(f"  Y_MIN_START: {int(gdf_overlap.geometry.y.min())}")
+                print(f"  Y_MIN_END: {int(gdf_overlap.geometry.y.max()) + 1}")
+            else:
+                print("❌ Data IDs do NOT exist in the vector file AT ALL!")
+                print("   The vector file and data files use different ID systems.")
+                print(f"   Sample data ID: {next(iter(data_ids))}")
+                print(f"   Sample vector ID: {next(iter(all_vector_ids))}")
+        else:
+            print(f"✅ Found {len(overlap):,} overlapping IDs!")
+            print("   The data should be processable.")
+
+        return {
+            'data_ids': len(data_ids),
+            'vector_ids_in_bbox': len(in_bbox),
+            'overlap': len(overlap),
+            'sample_data_ids': list(data_ids)[:5],
+            'sample_vector_ids': list(vector_ids_in_bbox)[:5]
+        }
+
+    # Run this after the comparison
+    result = debug_eurasia3_specific(env_path)
+    logger.debug(result)
+    logger.debug('RESULT FOR EURASIA3')
+
     logger.info("=" * 80)
     logger.info("COMPARING VECTOR FILES")
     logger.info("=" * 80)
@@ -1305,4 +1403,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
