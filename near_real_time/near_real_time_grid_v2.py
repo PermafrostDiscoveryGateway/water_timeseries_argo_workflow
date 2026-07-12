@@ -6792,11 +6792,32 @@ def process_near_real_time_region_dates_zarr(
     vector_lake_file = os.environ['vector_lake_file']
     path_lake_vector = vector_lake_file
 
-    # Load GDF once for all dates
+    # ========== FIX: Load GDF and convert to centroids ==========
     try:
         gdf = gpd.read_parquet(path_lake_vector)
         log_memory_usage("After loading lake vectors")
         logger.info(f"Loaded vector file with {len(gdf)} lakes")
+
+        # Check geometry type and convert to centroids if needed
+        geom_type = gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None
+        logger.info(f"Original geometry type: {geom_type}")
+
+        if geom_type in ['Polygon', 'MultiPolygon']:
+            logger.info("Converting Polygon geometries to centroids for spatial operations")
+            # Create centroid points
+            gdf['centroid'] = gdf.geometry.centroid
+            # Set the centroid as the active geometry
+            gdf = gdf.set_geometry('centroid')
+            logger.info(f"Converted {len(gdf)} polygons to centroids")
+        else:
+            logger.info(f"Using original geometry type: {geom_type}")
+
+        # Log coordinate range for debugging
+        if len(gdf) > 0:
+            logger.info(f"GDF coordinate range after conversion:")
+            logger.info(f"  Longitude: {gdf.geometry.x.min():.2f} to {gdf.geometry.x.max():.2f}")
+            logger.info(f"  Latitude: {gdf.geometry.y.min():.2f} to {gdf.geometry.y.max():.2f}")
+
     except Exception as e:
         logger.error(f"Error loading vector file: {e}")
         ds_historical.close()
@@ -6807,9 +6828,21 @@ def process_near_real_time_region_dates_zarr(
     gdf = gdf[gdf['id_geohash'].isin(valid_new_ids)]
     logger.info(f"GDF filtered to {len(gdf)} lakes for this region")
 
-    # Create grid once (same for all dates)
+    # Log filtered coordinate range
+    if len(gdf) > 0:
+        logger.info(f"Filtered GDF coordinate range:")
+        logger.info(f"  Longitude: {gdf.geometry.x.min():.2f} to {gdf.geometry.x.max():.2f}")
+        logger.info(f"  Latitude: {gdf.geometry.y.min():.2f} to {gdf.geometry.y.max():.2f}")
+    else:
+        logger.warning(f"No lakes found in vector file for region {REGION_NAME} after filtering")
+        return False
+
+    # ========== Create grid with 1x1 tiles (consistent with original) ==========
     bbox_size_lon = 1
     bbox_size_lat = 1
+    logger.info(f"Using standard grid tiles: {bbox_size_lon}° x {bbox_size_lat}°")
+
+    # Create grid
     grid = create_longitude_latitude_grid(
         lon_range=(X_MIN_START, X_MIN_END),
         lat_range=(Y_MIN_START, Y_MIN_END),
@@ -6894,7 +6927,7 @@ def process_near_real_time_region_dates_zarr(
                     logger.error(f"Error reading existing Parquet: {e}")
                 continue
 
-            # Get lake IDs for this grid tile
+            # ========== Use filter_gdf_by_bbox with the centroid-converted GDF ==========
             gdf_subset = filter_gdf_by_bbox(
                 gdf=gdf,
                 bbox_west=lon,
