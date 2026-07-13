@@ -6687,7 +6687,8 @@ def process_region_date_new(
         region: str,
         analysis_date: str,  # Format: "YYYY-MM"
         env_path: str = None,
-        batch_size: int = 1000
+        batch_size: int = 1000,
+        progress_interval: int = 100  # Print progress every N IDs
 ) -> Dict[str, Any]:
     """
     Process a single date for a region, pulling data from both historical and downloaded sources.
@@ -6695,7 +6696,6 @@ def process_region_date_new(
     from water_timeseries.breakpoint import NRTBreakpoint
     from water_timeseries.dataset import DWDataset
     import time
-    from tqdm import tqdm
 
     if env_path:
         load_dotenv(dotenv_path=env_path)
@@ -6815,16 +6815,14 @@ def process_region_date_new(
 
     logger.info(f"Using analysis date: {analysis_date_str}")
     logger.info(f"Starting processing of {total_ids:,} IDs in batches of {batch_size}")
-    logger.info(f"Total batches: {(total_ids + batch_size - 1) // batch_size}")
+    logger.info(f"Progress will be shown every {progress_interval} IDs")
 
     # Track timing
     start_time = time.time()
+    last_progress_time = start_time
 
     all_ids = list(matching_ids_list)
     total_batches = (len(all_ids) + batch_size - 1) // batch_size
-
-    # Create a progress bar for batches
-    batch_pbar = tqdm(total=total_batches, desc=f"Processing {region} {analysis_date}", unit="batch", position=0)
 
     for batch_idx in range(total_batches):
         start_idx = batch_idx * batch_size
@@ -6835,10 +6833,6 @@ def process_region_date_new(
         batch_start_time = time.time()
         processed_before = total_processed
 
-        # Update progress bar description with current progress
-        progress_pct = (total_processed / total_ids) * 100
-        batch_pbar.set_description(f"Batch {batch_idx + 1}/{total_batches} ({progress_pct:.1f}%)")
-
         try:
             # Get data for this batch
             ds_historical_batch = ds_historical_train.sel(id_geohash=batch_ids)
@@ -6848,7 +6842,7 @@ def process_region_date_new(
             ds_combined = ds_combined.sortby('date')
             dwds = DWDataset(ds_combined)
 
-            # Process each ID in the batch with a nested progress bar
+            # Process each ID in the batch
             batch_breakpoints = 0
             for id_val in batch_ids:
                 try:
@@ -6867,36 +6861,40 @@ def process_region_date_new(
                         batch_breakpoints += len(breaks)
                     total_processed += 1
 
+                    # Print progress at regular intervals
+                    if total_processed % progress_interval == 0 or total_processed == total_ids:
+                        elapsed = time.time() - start_time
+                        progress_pct = (total_processed / total_ids) * 100
+                        avg_time = elapsed / total_processed if total_processed > 0 else 0
+                        eta_seconds = (total_ids - total_processed) * avg_time
+                        eta_minutes = eta_seconds / 60
+
+                        logger.info(
+                            f"📊 Progress: {total_processed:,}/{total_ids:,} IDs "
+                            f"({progress_pct:.1f}%) - "
+                            f"{total_breakpoints} breakpoints found - "
+                            f"ETA: {eta_minutes:.1f} min"
+                        )
+
                 except Exception as e:
-                    logger.error(f"Error processing ID {id_val}: {e}")
+                    # Only log errors occasionally
+                    if total_processed % 500 == 0:
+                        logger.error(f"Error processing ID {id_val}: {e}")
                     total_processed += 1
                     continue
 
             total_breakpoints += batch_breakpoints
 
-            # Update progress bar
-            batch_pbar.update(1)
-            batch_pbar.set_postfix({
-                'processed': f"{total_processed:,}/{total_ids:,}",
-                'breakpoints': total_breakpoints,
-                'ids/sec': f"{(total_processed - processed_before) / (time.time() - batch_start_time):.1f}"
-            })
-
-            # Log batch completion with timing
-            batch_time = time.time() - batch_start_time
-            total_time = time.time() - start_time
-
-            # Progress percentage
-            progress_pct = (total_processed / total_ids) * 100
-
-            # Estimate remaining time
-            if total_processed > 0 and total_time > 0:
-                avg_time_per_id = total_time / total_processed
-                remaining_ids = total_ids - total_processed
-                eta_seconds = remaining_ids * avg_time_per_id
-                eta_minutes = eta_seconds / 60
+            # Log batch completion every 5 batches
+            if (batch_idx + 1) % 5 == 0 or batch_idx == total_batches - 1:
+                batch_time = time.time() - batch_start_time
+                ids_per_second = (total_processed - processed_before) / batch_time if batch_time > 0 else 0
+                progress_pct = (total_processed / total_ids) * 100
                 logger.info(
-                    f"  ✅ Batch {batch_idx + 1}/{total_batches} complete: {batch_breakpoints} breakpoints, {progress_pct:.1f}% done, ETA: {eta_minutes:.1f} min")
+                    f"✅ Batch {batch_idx + 1}/{total_batches} complete: "
+                    f"{total_processed:,}/{total_ids:,} ({progress_pct:.1f}%) - "
+                    f"{ids_per_second:.1f} IDs/sec"
+                )
 
             # Clean up
             ds_historical_batch.close()
@@ -6908,10 +6906,7 @@ def process_region_date_new(
             logger.error(f"Error processing batch {batch_idx + 1}: {e}")
             import traceback
             traceback.print_exc()
-            batch_pbar.update(1)
             continue
-
-    batch_pbar.close()
 
     # 8. Combine results and save
     if all_results:
