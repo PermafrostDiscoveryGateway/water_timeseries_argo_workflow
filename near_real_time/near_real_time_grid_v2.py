@@ -6691,23 +6691,10 @@ def process_region_date_new(
 ) -> Dict[str, Any]:
     """
     Process a single date for a region, pulling data from both historical and downloaded sources.
-
-    For the analysis date:
-    1. If the date exists in the downloaded data (merge/dw_{region}_{YYYY-MM}.nc), use that
-    2. If not, check if it exists in the historical file (lakes_dw_V2d_compressed.nc)
-    3. The historical data (before analysis date) always comes from the historical file
-
-    Args:
-        region: Region name
-        analysis_date: Date in "YYYY-MM" format
-        env_path: Optional path to .env file
-        batch_size: Number of IDs to process per batch
-
-    Returns:
-        dict: Processing results
     """
     from water_timeseries.breakpoint import NRTBreakpoint
     from water_timeseries.dataset import DWDataset
+    import time
 
     if env_path:
         load_dotenv(dotenv_path=env_path)
@@ -6732,7 +6719,6 @@ def process_region_date_new(
     if new_data_file.exists():
         try:
             ds_analysis = xr.open_dataset(str(new_data_file))
-            # Check if the date exists in this file
             if 'date' in ds_analysis.coords:
                 dates_in_file = pd.to_datetime(ds_analysis.date.values)
                 date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
@@ -6757,13 +6743,10 @@ def process_region_date_new(
                 dates_in_file = pd.to_datetime(ds_historical_check.date.values)
                 date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
                 if analysis_date in date_strings:
-                    # Get the specific date from historical data
                     analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
                     ds_analysis = ds_historical_check.sel(date=analysis_timestamp)
                     analysis_source = 'historical'
                     logger.info(f"📊 Using HISTORICAL data for {analysis_date} from: {historical_file}")
-                    logger.info(
-                        f"   IDs in historical data: {len(ds_analysis.id_geohash) if 'id_geohash' in ds_analysis.dims else 'unknown'}")
                 else:
                     logger.warning(f"Date {analysis_date} not found in historical file")
             ds_historical_check.close()
@@ -6774,29 +6757,23 @@ def process_region_date_new(
         logger.error(f"❌ No data found for {region} {analysis_date} in either downloaded or historical files")
         return {'success': False, 'error': f'No data found for {region} {analysis_date}'}
 
-    # 3. Load historical data for training (everything BEFORE the analysis date)
+    # 3. Load historical data for training
     logger.info(f"Loading historical data for training...")
     ds_historical = xr.open_dataset(str(historical_file))
 
-    # Get all dates before the analysis date
     analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
     ds_historical_train = ds_historical.where(ds_historical.date < analysis_timestamp, drop=True)
 
-    # If no training data (shouldn't happen for dates after 2015), use all historical data
     if len(ds_historical_train.date) == 0:
         logger.warning(f"No training data before {analysis_date}, using all historical data")
         ds_historical_train = ds_historical
 
     logger.info(f"Training data has {len(ds_historical_train.date)} dates")
 
-    # 4. Get matching IDs between historical training data and analysis data
-    # This ensures we only process IDs that have BOTH training data AND analysis data
-
-    # Get IDs from both sources
+    # 4. Get matching IDs
     train_ids = set(ds_historical_train.id_geohash.values) if 'id_geohash' in ds_historical_train.dims else set()
     analysis_ids = set(ds_analysis.id_geohash.values) if 'id_geohash' in ds_analysis.dims else set()
 
-    # Find matching IDs (IDs that exist in both)
     matching_ids = train_ids.intersection(analysis_ids)
     logger.info(f"📊 ID Summary:")
     logger.info(f"   IDs in training data: {len(train_ids):,}")
@@ -6809,7 +6786,7 @@ def process_region_date_new(
         ds_analysis.close()
         return {'success': False, 'error': 'No matching IDs found'}
 
-    # 5. Filter both datasets to only matching IDs
+    # 5. Filter datasets
     matching_ids_list = list(matching_ids)
     ds_historical_train = ds_historical_train.sel(id_geohash=matching_ids_list)
     ds_analysis = ds_analysis.sel(id_geohash=matching_ids_list)
@@ -6824,19 +6801,23 @@ def process_region_date_new(
     zarr_output_dir.mkdir(exist_ok=True, parents=True)
     zarr_path = zarr_output_dir / f'breakpoints_{analysis_date}.zarr'
 
-    # Parquet backup
     current_breakpoint_dir = output_dir / f'breakpoint_{analysis_date}'
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
 
-    # 7. Process in batches
+    # 7. Process in batches with progress tracking
     bp = NRTBreakpoint()
     all_results = []
     total_processed = 0
     total_breakpoints = 0
-
-    # Use the full date string
+    total_ids = len(matching_ids_list)
     analysis_date_str = analysis_timestamp.strftime("%Y-%m-%d")
+
     logger.info(f"Using analysis date: {analysis_date_str}")
+    logger.info(f"Starting processing of {total_ids:,} IDs in batches of {batch_size}")
+
+    # Track timing
+    start_time = time.time()
+    last_log_time = start_time
 
     all_ids = list(matching_ids_list)
     total_batches = (len(all_ids) + batch_size - 1) // batch_size
@@ -6846,28 +6827,29 @@ def process_region_date_new(
         end_idx = min(start_idx + batch_size, len(all_ids))
         batch_ids = all_ids[start_idx:end_idx]
 
-        logger.info(f"Batch {batch_idx + 1}/{total_batches}: {len(batch_ids)} IDs")
+        # Progress tracking
+        batch_start_time = time.time()
+        processed_before = total_processed
+
+        logger.info(
+            f"Batch {batch_idx + 1}/{total_batches}: {len(batch_ids)} IDs (processed {total_processed:,}/{total_ids:,})")
 
         try:
             # Get data for this batch
             ds_historical_batch = ds_historical_train.sel(id_geohash=batch_ids)
             ds_analysis_batch = ds_analysis.sel(id_geohash=batch_ids)
 
-            # Combine training and analysis data
             ds_combined = xr.concat([ds_historical_batch, ds_analysis_batch], dim='date')
             ds_combined = ds_combined.sortby('date')
-
-            # Create DWDataset
             dwds = DWDataset(ds_combined)
 
-            # Process each ID individually
+            # Process each ID in the batch
+            batch_breakpoints = 0
             for id_val in batch_ids:
                 try:
-                    # Get data for this specific ID - keep the dimension
                     ds_single = ds_combined.sel(id_geohash=[id_val])
                     dwds_single = DWDataset(ds_single)
 
-                    # Calculate breakpoints
                     breaks = bp.calculate_break(
                         dataset=dwds_single,
                         analysis_date=analysis_date_str,
@@ -6877,12 +6859,36 @@ def process_region_date_new(
                     if breaks is not None and not breaks.empty:
                         breaks['id_geohash'] = id_val
                         all_results.append(breaks)
-                        total_breakpoints += len(breaks)
+                        batch_breakpoints += len(breaks)
                     total_processed += 1
 
                 except Exception as e:
                     logger.error(f"Error processing ID {id_val}: {e}")
+                    total_processed += 1
                     continue
+
+            total_breakpoints += batch_breakpoints
+
+            # Log batch completion with timing
+            batch_time = time.time() - batch_start_time
+            total_time = time.time() - start_time
+            ids_per_second = (total_processed - processed_before) / batch_time if batch_time > 0 else 0
+
+            # Progress percentage
+            progress_pct = (total_processed / total_ids) * 100
+
+            # Estimate remaining time
+            if total_processed > 0 and total_time > 0:
+                avg_time_per_id = total_time / total_processed
+                remaining_ids = total_ids - total_processed
+                eta_seconds = remaining_ids * avg_time_per_id
+                eta_minutes = eta_seconds / 60
+                logger.info(
+                    f"  ✅ Batch {batch_idx + 1} complete: {batch_breakpoints} breakpoints found, {ids_per_second:.1f} IDs/sec")
+                logger.info(
+                    f"  📊 Progress: {total_processed:,}/{total_ids:,} ({progress_pct:.1f}%) - ETA: {eta_minutes:.1f} minutes")
+            else:
+                logger.info(f"  ✅ Batch {batch_idx + 1} complete: {batch_breakpoints} breakpoints found")
 
             # Clean up
             ds_historical_batch.close()
@@ -6900,22 +6906,29 @@ def process_region_date_new(
     if all_results:
         try:
             breaks_merged = pd.concat(all_results, ignore_index=True)
-            logger.info(f"Total breakpoints calculated: {len(breaks_merged)}")
+            total_time = time.time() - start_time
+            minutes, seconds = divmod(total_time, 60)
+            logger.info(f"\n📊 FINAL SUMMARY for {region} {analysis_date}:")
+            logger.info(f"   Total IDs processed: {total_processed:,}")
+            logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
+            logger.info(f"   Total time: {int(minutes)}m {int(seconds)}s")
+            logger.info(f"   Average time per ID: {total_time / total_processed:.2f}s")
 
-            # Convert to xarray and save as Zarr
+            # Save to Zarr
+            logger.info(f"   Saving to Zarr: {zarr_path}")
             ds_breaks = breaks_merged.set_index('id_geohash').to_xarray()
             ds_breaks.to_zarr(zarr_path, mode='w')
-            logger.info(f"Zarr saved to {zarr_path}")
+            logger.info(f"   Zarr saved successfully")
 
-            # Also save as Parquet
+            # Save Parquet backup
             path_to_joined_file = current_breakpoint_dir / f'drain_{analysis_date}.parquet'
             breaks_merged.to_parquet(path_to_joined_file)
-            logger.info(f"Parquet saved to {path_to_joined_file}")
+            logger.info(f"   Parquet backup saved to {path_to_joined_file}")
 
             # Log Zarr file size
             if zarr_path.exists():
                 zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
-                logger.info(f"Zarr file size: {zarr_size_gb:.2f} GB")
+                logger.info(f"   Zarr file size: {zarr_size_gb:.2f} GB")
 
         except Exception as e:
             logger.error(f"Error saving results: {e}")
@@ -6955,15 +6968,12 @@ def process_region_date_new(
     ds_analysis.close()
     gc.collect()
 
-    logger.info(f"Processed {total_processed} IDs, found {total_breakpoints} breakpoints")
-    logger.info(f"Analysis data source: {analysis_source}")
-
     return {
         'success': True,
         'region': region,
         'analysis_date': analysis_date,
         'analysis_source': analysis_source,
-        'total_ids': len(matching_ids),
+        'total_ids': total_ids,
         'processed': total_processed,
         'breakpoints_found': total_breakpoints,
         'zarr_path': str(zarr_path)
