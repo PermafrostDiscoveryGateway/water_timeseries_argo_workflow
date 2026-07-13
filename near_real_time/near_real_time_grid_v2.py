@@ -6683,6 +6683,292 @@ def debug_historical_dates(historical_file_path: str) -> None:
     print("=" * 80)
 
 
+def process_region_date_new(
+        region: str,
+        analysis_date: str,  # Format: "YYYY-MM"
+        env_path: str = None,
+        batch_size: int = 1000
+) -> Dict[str, Any]:
+    """
+    Process a single date for a region, pulling data from both historical and downloaded sources.
+
+    For the analysis date:
+    1. If the date exists in the downloaded data (merge/dw_{region}_{YYYY-MM}.nc), use that
+    2. If not, check if it exists in the historical file (lakes_dw_V2d_compressed.nc)
+    3. The historical data (before analysis date) always comes from the historical file
+
+    Args:
+        region: Region name
+        analysis_date: Date in "YYYY-MM" format
+        env_path: Optional path to .env file
+        batch_size: Number of IDs to process per batch
+
+    Returns:
+        dict: Processing results
+    """
+    from water_timeseries.breakpoint import NRTBreakpoint
+    from water_timeseries.dataset import DWDataset
+
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    logger.info(f"\n{'=' * 80}")
+    logger.info(f"PROCESSING {region} FOR DATE: {analysis_date}")
+    logger.info(f"{'=' * 80}")
+
+    # 1. Setup paths
+    dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+    merge_dir = Path(dynamic_world_data_dir) / 'merge'
+    historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
+    new_data_file = merge_dir / f"dw_{region}_{analysis_date}.nc"
+
+    # 2. Determine where the analysis data comes from
+    analysis_source = None
+    ds_analysis = None
+
+    # Check if new data file exists for this date
+    if new_data_file.exists():
+        try:
+            ds_analysis = xr.open_dataset(str(new_data_file))
+            # Check if the date exists in this file
+            if 'date' in ds_analysis.coords:
+                dates_in_file = pd.to_datetime(ds_analysis.date.values)
+                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                if analysis_date in date_strings:
+                    analysis_source = 'downloaded'
+                    logger.info(f"📊 Using DOWNLOADED data for {analysis_date} from: {new_data_file}")
+                    logger.info(f"   IDs in downloaded data: {len(ds_analysis.id_geohash)}")
+                else:
+                    ds_analysis.close()
+                    ds_analysis = None
+        except Exception as e:
+            logger.warning(f"Error reading new data file: {e}")
+            if ds_analysis:
+                ds_analysis.close()
+                ds_analysis = None
+
+    # If not found in downloaded data, try the historical file
+    if ds_analysis is None and historical_file.exists():
+        try:
+            ds_historical_check = xr.open_dataset(str(historical_file))
+            if 'date' in ds_historical_check.coords:
+                dates_in_file = pd.to_datetime(ds_historical_check.date.values)
+                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                if analysis_date in date_strings:
+                    # Get the specific date from historical data
+                    analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
+                    ds_analysis = ds_historical_check.sel(date=analysis_timestamp)
+                    analysis_source = 'historical'
+                    logger.info(f"📊 Using HISTORICAL data for {analysis_date} from: {historical_file}")
+                    logger.info(
+                        f"   IDs in historical data: {len(ds_analysis.id_geohash) if 'id_geohash' in ds_analysis.dims else 'unknown'}")
+                else:
+                    logger.warning(f"Date {analysis_date} not found in historical file")
+            ds_historical_check.close()
+        except Exception as e:
+            logger.error(f"Error reading historical file: {e}")
+
+    if ds_analysis is None:
+        logger.error(f"❌ No data found for {region} {analysis_date} in either downloaded or historical files")
+        return {'success': False, 'error': f'No data found for {region} {analysis_date}'}
+
+    # 3. Load historical data for training (everything BEFORE the analysis date)
+    logger.info(f"Loading historical data for training...")
+    ds_historical = xr.open_dataset(str(historical_file))
+
+    # Get all dates before the analysis date
+    analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
+    ds_historical_train = ds_historical.where(ds_historical.date < analysis_timestamp, drop=True)
+
+    # If no training data (shouldn't happen for dates after 2015), use all historical data
+    if len(ds_historical_train.date) == 0:
+        logger.warning(f"No training data before {analysis_date}, using all historical data")
+        ds_historical_train = ds_historical
+
+    logger.info(f"Training data has {len(ds_historical_train.date)} dates")
+
+    # 4. Get matching IDs between historical training data and analysis data
+    # This ensures we only process IDs that have BOTH training data AND analysis data
+
+    # Get IDs from both sources
+    train_ids = set(ds_historical_train.id_geohash.values) if 'id_geohash' in ds_historical_train.dims else set()
+    analysis_ids = set(ds_analysis.id_geohash.values) if 'id_geohash' in ds_analysis.dims else set()
+
+    # Find matching IDs (IDs that exist in both)
+    matching_ids = train_ids.intersection(analysis_ids)
+    logger.info(f"📊 ID Summary:")
+    logger.info(f"   IDs in training data: {len(train_ids):,}")
+    logger.info(f"   IDs in analysis data: {len(analysis_ids):,}")
+    logger.info(f"   Matching IDs: {len(matching_ids):,}")
+
+    if len(matching_ids) == 0:
+        logger.error(f"No matching IDs found between training and analysis data!")
+        ds_historical.close()
+        ds_analysis.close()
+        return {'success': False, 'error': 'No matching IDs found'}
+
+    # 5. Filter both datasets to only matching IDs
+    matching_ids_list = list(matching_ids)
+    ds_historical_train = ds_historical_train.sel(id_geohash=matching_ids_list)
+    ds_analysis = ds_analysis.sel(id_geohash=matching_ids_list)
+
+    logger.info(f"Filtered training data to {len(ds_historical_train.id_geohash)} IDs")
+    logger.info(f"Filtered analysis data to {len(ds_analysis.id_geohash)} IDs")
+
+    # 6. Setup output directories
+    output_dir = os.environ['output_dir']
+    output_dir = Path(output_dir) / region
+    zarr_output_dir = output_dir / 'breakpoint_zarr'
+    zarr_output_dir.mkdir(exist_ok=True, parents=True)
+    zarr_path = zarr_output_dir / f'breakpoints_{analysis_date}.zarr'
+
+    # Parquet backup
+    current_breakpoint_dir = output_dir / f'breakpoint_{analysis_date}'
+    current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
+
+    # 7. Process in batches
+    bp = NRTBreakpoint()
+    all_results = []
+    total_processed = 0
+    total_breakpoints = 0
+
+    # Use the full date string
+    analysis_date_str = analysis_timestamp.strftime("%Y-%m-%d")
+    logger.info(f"Using analysis date: {analysis_date_str}")
+
+    all_ids = list(matching_ids_list)
+    total_batches = (len(all_ids) + batch_size - 1) // batch_size
+
+    for batch_idx in range(total_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(all_ids))
+        batch_ids = all_ids[start_idx:end_idx]
+
+        logger.info(f"Batch {batch_idx + 1}/{total_batches}: {len(batch_ids)} IDs")
+
+        try:
+            # Get data for this batch
+            ds_historical_batch = ds_historical_train.sel(id_geohash=batch_ids)
+            ds_analysis_batch = ds_analysis.sel(id_geohash=batch_ids)
+
+            # Combine training and analysis data
+            ds_combined = xr.concat([ds_historical_batch, ds_analysis_batch], dim='date')
+            ds_combined = ds_combined.sortby('date')
+
+            # Create DWDataset
+            dwds = DWDataset(ds_combined)
+
+            # Process each ID individually
+            for id_val in batch_ids:
+                try:
+                    # Get data for this specific ID - keep the dimension
+                    ds_single = ds_combined.sel(id_geohash=[id_val])
+                    dwds_single = DWDataset(ds_single)
+
+                    # Calculate breakpoints
+                    breaks = bp.calculate_break(
+                        dataset=dwds_single,
+                        analysis_date=analysis_date_str,
+                        object_id=id_val
+                    )
+
+                    if breaks is not None and not breaks.empty:
+                        breaks['id_geohash'] = id_val
+                        all_results.append(breaks)
+                        total_breakpoints += len(breaks)
+                    total_processed += 1
+
+                except Exception as e:
+                    logger.error(f"Error processing ID {id_val}: {e}")
+                    continue
+
+            # Clean up
+            ds_historical_batch.close()
+            ds_analysis_batch.close()
+            ds_combined.close()
+            gc.collect()
+
+        except Exception as e:
+            logger.error(f"Error processing batch {batch_idx + 1}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+
+    # 8. Combine results and save
+    if all_results:
+        try:
+            breaks_merged = pd.concat(all_results, ignore_index=True)
+            logger.info(f"Total breakpoints calculated: {len(breaks_merged)}")
+
+            # Convert to xarray and save as Zarr
+            ds_breaks = breaks_merged.set_index('id_geohash').to_xarray()
+            ds_breaks.to_zarr(zarr_path, mode='w')
+            logger.info(f"Zarr saved to {zarr_path}")
+
+            # Also save as Parquet
+            path_to_joined_file = current_breakpoint_dir / f'drain_{analysis_date}.parquet'
+            breaks_merged.to_parquet(path_to_joined_file)
+            logger.info(f"Parquet saved to {path_to_joined_file}")
+
+            # Log Zarr file size
+            if zarr_path.exists():
+                zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
+                logger.info(f"Zarr file size: {zarr_size_gb:.2f} GB")
+
+        except Exception as e:
+            logger.error(f"Error saving results: {e}")
+            import traceback
+            traceback.print_exc()
+            ds_historical.close()
+            ds_analysis.close()
+            return {'success': False, 'error': str(e)}
+    else:
+        logger.warning(f"No breakpoints found for {region} {analysis_date}")
+        # Create empty Zarr file
+        try:
+            empty_result = pd.DataFrame(columns=[
+                'date', 'water_observed', 'water_predicted', 'water_residual',
+                'water_predicted_lower_90', 'water_predicted_upper_90',
+                'water_historical_mean', 'water_historical_median',
+                'water_historical_std', 'water_historical_min',
+                'water_historical_max', 'drainage_confidence'
+            ])
+            empty_ds = empty_result.to_xarray()
+            empty_ds.attrs.update({
+                'region': region,
+                'analysis_date': analysis_date,
+                'created_at': datetime.now().isoformat(),
+                'complete': False,
+                'empty': True,
+                'analysis_source': analysis_source
+            })
+            empty_ds.to_zarr(zarr_path, mode='w')
+            logger.info(f"Created empty Zarr file for {analysis_date}")
+            empty_ds.close()
+        except Exception as e:
+            logger.error(f"Error creating empty Zarr: {e}")
+
+    # Clean up
+    ds_historical.close()
+    ds_analysis.close()
+    gc.collect()
+
+    logger.info(f"Processed {total_processed} IDs, found {total_breakpoints} breakpoints")
+    logger.info(f"Analysis data source: {analysis_source}")
+
+    return {
+        'success': True,
+        'region': region,
+        'analysis_date': analysis_date,
+        'analysis_source': analysis_source,
+        'total_ids': len(matching_ids),
+        'processed': total_processed,
+        'breakpoints_found': total_breakpoints,
+        'zarr_path': str(zarr_path)
+    }
+
 def process_region_direct(
         region: str,
         analysis_date: str,

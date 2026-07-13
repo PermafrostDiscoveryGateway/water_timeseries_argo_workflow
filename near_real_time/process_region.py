@@ -1,6 +1,6 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region, \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
-    merge_near_real_time_region_v3_simple, process_region_direct, debug_historical_dates, find_matching_lake_ids, \
+    merge_near_real_time_region_v3_simple, process_region_date_new, process_region_direct, debug_historical_dates, find_matching_lake_ids, \
     compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_new_results, is_all_new_data_in_file
 import sys
 from typing import List, Dict, Any, Optional
@@ -204,7 +204,7 @@ def process_summer_months_for_region(
 
                 if use_direct_method:
                     # Use the direct processing method (bypasses grid, uses IDs directly)
-                    process_result = process_region_direct(
+                    process_result = process_region_date_new(
                         region=region,
                         analysis_date=month_str,  # Pass as string, not list
                         env_path=env_path,
