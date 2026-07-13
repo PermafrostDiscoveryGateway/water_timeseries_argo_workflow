@@ -128,8 +128,8 @@ def process_single_date_for_region(
         date_str: str,
         env_path: str = None,
         n_jobs: int = 12,
-        id_chunk_size: int = 100,  # Changed from batch_size to id_chunk_size
-        save_interval: int = 10,   # Save every N chunks (10 chunks = 1000 IDs)
+        id_chunk_size: int = 100,  # Number of IDs per chunk (passed to calculate_break)
+        save_interval: int = 10,   # Save every N chunks
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using the FAST method.
@@ -149,7 +149,7 @@ def process_single_date_for_region(
     logger.info(f"PROCESSING {region} FOR {date_str} (FAST METHOD)")
     logger.info(f"{'=' * 80}")
 
-    # Load environment
+    # Load environment if env_path provided
     if env_path:
         load_dotenv(dotenv_path=env_path)
         logger.info(f"Loading environment from: {env_path}")
@@ -187,7 +187,7 @@ def process_single_date_for_region(
             analysis_date=date_str,
             env_path=env_path,
             n_jobs=n_jobs,
-            id_chunk_size=id_chunk_size,  # Use id_chunk_size, not batch_size
+            id_chunk_size=id_chunk_size,
             save_interval=save_interval
         )
 
@@ -305,9 +305,9 @@ def main():
             region=region,
             date_str=target_date,
             env_path=env_path,
-            n_jobs=12,  # Use 12 parallel workers
-            id_chunk_size=500,  # Process 100 IDs per chunk
-            save_interval=10  # Save every 10 chunks (1000 IDs)
+            n_jobs=12,          # Use 12 parallel workers
+            id_chunk_size=100,  # Process 100 IDs per chunk
+            save_interval=10    # Save every 10 chunks (1000 IDs)
         )
 
         all_results[region] = result
