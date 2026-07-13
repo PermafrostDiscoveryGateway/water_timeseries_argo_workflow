@@ -128,7 +128,7 @@ def process_single_date_for_region(
         date_str: str,
         env_path: str = None,
         n_jobs: int = 12,
-        id_chunk_size: int = 500,  # Number of IDs per chunk (passed to calculate_break)
+        id_chunk_size: int = 2000,  # Number of IDs per chunk (passed to calculate_break)
         save_interval: int = 10,   # Save every N chunks
 ) -> Dict[str, Any]:
     """
@@ -306,7 +306,7 @@ def main():
             date_str=target_date,
             env_path=env_path,
             n_jobs=12,          # Use 12 parallel workers
-            id_chunk_size=100,  # Process 100 IDs per chunk
+            id_chunk_size=2000,  # Process 100 IDs per chunk
             save_interval=10    # Save every 10 chunks (1000 IDs)
         )
 
