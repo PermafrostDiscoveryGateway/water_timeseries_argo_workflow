@@ -7043,13 +7043,13 @@ def process_region_date_new_fast(
         region: str,
         analysis_date: str,
         env_path: str = None,
-        batch_size: int = 5000,
+        id_chunk_size: int = 100,  # Number of IDs per chunk (passed to calculate_break)
         n_jobs: int = None,
-        save_interval: int = 10000
+        save_interval: int = 10,  # Save every N chunks
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using batch processing for speed.
-    Properly filters by region bounding box and only loads needed IDs.
+    Uses NRTBreakpoint.calculate_break with a LIST of IDs for internal parallelization.
     """
     from water_timeseries.breakpoint import NRTBreakpoint
     from water_timeseries.dataset import DWDataset
@@ -7064,7 +7064,7 @@ def process_region_date_new_fast(
 
     if n_jobs is None:
         n_jobs = os.cpu_count() or 1
-    logger.info(f"Using {n_jobs} parallel jobs for processing")
+    logger.info(f"Using {n_jobs} parallel jobs for processing (internal to NRTBreakpoint)")
 
     logger.info(f"\n{'=' * 80}")
     logger.info(f"PROCESSING {region} FOR DATE: {analysis_date} (FAST MODE)")
@@ -7123,13 +7123,10 @@ def process_region_date_new_fast(
         return {'success': False, 'error': f'No IDs found for region {region}'}
 
     # 4. Load historical data - ONLY for the region IDs
-    # Use xarray's .sel() to load only the needed IDs
     logger.info(f"Loading historical data for training (only {len(region_ids_list):,} IDs)...")
 
-    # Open the dataset but only load the needed IDs
     ds_historical_full = xr.open_dataset(str(historical_file))
 
-    # Select only the region IDs
     try:
         ds_historical = ds_historical_full.sel(id_geohash=region_ids_list)
         logger.info(f"Loaded historical data for {len(ds_historical.id_geohash)} IDs")
@@ -7138,7 +7135,6 @@ def process_region_date_new_fast(
         ds_historical_full.close()
         return {'success': False, 'error': f'Error loading historical data: {e}'}
 
-    # Close the full dataset to free memory
     ds_historical_full.close()
     del ds_historical_full
     gc.collect()
@@ -7157,7 +7153,6 @@ def process_region_date_new_fast(
     analysis_source = None
     ds_analysis = None
 
-    # Check if new data file exists for this date
     if new_data_file.exists():
         try:
             ds_analysis = xr.open_dataset(str(new_data_file))
@@ -7177,7 +7172,6 @@ def process_region_date_new_fast(
                 ds_analysis.close()
                 ds_analysis = None
 
-    # If not found in downloaded data, try the historical file
     if ds_analysis is None and historical_file.exists():
         try:
             ds_historical_check = xr.open_dataset(str(historical_file))
@@ -7185,7 +7179,6 @@ def process_region_date_new_fast(
                 dates_in_file = pd.to_datetime(ds_historical_check.date.values)
                 date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
                 if analysis_date in date_strings:
-                    # Get the analysis data from historical file
                     ds_analysis = ds_historical_check.sel(id_geohash=region_ids_list, date=analysis_timestamp)
                     analysis_source = 'historical'
                     logger.info(f"📊 Using HISTORICAL data for {analysis_date} from: {historical_file}")
@@ -7201,11 +7194,10 @@ def process_region_date_new_fast(
         ds_historical.close()
         return {'success': False, 'error': f'No data found for {region} {analysis_date}'}
 
-    # 6. Filter analysis data to region IDs if needed
     if 'id_geohash' in ds_analysis.dims:
         ds_analysis = ds_analysis.sel(id_geohash=region_ids_list)
 
-    # 7. Get matching IDs (only region IDs that exist in both datasets)
+    # 6. Get matching IDs
     train_ids = set(ds_historical_train.id_geohash.values) if 'id_geohash' in ds_historical_train.dims else set()
     analysis_ids = set(ds_analysis.id_geohash.values) if 'id_geohash' in ds_analysis.dims else set()
 
@@ -7221,7 +7213,7 @@ def process_region_date_new_fast(
         ds_analysis.close()
         return {'success': False, 'error': 'No matching IDs found'}
 
-    # 8. Filter datasets to matching IDs
+    # 7. Filter datasets to matching IDs
     matching_ids_list = list(matching_ids)
     ds_historical_train = ds_historical_train.sel(id_geohash=matching_ids_list)
     ds_analysis = ds_analysis.sel(id_geohash=matching_ids_list)
@@ -7229,7 +7221,7 @@ def process_region_date_new_fast(
     logger.info(f"Filtered training data to {len(ds_historical_train.id_geohash)} IDs")
     logger.info(f"Filtered analysis data to {len(ds_analysis.id_geohash)} IDs")
 
-    # 9. Setup output directories
+    # 8. Setup output directories
     output_dir = os.environ['output_dir']
     output_dir = Path(output_dir) / region
     zarr_output_dir = output_dir / 'breakpoint_zarr'
@@ -7240,7 +7232,7 @@ def process_region_date_new_fast(
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
     intermediate_file = current_breakpoint_dir / f'intermediate_results_{analysis_date}.parquet'
 
-    # 10. Process in batches (same as before)
+    # 9. Process in chunks using calculate_break with a LIST of IDs
     bp = NRTBreakpoint()
     all_results = []
     total_processed = 0
@@ -7249,9 +7241,10 @@ def process_region_date_new_fast(
     analysis_date_str = analysis_timestamp.strftime("%Y-%m-%d")
 
     logger.info(f"Using analysis date: {analysis_date_str}")
-    logger.info(f"Starting processing of {total_ids:,} IDs in batches of {batch_size}")
-    logger.info(f"Using {n_jobs} parallel jobs")
-    logger.info(f"Intermediate results will be saved every {save_interval:,} IDs")
+    logger.info(f"Starting processing of {total_ids:,} IDs in chunks of {id_chunk_size}")
+    logger.info(f"NOTE: Each chunk will be passed to NRTBreakpoint.calculate_break as a LIST")
+    logger.info(f"       This enables internal parallelization with {n_jobs} workers")
+    logger.info(f"Intermediate results will be saved every {save_interval} chunks")
 
     # Check for existing intermediate file
     if intermediate_file.exists():
@@ -7271,96 +7264,86 @@ def process_region_date_new_fast(
     total_processed = len(all_results) if all_results else 0
 
     all_ids = list(matching_ids_list)
-    total_batches = (len(all_ids) + batch_size - 1) // batch_size if all_ids else 0
+    total_chunks = (len(all_ids) + id_chunk_size - 1) // id_chunk_size if all_ids else 0
 
-    for batch_idx in range(total_batches):
-        start_idx = batch_idx * batch_size
-        end_idx = min(start_idx + batch_size, len(all_ids))
-        batch_ids = all_ids[start_idx:end_idx]
+    for chunk_idx in range(total_chunks):
+        start_idx = chunk_idx * id_chunk_size
+        end_idx = min(start_idx + id_chunk_size, len(all_ids))
+        chunk_ids = all_ids[start_idx:end_idx]
 
-        batch_start_time = time.time()
-        progress_pct = (total_processed / (total_ids)) * 100 if total_ids > 0 else 0
-        logger.info(f"Batch {batch_idx + 1}/{total_batches}: {len(batch_ids)} IDs ({progress_pct:.1f}%)")
+        chunk_start_time = time.time()
+        progress_pct = (total_processed / total_ids) * 100 if total_ids > 0 else 0
+        logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs ({progress_pct:.1f}%)")
 
         try:
-            ds_historical_batch = ds_historical_train.sel(id_geohash=batch_ids)
-            ds_analysis_batch = ds_analysis.sel(id_geohash=batch_ids)
+            # Get data for this chunk
+            ds_historical_chunk = ds_historical_train.sel(id_geohash=chunk_ids)
+            ds_analysis_chunk = ds_analysis.sel(id_geohash=chunk_ids)
 
-            ds_combined = xr.concat([ds_historical_batch, ds_analysis_batch], dim='date')
+            ds_combined = xr.concat([ds_historical_chunk, ds_analysis_chunk], dim='date')
             ds_combined = ds_combined.sortby('date')
             dwds = DWDataset(ds_combined)
 
-            os.environ['JOBLIB_PARALLEL'] = str(n_jobs)
+            # ========== KEY: Pass the ENTIRE LIST of IDs ==========
+            # This allows NRTBreakpoint.calculate_break to use internal parallelization
+            # The n_jobs parameter controls how many parallel workers are used
+            # inside the calculate_break method
+            breaks_df = bp.calculate_break(
+                dataset=dwds,
+                analysis_date=analysis_date_str,
+                object_id=chunk_ids,  # <-- PASS THE LIST!
+                keep_nans=False
+            )
 
-            try:
-                breaks_df = bp.calculate_breaks_batch(dataset=dwds, progress_bar=False)
+            if breaks_df is not None and not breaks_df.empty:
+                # Ensure id_geohash is a column
+                if 'id_geohash' not in breaks_df.columns:
+                    breaks_df = breaks_df.reset_index()
 
-                if breaks_df is not None and not breaks_df.empty:
-                    if 'id_geohash' not in breaks_df.columns:
-                        breaks_df = breaks_df.reset_index()
+                all_results.append(breaks_df)
+                total_breakpoints += len(breaks_df)
+                total_processed += len(chunk_ids)
+                processed_since_last_save += len(chunk_ids)
 
-                    all_results.append(breaks_df)
-                    total_breakpoints += len(breaks_df)
-                    total_processed += len(batch_ids)
-                    processed_since_last_save += len(batch_ids)
+                logger.info(f"  ✅ Chunk {chunk_idx + 1} complete: {len(breaks_df)} breakpoints found")
+            else:
+                logger.info(f"  ✅ Chunk {chunk_idx + 1} complete: 0 breakpoints found")
+                total_processed += len(chunk_ids)
+                processed_since_last_save += len(chunk_ids)
 
-                    logger.info(f"  ✅ Batch {batch_idx + 1} complete: {len(breaks_df)} breakpoints found")
-                else:
-                    logger.info(f"  ✅ Batch {batch_idx + 1} complete: 0 breakpoints found")
-                    total_processed += len(batch_ids)
-                    processed_since_last_save += len(batch_ids)
-
-            except Exception as e:
-                logger.error(f"Batch processing failed: {e}, falling back to individual processing")
-                for id_val in batch_ids:
-                    try:
-                        ds_single = ds_combined.sel(id_geohash=[id_val])
-                        dwds_single = DWDataset(ds_single)
-                        breaks = bp.calculate_break(
-                            dataset=dwds_single,
-                            analysis_date=analysis_date_str,
-                            object_id=id_val
-                        )
-                        if breaks is not None and not breaks.empty:
-                            breaks['id_geohash'] = id_val
-                            all_results.append(breaks)
-                            total_breakpoints += len(breaks)
-                        total_processed += 1
-                        processed_since_last_save += 1
-                    except Exception as e2:
-                        logger.error(f"Error processing ID {id_val}: {e2}")
-                        total_processed += 1
-                        processed_since_last_save += 1
-                        continue
-
-            if processed_since_last_save >= save_interval:
+            # Save intermediate results periodically
+            if processed_since_last_save >= save_interval * id_chunk_size:
                 save_intermediate_results(all_results, intermediate_file, analysis_date)
                 processed_since_last_save = 0
                 logger.info(f"💾 Intermediate results saved ({total_processed:,} IDs processed)")
 
-            batch_time = time.time() - batch_start_time
-            ids_per_second = len(batch_ids) / batch_time if batch_time > 0 else 0
-            logger.info(f"  ⏱️ Batch {batch_idx + 1} took {batch_time:.1f}s ({ids_per_second:.1f} IDs/sec)")
+            # Log chunk timing
+            chunk_time = time.time() - chunk_start_time
+            ids_per_second = len(chunk_ids) / chunk_time if chunk_time > 0 else 0
+            logger.info(f"  ⏱️ Chunk {chunk_idx + 1} took {chunk_time:.1f}s ({ids_per_second:.1f} IDs/sec)")
 
-            ds_historical_batch.close()
-            ds_analysis_batch.close()
+            # Clean up
+            ds_historical_chunk.close()
+            ds_analysis_chunk.close()
             ds_combined.close()
             gc.collect()
 
         except Exception as e:
-            logger.error(f"Error processing batch {batch_idx + 1}: {e}")
+            logger.error(f"Error processing chunk {chunk_idx + 1}: {e}")
             import traceback
             traceback.print_exc()
+            # Emergency save
             if all_results:
                 save_intermediate_results(all_results, intermediate_file, analysis_date)
-                logger.info(f"💾 Emergency save completed after batch error")
+                logger.info(f"💾 Emergency save completed after chunk error")
             continue
 
+    # Final save before combining
     if all_results:
         save_intermediate_results(all_results, intermediate_file, analysis_date)
         logger.info(f"💾 Final intermediate save completed")
 
-    # 11. Combine results and save (same as before)
+    # 10. Combine results and save
     if all_results:
         try:
             breaks_merged = pd.concat(all_results, ignore_index=True)
@@ -7372,6 +7355,7 @@ def process_region_date_new_fast(
             logger.info(f"{'=' * 60}")
             logger.info(f"   Total IDs processed: {total_processed:,}")
             logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
+            logger.info(f"   Total chunks: {total_chunks}")
             logger.info(f"   Total time: {int(minutes)}m {int(seconds)}s")
             if total_processed > 0:
                 logger.info(f"   Average time per ID: {total_time / total_processed:.2f}s")
@@ -7454,9 +7438,9 @@ def save_intermediate_results(all_results: list, intermediate_file: Path, analys
     try:
         combined = pd.concat(all_results, ignore_index=True)
         combined.to_parquet(intermediate_file)
+        logger.debug(f"Saved {len(combined)} intermediate results to {intermediate_file}")
     except Exception as e:
         logger.error(f"Error saving intermediate results: {e}")
-
 
 def process_region_direct(
         region: str,

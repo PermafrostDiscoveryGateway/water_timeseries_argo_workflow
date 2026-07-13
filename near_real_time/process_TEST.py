@@ -128,8 +128,8 @@ def process_single_date_for_region(
         date_str: str,
         env_path: str = None,
         n_jobs: int = 12,
-        save_interval: int = 2500,
-        batch_size: int = 5000
+        id_chunk_size: int = 100,  # Changed from batch_size to id_chunk_size
+        save_interval: int = 10,   # Save every N chunks (10 chunks = 1000 IDs)
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using the FAST method.
@@ -138,9 +138,9 @@ def process_single_date_for_region(
         region: Region name
         date_str: Date in "YYYY-MM" format
         env_path: Optional path to .env file
-        n_jobs: Number of parallel jobs
-        save_interval: Save intermediate results every N IDs
-        batch_size: Number of IDs per batch
+        n_jobs: Number of parallel jobs (passed to NRTBreakpoint internally)
+        id_chunk_size: Number of IDs to process per chunk (default: 100)
+        save_interval: Save intermediate results every N chunks (default: 10)
 
     Returns:
         dict: Processing results
@@ -148,6 +148,14 @@ def process_single_date_for_region(
     logger.info(f"\n{'=' * 80}")
     logger.info(f"PROCESSING {region} FOR {date_str} (FAST METHOD)")
     logger.info(f"{'=' * 80}")
+
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
 
     # Check if data is available
     availability = check_data_availability_for_date(region, date_str, env_path)
@@ -171,14 +179,16 @@ def process_single_date_for_region(
     # Process using FAST method
     try:
         logger.info(f"🚀 Processing {region} for {date_str} with {n_jobs} parallel jobs...")
+        logger.info(f"   Each chunk: {id_chunk_size} IDs")
+        logger.info(f"   Save interval: every {save_interval} chunks ({save_interval * id_chunk_size} IDs)")
 
         process_result = process_region_date_new_fast(
             region=region,
             analysis_date=date_str,
             env_path=env_path,
             n_jobs=n_jobs,
-            save_interval=save_interval,
-            batch_size=batch_size
+            id_chunk_size=id_chunk_size,  # Use id_chunk_size, not batch_size
+            save_interval=save_interval
         )
 
         if process_result.get('success', False):
