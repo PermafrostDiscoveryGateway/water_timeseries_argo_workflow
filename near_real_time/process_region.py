@@ -67,14 +67,7 @@ def get_summer_dates_for_processing(year: int) -> List[pd.Timestamp]:
 def check_data_availability_for_date(region: str, date_str: str, env_path: str = None) -> Dict[str, Any]:
     """
     Check if data is available for a specific region and date.
-
-    Args:
-        region: Region name
-        date_str: Date in "YYYY-MM" format
-        env_path: Optional path to .env file
-
-    Returns:
-        dict: Availability information
+    Checks BOTH the historical file AND the merge directory.
     """
     if env_path:
         load_dotenv(dotenv_path=env_path)
@@ -85,50 +78,76 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
     if not dynamic_world_data_dir:
         return {'available': False, 'error': 'dynamic_world_data not set'}
 
-    # Check if merged file exists for this region/date
+    # 1. Check if merged file exists in merge directory
     data_file = Path(dynamic_world_data_dir) / 'merge' / f'dw_{region}_{date_str}.nc'
 
-    if not data_file.exists():
-        return {
-            'available': False,
-            'file_exists': False,
-            'date_str': date_str,
-            'region': region,
-            'message': f'No data file found for {region} {date_str}'
-        }
+    if data_file.exists():
+        try:
+            ds = xr.open_dataset(str(data_file))
+            id_count = len(ds.id_geohash) if 'id_geohash' in ds.dims else 0
+            date_count = len(ds.date) if 'date' in ds.dims else 0
 
-    try:
-        ds = xr.open_dataset(str(data_file))
-        id_count = len(ds.id_geohash) if 'id_geohash' in ds.dims else 0
-        date_count = len(ds.date) if 'date' in ds.dims else 0
+            has_date = False
+            if 'date' in ds.coords and date_count > 0:
+                dates_in_file = pd.to_datetime(ds.date.values)
+                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                has_date = date_str in date_strings
 
-        # Check if the specific date exists in the file
-        has_date = False
-        if 'date' in ds.coords and date_count > 0:
-            dates_in_file = pd.to_datetime(ds.date.values)
-            date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
-            has_date = date_str in date_strings
+            ds.close()
 
-        ds.close()
+            if has_date and id_count > 0:
+                return {
+                    'available': True,
+                    'file_exists': True,
+                    'id_count': id_count,
+                    'date_count': date_count,
+                    'has_date': has_date,
+                    'date_str': date_str,
+                    'region': region,
+                    'file_path': str(data_file),
+                    'source': 'merge_directory'
+                }
+        except Exception as e:
+            logger.debug(f"Error checking merge file: {e}")
 
-        return {
-            'available': id_count > 0 and has_date,
-            'file_exists': True,
-            'id_count': id_count,
-            'date_count': date_count,
-            'has_date': has_date,
-            'date_str': date_str,
-            'region': region,
-            'file_path': str(data_file)
-        }
-    except Exception as e:
-        return {
-            'available': False,
-            'file_exists': True,
-            'error': str(e),
-            'date_str': date_str,
-            'region': region
-        }
+    # 2. Check if the date exists in the historical file
+    historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
+    if historical_file.exists():
+        try:
+            ds = xr.open_dataset(str(historical_file))
+
+            has_date = False
+            id_count = 0
+            if 'date' in ds.coords:
+                dates_in_file = pd.to_datetime(ds.date.values)
+                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                has_date = date_str in date_strings
+                id_count = len(ds.id_geohash) if 'id_geohash' in ds.dims else 0
+
+            ds.close()
+
+            if has_date:
+                return {
+                    'available': True,
+                    'file_exists': True,
+                    'id_count': id_count,
+                    'date_count': 1,  # The date exists in the file
+                    'has_date': True,
+                    'date_str': date_str,
+                    'region': region,
+                    'file_path': str(historical_file),
+                    'source': 'historical_file'
+                }
+        except Exception as e:
+            logger.debug(f"Error checking historical file: {e}")
+
+    return {
+        'available': False,
+        'file_exists': False,
+        'date_str': date_str,
+        'region': region,
+        'message': f'No data found for {region} {date_str} in either source'
+    }
 
 
 def process_summer_months_for_region(
@@ -140,17 +159,7 @@ def process_summer_months_for_region(
 ) -> Dict[str, Any]:
     """
     Process summer months (June-September) for a region over multiple years.
-
-    Args:
-        region: Region name
-        years: List of years to process
-        env_path: Optional path to .env file
-        force_processing: If True, process even if data availability is low
-        use_direct_method: If True, use process_region_direct (faster, more reliable).
-                           If False, use process_near_real_time_region_dates_zarr (grid-based).
-
-    Returns:
-        dict: Processing results for each month
+    Uses process_region_date which handles both historical and downloaded data.
     """
     logger.info(f"\n{'=' * 80}")
     logger.info(f"PROCESSING SUMMER MONTHS FOR REGION: {region}")
@@ -181,12 +190,14 @@ def process_summer_months_for_region(
         for month_str, timestamp in zip(summer_months, summer_dates):
             logger.info(f"\nChecking month: {month_str}")
 
-            # Check if data is available
+            # Check if data is available (checks BOTH historical and merge)
             availability = check_data_availability_for_date(region, month_str, env_path)
 
             if not availability.get('available', False):
                 logger.warning(f"  ⚠️ No data available for {region} {month_str}")
                 logger.warning(f"     Reason: {availability.get('message', availability.get('error', 'Unknown'))}")
+                logger.info(f"     Note: Historical data for {month_str} may exist in the compressed file")
+                logger.info(f"     This date will be processed using the historical file if available")
 
                 results['results'][month_str] = {
                     'success': False,
@@ -195,46 +206,35 @@ def process_summer_months_for_region(
                 }
                 continue
 
-            logger.info(f"  ✅ Data available for {region} {month_str}")
+            # Log the source of the data
+            source = availability.get('source', 'unknown')
+            logger.info(f"  ✅ Data available for {region} {month_str} (source: {source})")
             logger.info(f"     IDs in file: {availability.get('id_count', 0):,}")
 
-            # Process the month
+            # Process the month using the new process_region_date function
             try:
                 logger.info(f"  Processing {region} for {month_str}...")
 
-                if use_direct_method:
-                    # Use the direct processing method (bypasses grid, uses IDs directly)
-                    process_result = process_region_date_new(
-                        region=region,
-                        analysis_date=month_str,  # Pass as string, not list
-                        env_path=env_path,
-                        batch_size=1000
-                    )
-                else:
-                    # Use the original grid-based method
-                    process_result = process_near_real_time_region_dates_zarr(
-                        region=region,
-                        current_analysis_dates=[timestamp],
-                        env_path=env_path
-                    )
+                # Use the new process_region_date function
+                process_result = process_region_date(
+                    region=region,
+                    analysis_date=month_str,
+                    env_path=env_path,
+                    batch_size=1000
+                )
 
                 results['results'][month_str] = {
-                    'success': process_result.get('success', False) if isinstance(process_result,
-                                                                                  dict) else process_result,
+                    'success': process_result.get('success', False),
                     'timestamp': timestamp,
                     'year': year,
                     'month': month_str,
-                    'availability': availability
+                    'availability': availability,
+                    'analysis_source': process_result.get('analysis_source', 'unknown'),
+                    'total_ids': process_result.get('total_ids', 0),
+                    'processed': process_result.get('processed', 0),
+                    'breakpoints_found': process_result.get('breakpoints_found', 0),
+                    'zarr_path': process_result.get('zarr_path', None)
                 }
-
-                # Add additional info if direct method was used
-                if use_direct_method and isinstance(process_result, dict):
-                    results['results'][month_str].update({
-                        'total_ids': process_result.get('total_ids', 0),
-                        'processed': process_result.get('processed', 0),
-                        'breakpoints_found': process_result.get('breakpoints_found', 0),
-                        'zarr_path': process_result.get('zarr_path', None)
-                    })
 
                 if results['results'][month_str]['success']:
                     logger.info(f"  ✅ Successfully processed {region} {month_str}")
@@ -275,15 +275,14 @@ def process_summer_months_for_region(
         success_rate = (processed_count / total_count) * 100
         logger.info(f"Success rate: {success_rate:.1f}%")
 
-        # Show breakpoints found if using direct method
-        if use_direct_method:
-            total_breakpoints = sum(
-                r.get('breakpoints_found', 0)
-                for r in results['results'].values()
-                if r.get('success', False)
-            )
-            if total_breakpoints > 0:
-                logger.info(f"Total breakpoints found: {total_breakpoints:,}")
+        # Show breakpoints found
+        total_breakpoints = sum(
+            r.get('breakpoints_found', 0)
+            for r in results['results'].values()
+            if r.get('success', False)
+        )
+        if total_breakpoints > 0:
+            logger.info(f"Total breakpoints found: {total_breakpoints:,}")
 
     return results
 
