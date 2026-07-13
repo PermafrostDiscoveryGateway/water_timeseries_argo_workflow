@@ -6627,6 +6627,61 @@ def find_matching_lake_ids(region: str, analysis_date: str, env_path: str = None
     return result
 
 
+def debug_historical_dates(historical_file_path: str) -> None:
+    """
+    Debug function to print dates from a historical NetCDF file.
+    Call this before any processing to see what dates are available.
+    """
+    import xarray as xr
+    import pandas as pd
+
+    print("\n" + "=" * 80)
+    print("DEBUG: HISTORICAL FILE DATES")
+    print("=" * 80)
+    print(f"File: {historical_file_path}")
+
+    try:
+        ds = xr.open_dataset(historical_file_path)
+
+        if 'date' in ds.coords:
+            hist_dates = pd.to_datetime(ds.date.values)
+            hist_date_strings = [d.strftime("%Y-%m-%d") for d in hist_dates]
+
+            print(f"Total dates: {len(hist_dates)}")
+            print(f"Date range: {hist_date_strings[0]} to {hist_date_strings[-1]}")
+            print(f"First 10 dates: {hist_date_strings[:10]}")
+            print(f"Last 10 dates: {hist_date_strings[-10:]}")
+
+            # Get unique months
+            months = sorted(set([d.strftime("%Y-%m") for d in hist_dates]))
+            print(f"Total unique months: {len(months)}")
+            print(f"First 20 months: {months[:20]}")
+            print(f"Last 20 months: {months[-20:]}")
+
+            # Check for specific years
+            for year in [2024, 2025, 2026]:
+                year_months = [m for m in months if m.startswith(str(year))]
+                print(f"  {year}: {len(year_months)} months - {year_months}")
+
+            # Check date format
+            print(f"\nDate format example: {hist_date_strings[0]}")
+            print(f"Date type: {type(hist_dates[0])}")
+
+        else:
+            print("⚠️ No 'date' coordinate found in dataset")
+            print(f"Available coordinates: {list(ds.coords.keys())}")
+            print(f"Available dimensions: {list(ds.dims.keys())}")
+            print(f"Available data variables: {list(ds.data_vars.keys())}")
+
+        ds.close()
+
+    except Exception as e:
+        print(f"❌ Error reading historical file: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print("=" * 80)
+
 def process_region_direct(
         region: str,
         analysis_date: str,
@@ -6635,7 +6690,6 @@ def process_region_direct(
 ) -> Dict[str, Any]:
     """
     Process breakpoints by directly using matching IDs, bypassing grid filtering.
-    This is more reliable for regions where the grid filtering is too coarse.
     """
     from water_timeseries.breakpoint import NRTBreakpoint
     from water_timeseries.dataset import DWDataset
@@ -6694,23 +6748,30 @@ def process_region_direct(
     ds_historical = xr.open_dataset(str(historical_file))
 
     # ========== DEBUG: Print dates from historical file ==========
+    logger.info("=" * 60)
+    logger.info("DEBUG: HISTORICAL FILE DATES")
+    logger.info("=" * 60)
+
     if 'date' in ds_historical.coords:
         hist_dates = pd.to_datetime(ds_historical.date.values)
         hist_date_strings = [d.strftime("%Y-%m-%d") for d in hist_dates]
-        logger.info(f"📅 HISTORICAL FILE DATES:")
-        logger.info(f"   Total dates: {len(hist_dates)}")
-        logger.info(f"   Date range: {hist_date_strings[0]} to {hist_date_strings[-1]}")
-        logger.info(f"   First 10 dates: {hist_date_strings[:10]}")
-        logger.info(f"   Last 10 dates: {hist_date_strings[-10:]}")
+        logger.info(f"Total dates: {len(hist_dates)}")
+        logger.info(f"Date range: {hist_date_strings[0]} to {hist_date_strings[-1]}")
+        logger.info(f"First 10 dates: {hist_date_strings[:10]}")
+        logger.info(f"Last 10 dates: {hist_date_strings[-10:]}")
 
         # Check if the analysis date month exists in historical data
         analysis_month = analysis_date[:7]  # YYYY-MM
-        months_in_hist = set([d.strftime("%Y-%m") for d in hist_dates])
-        logger.info(f"   Months available: {sorted(months_in_hist)[:20]}...")
+        months_in_hist = sorted(set([d.strftime("%Y-%m") for d in hist_dates]))
+        logger.info(f"Total months available: {len(months_in_hist)}")
+        logger.info(f"First 20 months: {months_in_hist[:20]}")
+        logger.info(f"Last 20 months: {months_in_hist[-20:]}")
+
         if analysis_month in months_in_hist:
-            logger.info(f"   ✅ Analysis month {analysis_month} found in historical data")
+            logger.info(f"✅ Analysis month {analysis_month} FOUND in historical data")
         else:
-            logger.info(f"   ❌ Analysis month {analysis_month} NOT found in historical data")
+            logger.info(f"❌ Analysis month {analysis_month} NOT found in historical data")
+            logger.info(f"Closest months: {[m for m in months_in_hist if m > analysis_month][:5]}")
     else:
         logger.warning("No 'date' coordinate found in historical dataset")
     # ========== END DEBUG ==========
@@ -6719,12 +6780,15 @@ def process_region_direct(
     ds_new_data = xr.open_dataset(str(new_data_file))
 
     # ========== DEBUG: Print dates from new data file ==========
+    logger.info("=" * 60)
+    logger.info("DEBUG: NEW DATA FILE DATES")
+    logger.info("=" * 60)
+
     if 'date' in ds_new_data.coords:
         new_dates = pd.to_datetime(ds_new_data.date.values)
         new_date_strings = [d.strftime("%Y-%m-%d") for d in new_dates]
-        logger.info(f"📅 NEW DATA FILE DATES:")
-        logger.info(f"   Total dates: {len(new_dates)}")
-        logger.info(f"   Dates: {new_date_strings}")
+        logger.info(f"Total dates: {len(new_dates)}")
+        logger.info(f"Dates: {new_date_strings}")
     else:
         logger.warning("No 'date' coordinate found in new data dataset")
     # ========== END DEBUG ==========
@@ -6755,7 +6819,8 @@ def process_region_direct(
 
     # Use the first day of the month for the analysis date
     analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
-    logger.info(f"Using analysis date: {analysis_timestamp.strftime('%Y-%m-%d')}")
+    analysis_date_str = analysis_timestamp.strftime("%Y-%m-%d")
+    logger.info(f"Using analysis date: {analysis_date_str}")
 
     all_ids = list(matching_ids)
     total_batches = (len(all_ids) + batch_size - 1) // batch_size
@@ -6776,20 +6841,33 @@ def process_region_direct(
             ds_combined = xr.concat([ds_historical_batch, ds_new_batch], dim='date')
             ds_combined = ds_combined.sortby('date')
 
+            # ========== DEBUG: Print dates in combined dataset ==========
+            if batch_idx == 0:
+                logger.info("=" * 60)
+                logger.info("DEBUG: COMBINED DATASET DATES (first batch)")
+                logger.info("=" * 60)
+                combined_dates = pd.to_datetime(ds_combined.date.values)
+                combined_date_strings = [d.strftime("%Y-%m-%d") for d in combined_dates]
+                logger.info(f"Total dates: {len(combined_dates)}")
+                logger.info(f"First 20 dates: {combined_date_strings[:20]}")
+                logger.info(f"Last 20 dates: {combined_date_strings[-20:]}")
+
+                # Check if analysis date exists
+                if analysis_date_str in combined_date_strings:
+                    logger.info(f"✅ Analysis date {analysis_date_str} FOUND in combined dataset")
+                else:
+                    logger.info(f"❌ Analysis date {analysis_date_str} NOT found in combined dataset")
+                    # Find closest date
+                    for d in combined_dates:
+                        if d.strftime("%Y-%m") == analysis_date:
+                            logger.info(f"   Found month {analysis_date} with date: {d.strftime('%Y-%m-%d')}")
+                            break
+            # ========== END DEBUG ==========
+
             # Create DWDataset
             dwds = DWDataset(ds_combined)
 
-            # ========== DEBUG: Print dates in combined dataset ==========
-            if batch_idx == 0:  # Only print for first batch to avoid spam
-                logger.info(f"📅 COMBINED DATASET DATES (first batch):")
-                logger.info(f"   Total dates: {len(dwds.dates_)}")
-                logger.info(f"   First 10 dates: {[str(d)[:10] for d in dwds.dates_[:10]]}")
-                logger.info(f"   Last 10 dates: {[str(d)[:10] for d in dwds.dates_[-10:]]}")
-            # ========== END DEBUG ==========
-
             # Check if analysis date exists in the dataset
-            # Convert to string for comparison
-            analysis_date_str = analysis_timestamp.strftime("%Y-%m-%d")
             date_found = False
             for d in dwds.dates_:
                 if isinstance(d, pd.Timestamp):
@@ -6808,13 +6886,35 @@ def process_region_direct(
             if not date_found:
                 logger.warning(
                     f"Analysis date {analysis_date_str} not found in dataset dates for batch {batch_idx + 1}")
-                logger.warning(f"Available dates in batch: {[str(d)[:10] for d in dwds.dates_[:5]]}...")
-                # Clean up and continue
-                ds_historical_batch.close()
-                ds_new_batch.close()
-                ds_combined.close()
-                gc.collect()
-                continue
+                # Try to find the date in the dataset by checking the first date of the month
+                found_alt = False
+                for d in dwds.dates_:
+                    if isinstance(d, pd.Timestamp):
+                        if d.strftime("%Y-%m") == analysis_date:
+                            logger.info(f"   Found alternative date: {d.strftime('%Y-%m-%d')} (using month match)")
+                            # Use this alternative date
+                            alt_date_str = d.strftime("%Y-%m-%d")
+                            found_alt = True
+                            break
+                    elif isinstance(d, np.datetime64):
+                        if pd.Timestamp(d).strftime("%Y-%m") == analysis_date:
+                            alt_date_str = pd.Timestamp(d).strftime("%Y-%m-%d")
+                            found_alt = True
+                            break
+
+                if found_alt:
+                    logger.info(f"   Using alternative date: {alt_date_str}")
+                    # Continue with the alternative date
+                else:
+                    logger.warning(f"   No dates found for month {analysis_date} in this batch")
+                    # Clean up and continue
+                    ds_historical_batch.close()
+                    ds_new_batch.close()
+                    ds_combined.close()
+                    gc.collect()
+                    continue
+            else:
+                alt_date_str = analysis_date_str
 
             # Calculate breakpoints for all IDs in batch
             for id_val in batch_ids:
@@ -6824,8 +6924,8 @@ def process_region_direct(
                     # Create a single-ID dataset
                     dwds_single = DWDataset(ds_single)
 
-                    # Use the full date string
-                    breaks = bp.calculate_break(dataset=dwds_single, analysis_date=analysis_date_str)
+                    # Use the date string (either original or alternative)
+                    breaks = bp.calculate_break(dataset=dwds_single, analysis_date=alt_date_str)
 
                     if breaks is not None and not breaks.empty:
                         breaks['id_geohash'] = id_val

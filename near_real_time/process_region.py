@@ -1,6 +1,6 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region, \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
-    merge_near_real_time_region_v3_simple, process_region_direct, find_matching_lake_ids, \
+    merge_near_real_time_region_v3_simple, process_region_direct, debug_historical_dates, find_matching_lake_ids, \
     compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_new_results, is_all_new_data_in_file
 import sys
 from typing import List, Dict, Any, Optional
@@ -314,6 +314,12 @@ def main():
         'project',
         'region_name'
     ]
+
+    dynamic_world_data_dir = os.environ['dynamic_world_data']
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
+    logger.debug(f"Dates in the historical file")
+    debug_historical_dates(historical_file_path=original_most_recent_dynamic_world_file)
 
     for var in env_vars_to_check:
         value = os.environ.get(var, 'NOT SET')
