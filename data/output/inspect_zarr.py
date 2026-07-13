@@ -174,8 +174,8 @@ def main():
 
     # TODO have it intelligently find new inputs and print out analysis on all of them
 
-    zarr_path_local = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/output/EURASIA3/breakpoint_zarr/breakpoints_2026-06.zarr'
-    zarr_path_remote = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/output_remote/EURASIA3/breakpoint_zarr/breakpoints_2026-06.zarr'
+    zarr_path_local = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/output/TEST/breakpoint_zarr/breakpoints_2026-06.zarr'
+    zarr_path_remote = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/output_remote/TEST/breakpoint_zarr/breakpoints_2026-06.zarr'
     show_data = True
 
     if len(sys.argv) > 2 and sys.argv[2] == '--no-data':
