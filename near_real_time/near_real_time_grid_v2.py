@@ -7041,7 +7041,7 @@ def process_region_date_new(
 
 def process_region_date_new_fast(
         region: str,
-        analysis_date: str,  # Format: "YYYY-MM"
+        analysis_date: str,
         env_path: str = None,
         batch_size: int = 5000,
         n_jobs: int = None,
@@ -7049,7 +7049,7 @@ def process_region_date_new_fast(
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using batch processing for speed.
-    Properly filters by region bounding box.
+    Properly filters by region bounding box and only loads needed IDs.
     """
     from water_timeseries.breakpoint import NRTBreakpoint
     from water_timeseries.dataset import DWDataset
@@ -7062,7 +7062,6 @@ def process_region_date_new_fast(
     else:
         load_dotenv()
 
-    # Set number of parallel jobs
     if n_jobs is None:
         n_jobs = os.cpu_count() or 1
     logger.info(f"Using {n_jobs} parallel jobs for processing")
@@ -7116,16 +7115,33 @@ def process_region_date_new_fast(
         (gdf.geometry.y <= bounds['Y_MIN_END'])
         ]['id_geohash'].values
 
-    region_ids_set = set(region_ids)
-    logger.info(f"📍 {region} has {len(region_ids_set):,} IDs in vector file")
+    region_ids_list = list(region_ids)
+    logger.info(f"📍 {region} has {len(region_ids_list):,} IDs in vector file")
 
-    if len(region_ids_set) == 0:
+    if len(region_ids_list) == 0:
         logger.error(f"❌ No IDs found for region {region} in vector file!")
         return {'success': False, 'error': f'No IDs found for region {region}'}
 
-    # 4. Load historical data
-    logger.info(f"Loading historical data for training...")
-    ds_historical = xr.open_dataset(str(historical_file))
+    # 4. Load historical data - ONLY for the region IDs
+    # Use xarray's .sel() to load only the needed IDs
+    logger.info(f"Loading historical data for training (only {len(region_ids_list):,} IDs)...")
+
+    # Open the dataset but only load the needed IDs
+    ds_historical_full = xr.open_dataset(str(historical_file))
+
+    # Select only the region IDs
+    try:
+        ds_historical = ds_historical_full.sel(id_geohash=region_ids_list)
+        logger.info(f"Loaded historical data for {len(ds_historical.id_geohash)} IDs")
+    except Exception as e:
+        logger.error(f"Error selecting region IDs from historical file: {e}")
+        ds_historical_full.close()
+        return {'success': False, 'error': f'Error loading historical data: {e}'}
+
+    # Close the full dataset to free memory
+    ds_historical_full.close()
+    del ds_historical_full
+    gc.collect()
 
     analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
     ds_historical_train = ds_historical.where(ds_historical.date < analysis_timestamp, drop=True)
@@ -7135,6 +7151,7 @@ def process_region_date_new_fast(
         ds_historical_train = ds_historical
 
     logger.info(f"Training data has {len(ds_historical_train.date)} dates")
+    logger.info(f"Training data has {len(ds_historical_train.id_geohash)} IDs")
 
     # 5. Determine where the analysis data comes from
     analysis_source = None
@@ -7168,9 +7185,11 @@ def process_region_date_new_fast(
                 dates_in_file = pd.to_datetime(ds_historical_check.date.values)
                 date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
                 if analysis_date in date_strings:
-                    ds_analysis = ds_historical_check.sel(date=analysis_timestamp)
+                    # Get the analysis data from historical file
+                    ds_analysis = ds_historical_check.sel(id_geohash=region_ids_list, date=analysis_timestamp)
                     analysis_source = 'historical'
                     logger.info(f"📊 Using HISTORICAL data for {analysis_date} from: {historical_file}")
+                    logger.info(f"   IDs in historical analysis data: {len(ds_analysis.id_geohash)}")
                 else:
                     logger.warning(f"Date {analysis_date} not found in historical file")
             ds_historical_check.close()
@@ -7179,17 +7198,14 @@ def process_region_date_new_fast(
 
     if ds_analysis is None:
         logger.error(f"❌ No data found for {region} {analysis_date} in either downloaded or historical files")
+        ds_historical.close()
         return {'success': False, 'error': f'No data found for {region} {analysis_date}'}
 
-    # 6. Filter datasets by region IDs
-    logger.info(f"Filtering datasets to only include IDs in {region}...")
+    # 6. Filter analysis data to region IDs if needed
+    if 'id_geohash' in ds_analysis.dims:
+        ds_analysis = ds_analysis.sel(id_geohash=region_ids_list)
 
-    # Filter historical training data
-    ds_historical_train = ds_historical_train.sel(id_geohash=list(region_ids_set))
-    # Filter analysis data
-    ds_analysis = ds_analysis.sel(id_geohash=list(region_ids_set))
-
-    # 7. Get matching IDs (now both datasets are already filtered by region)
+    # 7. Get matching IDs (only region IDs that exist in both datasets)
     train_ids = set(ds_historical_train.id_geohash.values) if 'id_geohash' in ds_historical_train.dims else set()
     analysis_ids = set(ds_analysis.id_geohash.values) if 'id_geohash' in ds_analysis.dims else set()
 
@@ -7224,7 +7240,7 @@ def process_region_date_new_fast(
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
     intermediate_file = current_breakpoint_dir / f'intermediate_results_{analysis_date}.parquet'
 
-    # 10. Process in batches
+    # 10. Process in batches (same as before)
     bp = NRTBreakpoint()
     all_results = []
     total_processed = 0
@@ -7441,20 +7457,6 @@ def save_intermediate_results(all_results: list, intermediate_file: Path, analys
     except Exception as e:
         logger.error(f"Error saving intermediate results: {e}")
 
-
-def save_intermediate_results(all_results: list, intermediate_file: Path, analysis_date: str) -> None:
-    """
-    Save intermediate results to a Parquet file.
-    """
-    if not all_results:
-        return
-
-    try:
-        combined = pd.concat(all_results, ignore_index=True)
-        combined.to_parquet(intermediate_file)
-        logger.debug(f"Intermediate results saved to {intermediate_file}")
-    except Exception as e:
-        logger.error(f"Error saving intermediate results: {e}")
 
 def process_region_direct(
         region: str,
