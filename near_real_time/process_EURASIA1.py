@@ -1,6 +1,7 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region, \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
-    merge_near_real_time_region_v3_simple, process_region_date_new, process_region_date_new_fast, debug_historical_dates, find_matching_lake_ids, \
+    merge_near_real_time_region_v3_simple, process_region_date_new, process_region_date_new_fast, \
+    debug_historical_dates, find_matching_lake_ids, \
     compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_new_results, is_all_new_data_in_file
 import sys
 from typing import List, Dict, Any, Optional
@@ -34,34 +35,6 @@ def is_file_ready(filepath, wait_seconds=0.5, checks=20):
         time.sleep(wait_seconds)
     # If size hasn't changed, assume writing is done
     return len(set(sizes)) == 1
-
-
-def get_summer_months(year: int) -> List[str]:
-    """
-    Get summer months (June-September) for a given year.
-
-    Args:
-        year: The year to get summer months for
-
-    Returns:
-        List of date strings in "YYYY-MM" format
-    """
-    summer_months = [6, 7, 8, 9]
-    return [f"{year}-{month:02d}" for month in summer_months]
-
-
-def get_summer_dates_for_processing(year: int) -> List[pd.Timestamp]:
-    """
-    Get Timestamp objects for the first day of each summer month.
-
-    Args:
-        year: The year to get summer dates for
-
-    Returns:
-        List of pd.Timestamp objects
-    """
-    summer_months = [6, 7, 8, 9]
-    return [pd.Timestamp(f"{year}-{month:02d}-01") for month in summer_months]
 
 
 def check_data_availability_for_date(region: str, date_str: str, env_path: str = None) -> Dict[str, Any]:
@@ -131,7 +104,7 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
                     'available': True,
                     'file_exists': True,
                     'id_count': id_count,
-                    'date_count': 1,  # The date exists in the file
+                    'date_count': 1,
                     'has_date': True,
                     'date_str': date_str,
                     'region': region,
@@ -150,156 +123,91 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
     }
 
 
-def process_summer_months_for_region(
+def process_single_date_for_region(
         region: str,
-        years: List[int],
+        date_str: str,
         env_path: str = None,
-        force_processing: bool = False,
-        use_direct_method: bool = True
+        n_jobs: int = 12,
+        save_interval: int = 2500,
+        batch_size: int = 5000
 ) -> Dict[str, Any]:
     """
-    Process summer months (June-September) for a region over multiple years.
-    Processes dates in reverse chronological order (latest first).
-    Uses process_region_date which handles both historical and downloaded data.
+    Process a single date for a region using the FAST method.
+
+    Args:
+        region: Region name
+        date_str: Date in "YYYY-MM" format
+        env_path: Optional path to .env file
+        n_jobs: Number of parallel jobs
+        save_interval: Save intermediate results every N IDs
+        batch_size: Number of IDs per batch
+
+    Returns:
+        dict: Processing results
     """
     logger.info(f"\n{'=' * 80}")
-    logger.info(f"PROCESSING SUMMER MONTHS FOR REGION: {region}")
+    logger.info(f"PROCESSING {region} FOR {date_str} (FAST METHOD)")
     logger.info(f"{'=' * 80}")
-    logger.info(f"Years to process: {years}")
-    logger.info(f"Using direct processing method: {use_direct_method}")
-    logger.info(f"Processing order: Latest to oldest (reverse chronological)")
 
-    if env_path:
-        load_dotenv(dotenv_path=env_path)
-    else:
-        load_dotenv()
+    # Check if data is available
+    availability = check_data_availability_for_date(region, date_str, env_path)
 
-    results = {
-        'region': region,
-        'years': years,
-        'months_processed': [],
-        'results': {},
-        'use_direct_method': use_direct_method
-    }
+    if not availability.get('available', False):
+        logger.warning(f"⚠️ No data available for {region} {date_str}")
+        logger.warning(f"   Reason: {availability.get('message', availability.get('error', 'Unknown'))}")
+        return {
+            'success': False,
+            'region': region,
+            'date': date_str,
+            'reason': 'No data available',
+            'details': availability
+        }
 
-    # Build list of all months to process
-    all_months = []
-    for year in years:
-        summer_months = get_summer_months(year)
-        summer_dates = get_summer_dates_for_processing(year)
-        for month_str, timestamp in zip(summer_months, summer_dates):
-            all_months.append((year, month_str, timestamp))
+    # Log the source of the data
+    source = availability.get('source', 'unknown')
+    logger.info(f"✅ Data available for {region} {date_str} (source: {source})")
+    logger.info(f"   IDs in file: {availability.get('id_count', 0):,}")
 
-    # Sort by date in reverse order (latest first)
-    all_months.sort(key=lambda x: x[2], reverse=True)
+    # Process using FAST method
+    try:
+        logger.info(f"🚀 Processing {region} for {date_str} with {n_jobs} parallel jobs...")
 
-    logger.info(f"Total months to process: {len(all_months)}")
-    logger.info(f"Processing order: {[m[1] for m in all_months]}")
-
-    for year, month_str, timestamp in all_months:
-        logger.info(f"\nChecking month: {month_str}")
-
-        # Check if data is available (checks BOTH historical and merge)
-        availability = check_data_availability_for_date(region, month_str, env_path)
-
-        if not availability.get('available', False):
-            logger.warning(f"  ⚠️ No data available for {region} {month_str}")
-            logger.warning(f"     Reason: {availability.get('message', availability.get('error', 'Unknown'))}")
-            logger.info(f"     Note: Historical data for {month_str} may exist in the compressed file")
-
-            results['results'][month_str] = {
-                'success': False,
-                'reason': 'No data available',
-                'details': availability,
-                'year': year,
-                'month': month_str,
-                'timestamp': timestamp
-            }
-            continue
-
-        # Log the source of the data
-        source = availability.get('source', 'unknown')
-        logger.info(f"  ✅ Data available for {region} {month_str} (source: {source})")
-        logger.info(f"     IDs in file: {availability.get('id_count', 0):,}")
-
-        # Process the month
-        try:
-            logger.info(f"  Processing {region} for {month_str}...")
-
-            process_result = process_region_date_new_fast(
-                region=region,
-                analysis_date=month_str,
-                env_path=env_path,
-                save_interval=2500,
-                n_jobs=16,
-            )
-
-            results['results'][month_str] = {
-                'success': process_result.get('success', False),
-                'timestamp': timestamp,
-                'year': year,
-                'month': month_str,
-                'availability': availability,
-                'analysis_source': process_result.get('analysis_source', 'unknown'),
-                'total_ids': process_result.get('total_ids', 0),
-                'processed': process_result.get('processed', 0),
-                'breakpoints_found': process_result.get('breakpoints_found', 0),
-                'zarr_path': process_result.get('zarr_path', None)
-            }
-
-            if results['results'][month_str]['success']:
-                logger.info(f"  ✅ Successfully processed {region} {month_str}")
-                results['months_processed'].append(month_str)
-            else:
-                logger.warning(f"  ❌ Failed to process {region} {month_str}")
-
-        except Exception as e:
-            logger.error(f"  ❌ Error processing {region} {month_str}: {e}")
-            import traceback
-            traceback.print_exc()
-            results['results'][month_str] = {
-                'success': False,
-                'error': str(e),
-                'timestamp': timestamp,
-                'year': year,
-                'month': month_str,
-                'availability': availability
-            }
-
-        # Small delay between processing months to avoid memory issues
-        time.sleep(2)
-
-    # Summary for the region
-    processed_count = sum(1 for r in results['results'].values() if r.get('success', False))
-    total_count = len(results['results'])
-
-    logger.info(f"\n{'=' * 80}")
-    logger.info(f"SUMMARY FOR REGION: {region}")
-    logger.info(f"{'=' * 80}")
-    logger.info(f"Total months processed: {total_count}")
-    logger.info(f"Successfully processed: {processed_count}")
-    logger.info(f"Failed/Skipped: {total_count - processed_count}")
-
-    if processed_count > 0:
-        success_rate = (processed_count / total_count) * 100
-        logger.info(f"Success rate: {success_rate:.1f}%")
-
-        # Show breakpoints found
-        total_breakpoints = sum(
-            r.get('breakpoints_found', 0)
-            for r in results['results'].values()
-            if r.get('success', False)
+        process_result = process_region_date_new_fast(
+            region=region,
+            analysis_date=date_str,
+            env_path=env_path,
+            n_jobs=n_jobs,
+            save_interval=save_interval,
+            batch_size=batch_size
         )
-        if total_breakpoints > 0:
-            logger.info(f"Total breakpoints found: {total_breakpoints:,}")
 
-    return results
+        if process_result.get('success', False):
+            logger.info(f"✅ Successfully processed {region} {date_str}")
+            logger.info(f"   Total IDs: {process_result.get('total_ids', 0):,}")
+            logger.info(f"   Breakpoints found: {process_result.get('breakpoints_found', 0):,}")
+            logger.info(f"   Zarr path: {process_result.get('zarr_path', 'N/A')}")
+        else:
+            logger.warning(f"❌ Failed to process {region} {date_str}")
+
+        return process_result
+
+    except Exception as e:
+        logger.error(f"❌ Error processing {region} {date_str}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'success': False,
+            'region': region,
+            'date': date_str,
+            'error': str(e)
+        }
+
 
 def main():
-    """Main function to process summer months for all regions."""
+    """Main function to process June 2026 for all regions."""
 
     logger.debug("=" * 80)
-    logger.debug("PROCESS_REGION.PY STARTED (SUMMER MONTHS PROCESSING)")
+    logger.debug("PROCESS_REGION.PY STARTED (JUNE 2026 ONLY)")
     logger.debug("=" * 80)
 
     # Load environment
@@ -323,9 +231,7 @@ def main():
     ]
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
-    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-    # original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
-    original_most_recent_dynamic_world_file = os.path.join(dynamic_world_data_dir,'lakes_dw_V2d_compressed.nc')
+    original_most_recent_dynamic_world_file = os.path.join(dynamic_world_data_dir, 'lakes_dw_V2d_compressed.nc')
     logger.debug(f"Dates in the historical file")
     debug_historical_dates(historical_file_path=original_most_recent_dynamic_world_file)
 
@@ -333,32 +239,21 @@ def main():
         value = os.environ.get(var, 'NOT SET')
         logger.debug(f"{var} = {value}")
 
-    # Get region from environment or use all regions
+    # Get region from environment or use specific regions
     region_name = os.environ.get("region_name", "ALL")
 
-    # If region is "ALL", get all regions from boundaries
+    # Define regions to process - you can customize this list
     if region_name == "ALL":
-        boundaries = utils.region_boundaries.get_region_boundaries()
-        regions_to_process = list(boundaries.keys())
-        logger.info(f"Processing ALL regions: {regions_to_process}")
+        # All regions except TEST_v1, CANADA_v1, etc. (only the main ones)
+        regions_to_process = ['TEST', 'ALASKA', 'CANADA', 'EURASIA1', 'EURASIA2', 'EURASIA3']
+        logger.info(f"Processing ALL main regions: {regions_to_process}")
     else:
         regions_to_process = [region_name]
         logger.info(f"Processing single region: {region_name}")
 
-    # Determine which years to process
-    current_year = datetime.now().year
-
-    # Process current year and previous year
-    years_to_process = [
-        current_year - 2,  # Two years ago
-        current_year - 1,  # Last year
-        current_year  # Current year
-    ]
-
-    # Only include years that have passed (or current year)
-    years_to_process = [y for y in years_to_process if y <= current_year]
-
-    logger.info(f"Years to process: {years_to_process}")
+    # ONLY process June 2026
+    target_date = "2026-06"
+    logger.info(f"🎯 Target date: {target_date}")
 
     # Check if we should run based on date
     SHOULD_RUN = False
@@ -366,7 +261,7 @@ def main():
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
 
-    # Always run if we're processing all regions (for testing/comparison)
+    # Always run if we're processing all regions or if it's summer
     if region_name == "ALL":
         SHOULD_RUN = True
         logger.info("Running for all regions (forced)")
@@ -376,128 +271,73 @@ def main():
             SHOULD_RUN = True
             logger.debug(f"TODAY_DAY: {TODAY_DAY} - Should run: {SHOULD_RUN}")
     else:
-        logger.debug(f"Current month {TODAY_MONTH} is not in summer months or too early")
-        # Still run for historical data if we're processing all regions
-        if region_name == "ALL":
+        # Still run for testing historical data
+        if region_name != "ALL":
             SHOULD_RUN = True
-            logger.info("Running for all regions (historical data processing)")
+            logger.info("Running for single region (testing mode)")
 
     if not SHOULD_RUN:
         logger.info("Skipping processing - conditions not met")
         return
 
-    # Process each region
+    # Process each region for June 2026
     all_results = {}
-
-    # Determine which regions to process with direct method vs grid method
-    # Direct method is better for regions with sparse data or grid filtering issues
-    direct_method_regions = ['EURASIA1']  # Add regions that have issues with grid filtering
-    use_direct_method = True  # Default to direct method
+    success_count = 0
+    failure_count = 0
 
     for region in regions_to_process:
         logger.info(f"\n{'=' * 80}")
-        logger.info(f"Processing region: {region}")
+        logger.info(f"📌 PROCESSING REGION: {region}")
         logger.info(f"{'=' * 80}")
 
-        # Use direct method for problematic regions, otherwise use grid method
-        use_direct = region in direct_method_regions
+        # Process the single date
+        result = process_single_date_for_region(
+            region=region,
+            date_str=target_date,
+            env_path=env_path,
+            n_jobs=12,  # Use 12 parallel jobs
+            save_interval=2500,
+            batch_size=5000
+        )
 
-        # Check if we have any data for this region
-        test_date = f"{current_year}-06"
-        availability = check_data_availability_for_date(region, test_date, env_path)
+        all_results[region] = result
 
-        if not availability.get('available', False) and region != "TEST":
-            logger.warning(f"⚠️ Region {region} may not have data for summer months")
-            logger.warning(f"   Availability check: {availability}")
-
-            # Try previous year
-            test_date_prev = f"{current_year - 1}-06"
-            availability_prev = check_data_availability_for_date(region, test_date_prev, env_path)
-
-            if not availability_prev.get('available', False):
-                logger.warning(f"⚠️ Region {region} has no data for {test_date} or {test_date_prev}")
-                logger.warning(f"   Skipping this region...")
-                continue
-
-        # Process summer months for this region
-        try:
-            result = process_summer_months_for_region(
-                region=region,
-                years=years_to_process,
-                env_path=env_path,
-                force_processing=False,
-                use_direct_method=use_direct
-            )
-            all_results[region] = result
-
-            # Log summary for this region
-            processed_count = sum(1 for r in result['results'].values() if r.get('success', False))
-            total_count = len(result['results'])
-            method_used = "DIRECT" if use_direct else "GRID"
-            logger.info(
-                f"\n✅ Region {region} ({method_used}): {processed_count}/{total_count} months processed successfully")
-
-            if use_direct:
-                total_breakpoints = sum(
-                    r.get('breakpoints_found', 0)
-                    for r in result['results'].values()
-                    if r.get('success', False)
-                )
-                if total_breakpoints > 0:
-                    logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
-
-            # List which months succeeded
-            successful_months = [m for m, r in result['results'].items() if r.get('success', False)]
-            if successful_months:
-                logger.info(f"   Successful months: {successful_months}")
-
-        except Exception as e:
-            logger.error(f"❌ Error processing region {region}: {e}")
-            import traceback
-            traceback.print_exc()
-            all_results[region] = {'error': str(e)}
+        if result.get('success', False):
+            success_count += 1
+            logger.info(f"✅ Region {region} completed successfully")
+            logger.info(f"   Breakpoints found: {result.get('breakpoints_found', 0):,}")
+        else:
+            failure_count += 1
+            logger.warning(f"❌ Region {region} failed")
+            if 'reason' in result:
+                logger.warning(f"   Reason: {result['reason']}")
 
         # Small delay between regions
         time.sleep(3)
 
     # Final summary
     logger.info(f"\n{'=' * 80}")
-    logger.info("FINAL SUMMARY")
+    logger.info("📊 FINAL SUMMARY")
     logger.info(f"{'=' * 80}")
+    logger.info(f"Target date: {target_date}")
+    logger.info(f"Total regions processed: {len(regions_to_process)}")
+    logger.info(f"✅ Successful: {success_count}")
+    logger.info(f"❌ Failed: {failure_count}")
 
-    total_successful = 0
-    total_attempted = 0
-    total_breakpoints_all = 0
+    total_breakpoints_all = sum(
+        r.get('breakpoints_found', 0)
+        for r in all_results.values()
+        if r.get('success', False)
+    )
+    logger.info(f"Total breakpoints found across all regions: {total_breakpoints_all:,}")
 
+    # List results by region
+    logger.info(f"\n📋 Results by region:")
     for region, result in all_results.items():
-        if 'results' in result:
-            region_success = sum(1 for r in result['results'].values() if r.get('success', False))
-            region_total = len(result['results'])
-            total_successful += region_success
-            total_attempted += region_total
-
-            method_used = "DIRECT" if result.get('use_direct_method', False) else "GRID"
-
-            # Count breakpoints if direct method
-            if result.get('use_direct_method', False):
-                region_breakpoints = sum(
-                    r.get('breakpoints_found', 0)
-                    for r in result['results'].values()
-                    if r.get('success', False)
-                )
-                total_breakpoints_all += region_breakpoints
-                logger.info(
-                    f"  {region} ({method_used}): {region_success}/{region_total} months successful, {region_breakpoints:,} breakpoints")
-            else:
-                logger.info(f"  {region} ({method_used}): {region_success}/{region_total} months successful")
-        else:
-            logger.info(f"  {region}: Error - {result.get('error', 'Unknown error')}")
-
-    if total_attempted > 0:
-        success_rate = (total_successful / total_attempted) * 100
-        logger.info(f"\nOverall success rate: {success_rate:.1f}% ({total_successful}/{total_attempted})")
-        if total_breakpoints_all > 0:
-            logger.info(f"Total breakpoints found across all regions: {total_breakpoints_all:,}")
+        status = "✅" if result.get('success', False) else "❌"
+        breakpoints = result.get('breakpoints_found', 0)
+        total_ids = result.get('total_ids', 0)
+        logger.info(f"  {status} {region}: {breakpoints:,} breakpoints from {total_ids:,} IDs")
 
     logger.info("=" * 80)
     logger.info("PROCESS_REGION.PY COMPLETED")
