@@ -6637,8 +6637,8 @@ def process_region_direct(
     Process breakpoints by directly using matching IDs, bypassing grid filtering.
     This is more reliable for regions where the grid filtering is too coarse.
     """
-    from water_timeseries.dataset import LakeDataset
-    from water_timeseries.breakpoint import NRTBreakpoint, DWDataset
+    from water_timeseries.breakpoint import NRTBreakpoint
+    from water_timeseries.dataset import DWDataset
 
     if env_path:
         load_dotenv(dotenv_path=env_path)
@@ -6692,8 +6692,42 @@ def process_region_direct(
 
     logger.info(f"Loading historical dataset: {historical_file}")
     ds_historical = xr.open_dataset(str(historical_file))
+
+    # ========== DEBUG: Print dates from historical file ==========
+    if 'date' in ds_historical.coords:
+        hist_dates = pd.to_datetime(ds_historical.date.values)
+        hist_date_strings = [d.strftime("%Y-%m-%d") for d in hist_dates]
+        logger.info(f"📅 HISTORICAL FILE DATES:")
+        logger.info(f"   Total dates: {len(hist_dates)}")
+        logger.info(f"   Date range: {hist_date_strings[0]} to {hist_date_strings[-1]}")
+        logger.info(f"   First 10 dates: {hist_date_strings[:10]}")
+        logger.info(f"   Last 10 dates: {hist_date_strings[-10:]}")
+
+        # Check if the analysis date month exists in historical data
+        analysis_month = analysis_date[:7]  # YYYY-MM
+        months_in_hist = set([d.strftime("%Y-%m") for d in hist_dates])
+        logger.info(f"   Months available: {sorted(months_in_hist)[:20]}...")
+        if analysis_month in months_in_hist:
+            logger.info(f"   ✅ Analysis month {analysis_month} found in historical data")
+        else:
+            logger.info(f"   ❌ Analysis month {analysis_month} NOT found in historical data")
+    else:
+        logger.warning("No 'date' coordinate found in historical dataset")
+    # ========== END DEBUG ==========
+
     logger.info(f"Loading new data dataset: {new_data_file}")
     ds_new_data = xr.open_dataset(str(new_data_file))
+
+    # ========== DEBUG: Print dates from new data file ==========
+    if 'date' in ds_new_data.coords:
+        new_dates = pd.to_datetime(ds_new_data.date.values)
+        new_date_strings = [d.strftime("%Y-%m-%d") for d in new_dates]
+        logger.info(f"📅 NEW DATA FILE DATES:")
+        logger.info(f"   Total dates: {len(new_dates)}")
+        logger.info(f"   Dates: {new_date_strings}")
+    else:
+        logger.warning("No 'date' coordinate found in new data dataset")
+    # ========== END DEBUG ==========
 
     # Filter to matching IDs
     ds_historical = ds_historical.sel(id_geohash=matching_ids)
@@ -6719,21 +6753,9 @@ def process_region_direct(
     total_processed = 0
     total_breakpoints = 0
 
-    # Convert analysis_date to proper format for checking
-    analysis_date_ts = pd.Timestamp(f"{analysis_date}-01")
-
-    # Get the date object from the new data to check format
-    if 'date' in ds_new_data.coords:
-        sample_date = ds_new_data.date.values[0]
-        logger.info(f"Sample date format from new data: {sample_date}")
-        # Convert to string in the same format as the data
-        if isinstance(sample_date, np.datetime64):
-            analysis_date_check = pd.Timestamp(sample_date).strftime("%Y-%m")
-        else:
-            analysis_date_check = str(sample_date)[:7]  # Get YYYY-MM
-        logger.info(f"Using date check format: {analysis_date_check}")
-    else:
-        analysis_date_check = analysis_date
+    # Use the first day of the month for the analysis date
+    analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
+    logger.info(f"Using analysis date: {analysis_timestamp.strftime('%Y-%m-%d')}")
 
     all_ids = list(matching_ids)
     total_batches = (len(all_ids) + batch_size - 1) // batch_size
@@ -6757,25 +6779,36 @@ def process_region_direct(
             # Create DWDataset
             dwds = DWDataset(ds_combined)
 
-            # Check if analysis date exists - check in the proper format
+            # ========== DEBUG: Print dates in combined dataset ==========
+            if batch_idx == 0:  # Only print for first batch to avoid spam
+                logger.info(f"📅 COMBINED DATASET DATES (first batch):")
+                logger.info(f"   Total dates: {len(dwds.dates_)}")
+                logger.info(f"   First 10 dates: {[str(d)[:10] for d in dwds.dates_[:10]]}")
+                logger.info(f"   Last 10 dates: {[str(d)[:10] for d in dwds.dates_[-10:]]}")
+            # ========== END DEBUG ==========
+
+            # Check if analysis date exists in the dataset
+            # Convert to string for comparison
+            analysis_date_str = analysis_timestamp.strftime("%Y-%m-%d")
             date_found = False
             for d in dwds.dates_:
                 if isinstance(d, pd.Timestamp):
-                    if d.strftime("%Y-%m") == analysis_date:
-                        date_found = True
-                        break
-                elif isinstance(d, str):
-                    if d[:7] == analysis_date:
+                    if d.strftime("%Y-%m-%d") == analysis_date_str:
                         date_found = True
                         break
                 elif isinstance(d, np.datetime64):
-                    if pd.Timestamp(d).strftime("%Y-%m") == analysis_date:
+                    if pd.Timestamp(d).strftime("%Y-%m-%d") == analysis_date_str:
+                        date_found = True
+                        break
+                elif isinstance(d, str):
+                    if d[:10] == analysis_date_str:
                         date_found = True
                         break
 
             if not date_found:
-                logger.warning(f"Analysis date {analysis_date} not found in dataset dates for batch {batch_idx + 1}")
-                logger.debug(f"Available dates in batch: {[str(d)[:7] for d in dwds.dates_[:5]]}")
+                logger.warning(
+                    f"Analysis date {analysis_date_str} not found in dataset dates for batch {batch_idx + 1}")
+                logger.warning(f"Available dates in batch: {[str(d)[:10] for d in dwds.dates_[:5]]}...")
                 # Clean up and continue
                 ds_historical_batch.close()
                 ds_new_batch.close()
@@ -6791,7 +6824,9 @@ def process_region_direct(
                     # Create a single-ID dataset
                     dwds_single = DWDataset(ds_single)
 
-                    breaks = bp.calculate_break(dataset=dwds_single, analysis_date=analysis_date)
+                    # Use the full date string
+                    breaks = bp.calculate_break(dataset=dwds_single, analysis_date=analysis_date_str)
+
                     if breaks is not None and not breaks.empty:
                         breaks['id_geohash'] = id_val
                         all_results.append(breaks)
