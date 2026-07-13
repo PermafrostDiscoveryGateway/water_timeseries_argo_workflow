@@ -1,6 +1,6 @@
 from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region, \
     process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
-    merge_near_real_time_region_v3_simple, process_region_date_new, process_region_direct, debug_historical_dates, find_matching_lake_ids, \
+    merge_near_real_time_region_v3_simple, process_region_date_new, process_region_date_new_fast, debug_historical_dates, find_matching_lake_ids, \
     compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_new_results, is_all_new_data_in_file
 import sys
 from typing import List, Dict, Any, Optional
@@ -226,11 +226,12 @@ def process_summer_months_for_region(
         try:
             logger.info(f"  Processing {region} for {month_str}...")
 
-            process_result = process_region_date_new(
+            process_result = process_region_date_new_fast(
                 region=region,
                 analysis_date=month_str,
                 env_path=env_path,
-                batch_size=1000
+                save_interval=2500,
+                n_jobs=16,
             )
 
             results['results'][month_str] = {

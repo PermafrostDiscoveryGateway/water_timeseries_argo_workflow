@@ -7039,6 +7039,362 @@ def process_region_date_new(
     }
 
 
+def process_region_date_new_fast(
+        region: str,
+        analysis_date: str,  # Format: "YYYY-MM"
+        env_path: str = None,
+        batch_size: int = 5000,  # Larger batch size for parallel processing
+        n_jobs: int = None,  # Number of parallel jobs (default: all cores)
+        save_interval: int = 10000  # Save intermediate results every N IDs
+) -> Dict[str, Any]:
+    """
+    Process a single date for a region using batch processing for speed.
+    Saves intermediate results periodically to prevent data loss.
+    """
+    from water_timeseries.breakpoint import NRTBreakpoint
+    from water_timeseries.dataset import DWDataset
+    import time
+    import os
+
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    # Set number of parallel jobs
+    if n_jobs is None:
+        n_jobs = os.cpu_count() or 1
+    logger.info(f"Using {n_jobs} parallel jobs for processing")
+
+    logger.info(f"\n{'=' * 80}")
+    logger.info(f"PROCESSING {region} FOR DATE: {analysis_date} (FAST MODE)")
+    logger.info(f"{'=' * 80}")
+
+    # 1. Setup paths
+    dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+    merge_dir = Path(dynamic_world_data_dir) / 'merge'
+    historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
+    new_data_file = merge_dir / f"dw_{region}_{analysis_date}.nc"
+
+    # 2. Determine where the analysis data comes from
+    analysis_source = None
+    ds_analysis = None
+
+    # Check if new data file exists for this date
+    if new_data_file.exists():
+        try:
+            ds_analysis = xr.open_dataset(str(new_data_file))
+            if 'date' in ds_analysis.coords:
+                dates_in_file = pd.to_datetime(ds_analysis.date.values)
+                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                if analysis_date in date_strings:
+                    analysis_source = 'downloaded'
+                    logger.info(f"📊 Using DOWNLOADED data for {analysis_date} from: {new_data_file}")
+                    logger.info(f"   IDs in downloaded data: {len(ds_analysis.id_geohash)}")
+                else:
+                    ds_analysis.close()
+                    ds_analysis = None
+        except Exception as e:
+            logger.warning(f"Error reading new data file: {e}")
+            if ds_analysis:
+                ds_analysis.close()
+                ds_analysis = None
+
+    # If not found in downloaded data, try the historical file
+    if ds_analysis is None and historical_file.exists():
+        try:
+            ds_historical_check = xr.open_dataset(str(historical_file))
+            if 'date' in ds_historical_check.coords:
+                dates_in_file = pd.to_datetime(ds_historical_check.date.values)
+                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                if analysis_date in date_strings:
+                    analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
+                    ds_analysis = ds_historical_check.sel(date=analysis_timestamp)
+                    analysis_source = 'historical'
+                    logger.info(f"📊 Using HISTORICAL data for {analysis_date} from: {historical_file}")
+                else:
+                    logger.warning(f"Date {analysis_date} not found in historical file")
+            ds_historical_check.close()
+        except Exception as e:
+            logger.error(f"Error reading historical file: {e}")
+
+    if ds_analysis is None:
+        logger.error(f"❌ No data found for {region} {analysis_date} in either downloaded or historical files")
+        return {'success': False, 'error': f'No data found for {region} {analysis_date}'}
+
+    # 3. Load historical data for training
+    logger.info(f"Loading historical data for training...")
+    ds_historical = xr.open_dataset(str(historical_file))
+
+    analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
+    ds_historical_train = ds_historical.where(ds_historical.date < analysis_timestamp, drop=True)
+
+    if len(ds_historical_train.date) == 0:
+        logger.warning(f"No training data before {analysis_date}, using all historical data")
+        ds_historical_train = ds_historical
+
+    logger.info(f"Training data has {len(ds_historical_train.date)} dates")
+
+    # 4. Get matching IDs
+    train_ids = set(ds_historical_train.id_geohash.values) if 'id_geohash' in ds_historical_train.dims else set()
+    analysis_ids = set(ds_analysis.id_geohash.values) if 'id_geohash' in ds_analysis.dims else set()
+
+    matching_ids = train_ids.intersection(analysis_ids)
+    logger.info(f"📊 ID Summary:")
+    logger.info(f"   IDs in training data: {len(train_ids):,}")
+    logger.info(f"   IDs in analysis data: {len(analysis_ids):,}")
+    logger.info(f"   Matching IDs: {len(matching_ids):,}")
+
+    if len(matching_ids) == 0:
+        logger.error(f"No matching IDs found between training and analysis data!")
+        ds_historical.close()
+        ds_analysis.close()
+        return {'success': False, 'error': 'No matching IDs found'}
+
+    # 5. Filter datasets
+    matching_ids_list = list(matching_ids)
+    ds_historical_train = ds_historical_train.sel(id_geohash=matching_ids_list)
+    ds_analysis = ds_analysis.sel(id_geohash=matching_ids_list)
+
+    logger.info(f"Filtered training data to {len(ds_historical_train.id_geohash)} IDs")
+    logger.info(f"Filtered analysis data to {len(ds_analysis.id_geohash)} IDs")
+
+    # 6. Setup output directories
+    output_dir = os.environ['output_dir']
+    output_dir = Path(output_dir) / region
+    zarr_output_dir = output_dir / 'breakpoint_zarr'
+    zarr_output_dir.mkdir(exist_ok=True, parents=True)
+    zarr_path = zarr_output_dir / f'breakpoints_{analysis_date}.zarr'
+
+    current_breakpoint_dir = output_dir / f'breakpoint_{analysis_date}'
+    current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
+    intermediate_file = current_breakpoint_dir / f'intermediate_results_{analysis_date}.parquet'
+
+    # 7. Process in batches using calculate_breaks_batch
+    bp = NRTBreakpoint()
+    all_results = []
+    total_processed = 0
+    total_breakpoints = 0
+    total_ids = len(matching_ids_list)
+    analysis_date_str = analysis_timestamp.strftime("%Y-%m-%d")
+
+    logger.info(f"Using analysis date: {analysis_date_str}")
+    logger.info(f"Starting processing of {total_ids:,} IDs in batches of {batch_size}")
+    logger.info(f"Using {n_jobs} parallel jobs")
+    logger.info(f"Intermediate results will be saved every {save_interval:,} IDs")
+
+    # Check if there's a saved intermediate file to resume from
+    if intermediate_file.exists():
+        try:
+            saved_results = pd.read_parquet(intermediate_file)
+            saved_ids = set(saved_results['id_geohash'].values)
+            # Remove already processed IDs from the list
+            matching_ids_list = [id_val for id_val in matching_ids_list if id_val not in saved_ids]
+            all_results.append(saved_results)
+            total_breakpoints += len(saved_results)
+            logger.info(f"🔄 Resuming from intermediate file: {len(saved_ids)} IDs already processed")
+            logger.info(f"   Remaining IDs: {len(matching_ids_list)}")
+        except Exception as e:
+            logger.warning(f"Error reading intermediate file, starting fresh: {e}")
+
+    start_time = time.time()
+    processed_since_last_save = 0
+    total_processed = len(all_results) if all_results else 0
+
+    all_ids = list(matching_ids_list)
+    total_batches = (len(all_ids) + batch_size - 1) // batch_size if all_ids else 0
+
+    for batch_idx in range(total_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(all_ids))
+        batch_ids = all_ids[start_idx:end_idx]
+
+        batch_start_time = time.time()
+        progress_pct = (total_processed / (total_ids)) * 100 if total_ids > 0 else 0
+        logger.info(f"Batch {batch_idx + 1}/{total_batches}: {len(batch_ids)} IDs ({progress_pct:.1f}%)")
+
+        try:
+            # Get data for this batch
+            ds_historical_batch = ds_historical_train.sel(id_geohash=batch_ids)
+            ds_analysis_batch = ds_analysis.sel(id_geohash=batch_ids)
+
+            ds_combined = xr.concat([ds_historical_batch, ds_analysis_batch], dim='date')
+            ds_combined = ds_combined.sortby('date')
+            dwds = DWDataset(ds_combined)
+
+            # Process all IDs in the batch in parallel
+            os.environ['JOBLIB_PARALLEL'] = str(n_jobs)
+
+            try:
+                # This processes ALL IDs in dwds in parallel
+                breaks_df = bp.calculate_breaks_batch(dataset=dwds, progress_bar=False)
+
+                if breaks_df is not None and not breaks_df.empty:
+                    # Add the ID column if not present
+                    if 'id_geohash' not in breaks_df.columns:
+                        breaks_df = breaks_df.reset_index()
+
+                    all_results.append(breaks_df)
+                    total_breakpoints += len(breaks_df)
+                    total_processed += len(batch_ids)
+                    processed_since_last_save += len(batch_ids)
+
+                    logger.info(f"  ✅ Batch {batch_idx + 1} complete: {len(breaks_df)} breakpoints found")
+                else:
+                    logger.info(f"  ✅ Batch {batch_idx + 1} complete: 0 breakpoints found")
+                    total_processed += len(batch_ids)
+                    processed_since_last_save += len(batch_ids)
+
+            except Exception as e:
+                logger.error(f"Batch processing failed: {e}, falling back to individual processing")
+                # Fallback: process IDs individually
+                for id_val in batch_ids:
+                    try:
+                        ds_single = ds_combined.sel(id_geohash=[id_val])
+                        dwds_single = DWDataset(ds_single)
+                        breaks = bp.calculate_break(
+                            dataset=dwds_single,
+                            analysis_date=analysis_date_str,
+                            object_id=id_val
+                        )
+                        if breaks is not None and not breaks.empty:
+                            breaks['id_geohash'] = id_val
+                            all_results.append(breaks)
+                            total_breakpoints += len(breaks)
+                        total_processed += 1
+                        processed_since_last_save += 1
+                    except Exception as e2:
+                        logger.error(f"Error processing ID {id_val}: {e2}")
+                        total_processed += 1
+                        processed_since_last_save += 1
+                        continue
+
+            # Save intermediate results periodically
+            if processed_since_last_save >= save_interval:
+                save_intermediate_results(all_results, intermediate_file, analysis_date)
+                processed_since_last_save = 0
+                logger.info(f"💾 Intermediate results saved ({total_processed:,} IDs processed)")
+
+            # Log batch timing
+            batch_time = time.time() - batch_start_time
+            ids_per_second = len(batch_ids) / batch_time if batch_time > 0 else 0
+            logger.info(f"  ⏱️ Batch {batch_idx + 1} took {batch_time:.1f}s ({ids_per_second:.1f} IDs/sec)")
+
+            # Clean up
+            ds_historical_batch.close()
+            ds_analysis_batch.close()
+            ds_combined.close()
+            gc.collect()
+
+        except Exception as e:
+            logger.error(f"Error processing batch {batch_idx + 1}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Emergency save
+            if all_results:
+                save_intermediate_results(all_results, intermediate_file, analysis_date)
+                logger.info(f"💾 Emergency save completed after batch error")
+            continue
+
+    # Final save before combining
+    if all_results:
+        save_intermediate_results(all_results, intermediate_file, analysis_date)
+        logger.info(f"💾 Final intermediate save completed")
+
+    # 8. Combine results and save
+    if all_results:
+        try:
+            breaks_merged = pd.concat(all_results, ignore_index=True)
+            total_time = time.time() - start_time
+            minutes, seconds = divmod(total_time, 60)
+
+            # Print a nice summary box
+            logger.info(f"\n{'=' * 60}")
+            logger.info(f"📊 FINAL SUMMARY for {region} {analysis_date}")
+            logger.info(f"{'=' * 60}")
+            logger.info(f"   Total IDs processed: {total_processed:,}")
+            logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
+            logger.info(f"   Total time: {int(minutes)}m {int(seconds)}s")
+            if total_processed > 0:
+                logger.info(f"   Average time per ID: {total_time / total_processed:.2f}s")
+            logger.info(f"{'=' * 60}")
+
+            # Save to Zarr
+            logger.info(f"💾 Saving to Zarr: {zarr_path}")
+            ds_breaks = breaks_merged.set_index('id_geohash').to_xarray()
+            ds_breaks.to_zarr(zarr_path, mode='w')
+            logger.info(f"   ✅ Zarr saved successfully")
+
+            # Save final Parquet backup
+            path_to_joined_file = current_breakpoint_dir / f'drain_{analysis_date}.parquet'
+            breaks_merged.to_parquet(path_to_joined_file)
+            logger.info(f"   ✅ Parquet backup saved to {path_to_joined_file}")
+
+            # Clean up intermediate file
+            if intermediate_file.exists():
+                intermediate_file.unlink()
+                logger.info(f"   🧹 Intermediate file cleaned up")
+
+            # Log Zarr file size
+            if zarr_path.exists():
+                zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
+                logger.info(f"   📦 Zarr file size: {zarr_size_gb:.2f} GB")
+
+        except Exception as e:
+            logger.error(f"Error saving results: {e}")
+            import traceback
+            traceback.print_exc()
+            ds_historical.close()
+            ds_analysis.close()
+            return {'success': False, 'error': str(e)}
+    else:
+        logger.warning(f"No breakpoints found for {region} {analysis_date}")
+        # Create empty Zarr file
+        try:
+            empty_result = pd.DataFrame(columns=[
+                'date', 'water_observed', 'water_predicted', 'water_residual',
+                'water_predicted_lower_90', 'water_predicted_upper_90',
+                'water_historical_mean', 'water_historical_median',
+                'water_historical_std', 'water_historical_min',
+                'water_historical_max', 'drainage_confidence'
+            ])
+            empty_ds = empty_result.to_xarray()
+            empty_ds.attrs.update({
+                'region': region,
+                'analysis_date': analysis_date,
+                'created_at': datetime.now().isoformat(),
+                'complete': False,
+                'empty': True,
+                'analysis_source': analysis_source
+            })
+            empty_ds.to_zarr(zarr_path, mode='w')
+            logger.info(f"Created empty Zarr file for {analysis_date}")
+            empty_ds.close()
+
+            # Clean up intermediate file
+            if intermediate_file.exists():
+                intermediate_file.unlink()
+                logger.info(f"   🧹 Intermediate file cleaned up")
+        except Exception as e:
+            logger.error(f"Error creating empty Zarr: {e}")
+
+    # Clean up
+    ds_historical.close()
+    ds_analysis.close()
+    gc.collect()
+
+    return {
+        'success': True,
+        'region': region,
+        'analysis_date': analysis_date,
+        'analysis_source': analysis_source,
+        'total_ids': total_ids,
+        'processed': total_processed,
+        'breakpoints_found': total_breakpoints,
+        'zarr_path': str(zarr_path)
+    }
+
+
 def save_intermediate_results(all_results: list, intermediate_file: Path, analysis_date: str) -> None:
     """
     Save intermediate results to a Parquet file.
@@ -7049,6 +7405,7 @@ def save_intermediate_results(all_results: list, intermediate_file: Path, analys
     try:
         combined = pd.concat(all_results, ignore_index=True)
         combined.to_parquet(intermediate_file)
+        logger.debug(f"Intermediate results saved to {intermediate_file}")
     except Exception as e:
         logger.error(f"Error saving intermediate results: {e}")
 
