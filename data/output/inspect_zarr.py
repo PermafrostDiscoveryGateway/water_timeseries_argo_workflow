@@ -171,6 +171,9 @@ def inspect_zarr(zarr_path: str, show_data: bool = True, max_rows: int = 10):
 
 def main():
     """Main entry point."""
+
+    # TODO have it intelligently find new inputs and print out analysis on all of them
+
     zarr_path = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/output/EURASIA3/breakpoint_zarr/breakpoints_2026-06.zarr'
     show_data = True
 
