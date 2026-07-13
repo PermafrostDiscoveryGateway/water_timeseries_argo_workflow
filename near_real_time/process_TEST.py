@@ -128,7 +128,7 @@ def process_single_date_for_region(
         date_str: str,
         env_path: str = None,
         n_jobs: int = 12,
-        id_chunk_size: int = 100,  # Number of IDs per chunk (passed to calculate_break)
+        id_chunk_size: int = 500,  # Number of IDs per chunk (passed to calculate_break)
         save_interval: int = 10,   # Save every N chunks
 ) -> Dict[str, Any]:
     """

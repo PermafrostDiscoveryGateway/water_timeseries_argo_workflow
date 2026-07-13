@@ -306,7 +306,7 @@ def main():
             date_str=target_date,
             env_path=env_path,
             n_jobs=12,          # Use 12 parallel workers
-            id_chunk_size=100,  # Process 100 IDs per chunk
+            id_chunk_size=500,  # Process 100 IDs per chunk
             save_interval=10    # Save every 10 chunks (1000 IDs)
         )
 

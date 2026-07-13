@@ -171,8 +171,7 @@ def inspect_zarr(zarr_path: str, show_data: bool = True, max_rows: int = 10):
 
 def main():
     """Main entry point."""
-
-    zarr_path = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/output/TEST/breakpoint_zarr/breakpoints_2026-06.zarr'
+    zarr_path = '/Users/helium/ncsa/pdg/water_timeseries_argo_workflow/data/output/EURASIA3/breakpoint_zarr/breakpoints_2026-06.zarr'
     show_data = True
 
     if len(sys.argv) > 2 and sys.argv[2] == '--no-data':
