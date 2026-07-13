@@ -6682,6 +6682,7 @@ def debug_historical_dates(historical_file_path: str) -> None:
 
     print("=" * 80)
 
+
 def process_region_direct(
         region: str,
         analysis_date: str,
@@ -6702,6 +6703,22 @@ def process_region_direct(
     logger.info(f"\n{'=' * 80}")
     logger.info(f"PROCESSING {region} BY DIRECT ID MATCHING")
     logger.info(f"{'=' * 80}")
+
+    # ========== DEBUG: Load and print historical file dates FIRST ==========
+    dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+    historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
+
+    logger.info("=" * 60)
+    logger.info("DEBUG: LOADING HISTORICAL FILE TO CHECK DATES")
+    logger.info("=" * 60)
+    logger.info(f"Historical file path: {historical_file}")
+
+    if historical_file.exists():
+        debug_historical_dates(str(historical_file))
+    else:
+        logger.error(f"Historical file not found: {historical_file}")
+        return {'success': False, 'error': 'Historical file not found'}
+    # ========== END DEBUG ==========
 
     # 1. Get matching IDs
     match_result = find_matching_lake_ids(
@@ -6724,15 +6741,8 @@ def process_region_direct(
         return {'success': False, 'reason': 'No matching IDs'}
 
     # 2. Load data files
-    dynamic_world_data_dir = os.environ.get('dynamic_world_data')
     merge_dir = Path(dynamic_world_data_dir) / 'merge'
-
-    historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
     new_data_file = merge_dir / f"dw_{region}_{analysis_date}.nc"
-
-    if not historical_file.exists():
-        logger.error(f"Historical file not found: {historical_file}")
-        return {'success': False, 'error': 'Historical file not found'}
 
     if not new_data_file.exists():
         logger.error(f"New data file not found: {new_data_file}")
@@ -6743,38 +6753,6 @@ def process_region_direct(
     import pandas as pd
     import numpy as np
     import gc
-
-    logger.info(f"Loading historical dataset: {historical_file}")
-    ds_historical = xr.open_dataset(str(historical_file))
-
-    # ========== DEBUG: Print dates from historical file ==========
-    logger.info("=" * 60)
-    logger.info("DEBUG: HISTORICAL FILE DATES")
-    logger.info("=" * 60)
-
-    if 'date' in ds_historical.coords:
-        hist_dates = pd.to_datetime(ds_historical.date.values)
-        hist_date_strings = [d.strftime("%Y-%m-%d") for d in hist_dates]
-        logger.info(f"Total dates: {len(hist_dates)}")
-        logger.info(f"Date range: {hist_date_strings[0]} to {hist_date_strings[-1]}")
-        logger.info(f"First 10 dates: {hist_date_strings[:10]}")
-        logger.info(f"Last 10 dates: {hist_date_strings[-10:]}")
-
-        # Check if the analysis date month exists in historical data
-        analysis_month = analysis_date[:7]  # YYYY-MM
-        months_in_hist = sorted(set([d.strftime("%Y-%m") for d in hist_dates]))
-        logger.info(f"Total months available: {len(months_in_hist)}")
-        logger.info(f"First 20 months: {months_in_hist[:20]}")
-        logger.info(f"Last 20 months: {months_in_hist[-20:]}")
-
-        if analysis_month in months_in_hist:
-            logger.info(f"✅ Analysis month {analysis_month} FOUND in historical data")
-        else:
-            logger.info(f"❌ Analysis month {analysis_month} NOT found in historical data")
-            logger.info(f"Closest months: {[m for m in months_in_hist if m > analysis_month][:5]}")
-    else:
-        logger.warning("No 'date' coordinate found in historical dataset")
-    # ========== END DEBUG ==========
 
     logger.info(f"Loading new data dataset: {new_data_file}")
     ds_new_data = xr.open_dataset(str(new_data_file))
@@ -6794,6 +6772,8 @@ def process_region_direct(
     # ========== END DEBUG ==========
 
     # Filter to matching IDs
+    logger.info(f"Loading historical dataset for processing...")
+    ds_historical = xr.open_dataset(str(historical_file))
     ds_historical = ds_historical.sel(id_geohash=matching_ids)
     ds_new_data = ds_new_data.sel(id_geohash=matching_ids)
 
@@ -6857,14 +6837,9 @@ def process_region_direct(
                     logger.info(f"✅ Analysis date {analysis_date_str} FOUND in combined dataset")
                 else:
                     logger.info(f"❌ Analysis date {analysis_date_str} NOT found in combined dataset")
-                    # Find closest date
-                    for d in combined_dates:
-                        if d.strftime("%Y-%m") == analysis_date:
-                            logger.info(f"   Found month {analysis_date} with date: {d.strftime('%Y-%m-%d')}")
-                            break
             # ========== END DEBUG ==========
 
-            # Create DWDataset
+            # Create DWDataset (this handles the ID dimension correctly)
             dwds = DWDataset(ds_combined)
 
             # Check if analysis date exists in the dataset
@@ -6884,57 +6859,69 @@ def process_region_direct(
                         break
 
             if not date_found:
-                logger.warning(
-                    f"Analysis date {analysis_date_str} not found in dataset dates for batch {batch_idx + 1}")
-                # Try to find the date in the dataset by checking the first date of the month
-                found_alt = False
+                # Try to find any date in the same month
                 for d in dwds.dates_:
                     if isinstance(d, pd.Timestamp):
                         if d.strftime("%Y-%m") == analysis_date:
-                            logger.info(f"   Found alternative date: {d.strftime('%Y-%m-%d')} (using month match)")
-                            # Use this alternative date
                             alt_date_str = d.strftime("%Y-%m-%d")
-                            found_alt = True
+                            logger.info(f"   Using alternative date: {alt_date_str} (same month)")
+                            date_found = True
+                            analysis_date_str = alt_date_str
                             break
                     elif isinstance(d, np.datetime64):
                         if pd.Timestamp(d).strftime("%Y-%m") == analysis_date:
                             alt_date_str = pd.Timestamp(d).strftime("%Y-%m-%d")
-                            found_alt = True
+                            logger.info(f"   Using alternative date: {alt_date_str} (same month)")
+                            date_found = True
+                            analysis_date_str = alt_date_str
                             break
 
-                if found_alt:
-                    logger.info(f"   Using alternative date: {alt_date_str}")
-                    # Continue with the alternative date
-                else:
-                    logger.warning(f"   No dates found for month {analysis_date} in this batch")
+                if not date_found:
+                    logger.warning(f"No dates found for month {analysis_date} in batch {batch_idx + 1}")
                     # Clean up and continue
                     ds_historical_batch.close()
                     ds_new_batch.close()
                     ds_combined.close()
                     gc.collect()
                     continue
-            else:
-                alt_date_str = analysis_date_str
 
-            # Calculate breakpoints for all IDs in batch
-            for id_val in batch_ids:
-                try:
-                    # Get data for this specific ID
-                    ds_single = ds_combined.sel(id_geohash=id_val)
-                    # Create a single-ID dataset
-                    dwds_single = DWDataset(ds_single)
+            # ========== FIX: Calculate breakpoints for all IDs in batch ==========
+            # Use the DWDataset directly with calculate_breaks_batch instead of looping
+            # This avoids the "Dimension 'id_geohash' not found" issue
+            try:
+                # The DWDataset already has the id_geohash dimension
+                # We can use calculate_breaks_batch which handles multiple IDs
+                breaks_df = bp.calculate_breaks_batch(dataset=dwds, progress_bar=False)
 
-                    # Use the date string (either original or alternative)
-                    breaks = bp.calculate_break(dataset=dwds_single, analysis_date=alt_date_str)
+                if breaks_df is not None and not breaks_df.empty:
+                    # Filter to only IDs in this batch (should already be filtered)
+                    all_results.append(breaks_df)
+                    total_breakpoints += len(breaks_df)
+                    total_processed += len(batch_ids)
+                    logger.info(f"  Found {len(breaks_df)} breakpoints in this batch")
+                else:
+                    logger.warning(f"  No breakpoints found in batch {batch_idx + 1}")
+                    total_processed += len(batch_ids)
 
-                    if breaks is not None and not breaks.empty:
-                        breaks['id_geohash'] = id_val
-                        all_results.append(breaks)
-                        total_breakpoints += len(breaks)
-                    total_processed += 1
-                except Exception as e:
-                    logger.error(f"Error processing ID {id_val}: {e}")
-                    continue
+            except Exception as e:
+                logger.error(f"Error processing batch {batch_idx + 1}: {e}")
+                import traceback
+                traceback.print_exc()
+                # Try individual processing as fallback
+                logger.info("  Falling back to individual ID processing...")
+                for id_val in batch_ids:
+                    try:
+                        # Keep the dimension by using a list
+                        ds_single = ds_combined.sel(id_geohash=[id_val])
+                        dwds_single = DWDataset(ds_single)
+                        breaks = bp.calculate_break(dataset=dwds_single, analysis_date=analysis_date_str)
+                        if breaks is not None and not breaks.empty:
+                            breaks['id_geohash'] = id_val
+                            all_results.append(breaks)
+                            total_breakpoints += len(breaks)
+                        total_processed += 1
+                    except Exception as e2:
+                        logger.error(f"Error processing ID {id_val}: {e2}")
 
             # Clean up
             ds_historical_batch.close()
