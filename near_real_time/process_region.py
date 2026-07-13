@@ -216,7 +216,7 @@ def process_summer_months_for_region(
                 logger.info(f"  Processing {region} for {month_str}...")
 
                 # Use the new process_region_date function
-                process_result = process_region_date(
+                process_result = process_region_date_new(
                     region=region,
                     analysis_date=month_str,
                     env_path=env_path,
