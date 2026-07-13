@@ -6688,10 +6688,12 @@ def process_region_date_new(
         analysis_date: str,  # Format: "YYYY-MM"
         env_path: str = None,
         batch_size: int = 1000,
-        progress_interval: int = 100  # Print progress every N IDs
+        progress_interval: int = 100,
+        save_interval: int = 5000  # Save intermediate results every N IDs
 ) -> Dict[str, Any]:
     """
     Process a single date for a region, pulling data from both historical and downloaded sources.
+    Saves intermediate results periodically to prevent data loss.
     """
     from water_timeseries.breakpoint import NRTBreakpoint
     from water_timeseries.dataset import DWDataset
@@ -6802,8 +6804,10 @@ def process_region_date_new(
     zarr_output_dir.mkdir(exist_ok=True, parents=True)
     zarr_path = zarr_output_dir / f'breakpoints_{analysis_date}.zarr'
 
+    # Intermediate results file (Parquet backup)
     current_breakpoint_dir = output_dir / f'breakpoint_{analysis_date}'
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
+    intermediate_file = current_breakpoint_dir / f'intermediate_results_{analysis_date}.parquet'
 
     # 7. Process in batches with progress tracking
     bp = NRTBreakpoint()
@@ -6816,13 +6820,29 @@ def process_region_date_new(
     logger.info(f"Using analysis date: {analysis_date_str}")
     logger.info(f"Starting processing of {total_ids:,} IDs in batches of {batch_size}")
     logger.info(f"Progress will be shown every {progress_interval} IDs")
+    logger.info(f"Intermediate results will be saved every {save_interval} IDs")
+
+    # Check if there's a saved intermediate file to resume from
+    if intermediate_file.exists():
+        try:
+            saved_results = pd.read_parquet(intermediate_file)
+            saved_ids = set(saved_results['id_geohash'].values)
+            # Remove already processed IDs from the list
+            matching_ids_list = [id_val for id_val in matching_ids_list if id_val not in saved_ids]
+            all_results.append(saved_results)
+            total_breakpoints += len(saved_results)
+            logger.info(f"🔄 Resuming from intermediate file: {len(saved_ids)} IDs already processed")
+            logger.info(f"   Remaining IDs: {len(matching_ids_list)}")
+        except Exception as e:
+            logger.warning(f"Error reading intermediate file, starting fresh: {e}")
 
     # Track timing
     start_time = time.time()
-    last_progress_time = start_time
+    last_save_time = start_time
+    processed_since_last_save = 0
 
     all_ids = list(matching_ids_list)
-    total_batches = (len(all_ids) + batch_size - 1) // batch_size
+    total_batches = (len(all_ids) + batch_size - 1) // batch_size if all_ids else 0
 
     for batch_idx in range(total_batches):
         start_idx = batch_idx * batch_size
@@ -6860,13 +6880,14 @@ def process_region_date_new(
                         all_results.append(breaks)
                         batch_breakpoints += len(breaks)
                     total_processed += 1
+                    processed_since_last_save += 1
 
                     # Print progress at regular intervals
                     if total_processed % progress_interval == 0 or total_processed == total_ids:
                         elapsed = time.time() - start_time
-                        progress_pct = (total_processed / total_ids) * 100
+                        progress_pct = (total_processed / total_ids) * 100 if total_ids > 0 else 0
                         avg_time = elapsed / total_processed if total_processed > 0 else 0
-                        eta_seconds = (total_ids - total_processed) * avg_time
+                        eta_seconds = (total_ids - total_processed) * avg_time if total_processed > 0 else 0
                         eta_minutes = eta_seconds / 60
 
                         logger.info(
@@ -6875,6 +6896,13 @@ def process_region_date_new(
                             f"{total_breakpoints} breakpoints found - "
                             f"ETA: {eta_minutes:.1f} min"
                         )
+
+                    # Save intermediate results periodically
+                    if processed_since_last_save >= save_interval:
+                        save_intermediate_results(all_results, intermediate_file, analysis_date)
+                        processed_since_last_save = 0
+                        last_save_time = time.time()
+                        logger.info(f"💾 Intermediate results saved ({total_processed:,} IDs processed)")
 
                 except Exception as e:
                     # Only log errors occasionally
@@ -6889,7 +6917,7 @@ def process_region_date_new(
             if (batch_idx + 1) % 5 == 0 or batch_idx == total_batches - 1:
                 batch_time = time.time() - batch_start_time
                 ids_per_second = (total_processed - processed_before) / batch_time if batch_time > 0 else 0
-                progress_pct = (total_processed / total_ids) * 100
+                progress_pct = (total_processed / total_ids) * 100 if total_ids > 0 else 0
                 logger.info(
                     f"✅ Batch {batch_idx + 1}/{total_batches} complete: "
                     f"{total_processed:,}/{total_ids:,} ({progress_pct:.1f}%) - "
@@ -6906,7 +6934,16 @@ def process_region_date_new(
             logger.error(f"Error processing batch {batch_idx + 1}: {e}")
             import traceback
             traceback.print_exc()
+            # Save what we have so far
+            if all_results:
+                save_intermediate_results(all_results, intermediate_file, analysis_date)
+                logger.info(f"💾 Emergency save completed after batch error")
             continue
+
+    # Final save before combining
+    if all_results:
+        save_intermediate_results(all_results, intermediate_file, analysis_date)
+        logger.info(f"💾 Final intermediate save completed")
 
     # 8. Combine results and save
     if all_results:
@@ -6932,10 +6969,15 @@ def process_region_date_new(
             ds_breaks.to_zarr(zarr_path, mode='w')
             logger.info(f"   ✅ Zarr saved successfully")
 
-            # Save Parquet backup
+            # Save final Parquet backup
             path_to_joined_file = current_breakpoint_dir / f'drain_{analysis_date}.parquet'
             breaks_merged.to_parquet(path_to_joined_file)
             logger.info(f"   ✅ Parquet backup saved to {path_to_joined_file}")
+
+            # Clean up intermediate file
+            if intermediate_file.exists():
+                intermediate_file.unlink()
+                logger.info(f"   🧹 Intermediate file cleaned up")
 
             # Log Zarr file size
             if zarr_path.exists():
@@ -6972,6 +7014,11 @@ def process_region_date_new(
             empty_ds.to_zarr(zarr_path, mode='w')
             logger.info(f"Created empty Zarr file for {analysis_date}")
             empty_ds.close()
+
+            # Clean up intermediate file
+            if intermediate_file.exists():
+                intermediate_file.unlink()
+                logger.info(f"   🧹 Intermediate file cleaned up")
         except Exception as e:
             logger.error(f"Error creating empty Zarr: {e}")
 
@@ -6990,6 +7037,20 @@ def process_region_date_new(
         'breakpoints_found': total_breakpoints,
         'zarr_path': str(zarr_path)
     }
+
+
+def save_intermediate_results(all_results: list, intermediate_file: Path, analysis_date: str) -> None:
+    """
+    Save intermediate results to a Parquet file.
+    """
+    if not all_results:
+        return
+
+    try:
+        combined = pd.concat(all_results, ignore_index=True)
+        combined.to_parquet(intermediate_file)
+    except Exception as e:
+        logger.error(f"Error saving intermediate results: {e}")
 
 def process_region_direct(
         region: str,
