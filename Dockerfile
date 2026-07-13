@@ -1,5 +1,6 @@
 FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:main
 
+RUN pip install --upgrade git+https://github.com/permafrostdiscoverygateway/water-timeseries-v2.git@main
 
 # Install additional Python dependencies using uv
 RUN uv pip install \
