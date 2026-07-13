@@ -6695,6 +6695,7 @@ def process_region_date_new(
     from water_timeseries.breakpoint import NRTBreakpoint
     from water_timeseries.dataset import DWDataset
     import time
+    from tqdm import tqdm
 
     if env_path:
         load_dotenv(dotenv_path=env_path)
@@ -6814,13 +6815,16 @@ def process_region_date_new(
 
     logger.info(f"Using analysis date: {analysis_date_str}")
     logger.info(f"Starting processing of {total_ids:,} IDs in batches of {batch_size}")
+    logger.info(f"Total batches: {(total_ids + batch_size - 1) // batch_size}")
 
     # Track timing
     start_time = time.time()
-    last_log_time = start_time
 
     all_ids = list(matching_ids_list)
     total_batches = (len(all_ids) + batch_size - 1) // batch_size
+
+    # Create a progress bar for batches
+    batch_pbar = tqdm(total=total_batches, desc=f"Processing {region} {analysis_date}", unit="batch", position=0)
 
     for batch_idx in range(total_batches):
         start_idx = batch_idx * batch_size
@@ -6831,8 +6835,9 @@ def process_region_date_new(
         batch_start_time = time.time()
         processed_before = total_processed
 
-        logger.info(
-            f"Batch {batch_idx + 1}/{total_batches}: {len(batch_ids)} IDs (processed {total_processed:,}/{total_ids:,})")
+        # Update progress bar description with current progress
+        progress_pct = (total_processed / total_ids) * 100
+        batch_pbar.set_description(f"Batch {batch_idx + 1}/{total_batches} ({progress_pct:.1f}%)")
 
         try:
             # Get data for this batch
@@ -6843,7 +6848,7 @@ def process_region_date_new(
             ds_combined = ds_combined.sortby('date')
             dwds = DWDataset(ds_combined)
 
-            # Process each ID in the batch
+            # Process each ID in the batch with a nested progress bar
             batch_breakpoints = 0
             for id_val in batch_ids:
                 try:
@@ -6869,10 +6874,17 @@ def process_region_date_new(
 
             total_breakpoints += batch_breakpoints
 
+            # Update progress bar
+            batch_pbar.update(1)
+            batch_pbar.set_postfix({
+                'processed': f"{total_processed:,}/{total_ids:,}",
+                'breakpoints': total_breakpoints,
+                'ids/sec': f"{(total_processed - processed_before) / (time.time() - batch_start_time):.1f}"
+            })
+
             # Log batch completion with timing
             batch_time = time.time() - batch_start_time
             total_time = time.time() - start_time
-            ids_per_second = (total_processed - processed_before) / batch_time if batch_time > 0 else 0
 
             # Progress percentage
             progress_pct = (total_processed / total_ids) * 100
@@ -6884,11 +6896,7 @@ def process_region_date_new(
                 eta_seconds = remaining_ids * avg_time_per_id
                 eta_minutes = eta_seconds / 60
                 logger.info(
-                    f"  ✅ Batch {batch_idx + 1} complete: {batch_breakpoints} breakpoints found, {ids_per_second:.1f} IDs/sec")
-                logger.info(
-                    f"  📊 Progress: {total_processed:,}/{total_ids:,} ({progress_pct:.1f}%) - ETA: {eta_minutes:.1f} minutes")
-            else:
-                logger.info(f"  ✅ Batch {batch_idx + 1} complete: {batch_breakpoints} breakpoints found")
+                    f"  ✅ Batch {batch_idx + 1}/{total_batches} complete: {batch_breakpoints} breakpoints, {progress_pct:.1f}% done, ETA: {eta_minutes:.1f} min")
 
             # Clean up
             ds_historical_batch.close()
@@ -6900,7 +6908,10 @@ def process_region_date_new(
             logger.error(f"Error processing batch {batch_idx + 1}: {e}")
             import traceback
             traceback.print_exc()
+            batch_pbar.update(1)
             continue
+
+    batch_pbar.close()
 
     # 8. Combine results and save
     if all_results:
@@ -6908,27 +6919,33 @@ def process_region_date_new(
             breaks_merged = pd.concat(all_results, ignore_index=True)
             total_time = time.time() - start_time
             minutes, seconds = divmod(total_time, 60)
-            logger.info(f"\n📊 FINAL SUMMARY for {region} {analysis_date}:")
+
+            # Print a nice summary box
+            logger.info(f"\n{'=' * 60}")
+            logger.info(f"📊 FINAL SUMMARY for {region} {analysis_date}")
+            logger.info(f"{'=' * 60}")
             logger.info(f"   Total IDs processed: {total_processed:,}")
             logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
             logger.info(f"   Total time: {int(minutes)}m {int(seconds)}s")
-            logger.info(f"   Average time per ID: {total_time / total_processed:.2f}s")
+            if total_processed > 0:
+                logger.info(f"   Average time per ID: {total_time / total_processed:.2f}s")
+            logger.info(f"{'=' * 60}")
 
             # Save to Zarr
-            logger.info(f"   Saving to Zarr: {zarr_path}")
+            logger.info(f"💾 Saving to Zarr: {zarr_path}")
             ds_breaks = breaks_merged.set_index('id_geohash').to_xarray()
             ds_breaks.to_zarr(zarr_path, mode='w')
-            logger.info(f"   Zarr saved successfully")
+            logger.info(f"   ✅ Zarr saved successfully")
 
             # Save Parquet backup
             path_to_joined_file = current_breakpoint_dir / f'drain_{analysis_date}.parquet'
             breaks_merged.to_parquet(path_to_joined_file)
-            logger.info(f"   Parquet backup saved to {path_to_joined_file}")
+            logger.info(f"   ✅ Parquet backup saved to {path_to_joined_file}")
 
             # Log Zarr file size
             if zarr_path.exists():
                 zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
-                logger.info(f"   Zarr file size: {zarr_size_gb:.2f} GB")
+                logger.info(f"   📦 Zarr file size: {zarr_size_gb:.2f} GB")
 
         except Exception as e:
             logger.error(f"Error saving results: {e}")
