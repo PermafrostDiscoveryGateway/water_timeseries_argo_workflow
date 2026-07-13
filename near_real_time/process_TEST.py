@@ -305,9 +305,9 @@ def main():
             region=region,
             date_str=target_date,
             env_path=env_path,
-            n_jobs=12,  # Use 12 parallel jobs
-            save_interval=2500,
-            batch_size=5000
+            n_jobs=12,  # Use 12 parallel workers
+            id_chunk_size=500,  # Process 100 IDs per chunk
+            save_interval=10  # Save every 10 chunks (1000 IDs)
         )
 
         all_results[region] = result
