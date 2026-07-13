@@ -12,7 +12,6 @@ RUN apt-get update && apt-get install -y \
 RUN pip install uv
 
 # Install water-timeseries directly from GitHub (main branch)
-# Use --system flag to install in the system Python environment
 RUN uv pip install --system git+https://github.com/permafrostdiscoverygateway/water-timeseries-v2.git@main
 
 # Install additional Python dependencies using uv
@@ -41,12 +40,7 @@ RUN python -c "import geemap; print(f'geemap version after install: {geemap.__ve
 RUN python -c "import geemap; print(f'✅ geemap version: {geemap.__version__}'); assert hasattr(geemap, 'ee_initialize'), 'ee_initialize missing!'; print('✅ ee_initialize exists!')"
 
 # Verify water-timeseries has absolute values
-RUN python -c "
-from water_timeseries.breakpoint import NRTBreakpoint
-assert 'water_observed_absolute' in NRTBreakpoint.output_columns, '❌ water-timeseries is missing absolute values!'
-print('✅ water-timeseries has absolute values!')
-print(f'   Output columns: {len(NRTBreakpoint.output_columns)} columns')
-"
+RUN python -c "from water_timeseries.breakpoint import NRTBreakpoint; assert 'water_observed_absolute' in NRTBreakpoint.output_columns, '❌ water-timeseries is missing absolute values!'; print('✅ water-timeseries has absolute values!'); print(f'   Output columns: {len(NRTBreakpoint.output_columns)} columns')"
 
 # Set working directory
 WORKDIR /app
