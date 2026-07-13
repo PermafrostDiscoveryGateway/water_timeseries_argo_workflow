@@ -6839,89 +6839,36 @@ def process_region_direct(
                     logger.info(f"❌ Analysis date {analysis_date_str} NOT found in combined dataset")
             # ========== END DEBUG ==========
 
-            # Create DWDataset (this handles the ID dimension correctly)
-            dwds = DWDataset(ds_combined)
+            # ========== FIX: Process each ID individually with correct parameters ==========
+            for id_val in batch_ids:
+                try:
+                    # Get data for this specific ID - keep the dimension by using a list
+                    ds_single = ds_combined.sel(id_geohash=[id_val])
 
-            # Check if analysis date exists in the dataset
-            date_found = False
-            for d in dwds.dates_:
-                if isinstance(d, pd.Timestamp):
-                    if d.strftime("%Y-%m-%d") == analysis_date_str:
-                        date_found = True
-                        break
-                elif isinstance(d, np.datetime64):
-                    if pd.Timestamp(d).strftime("%Y-%m-%d") == analysis_date_str:
-                        date_found = True
-                        break
-                elif isinstance(d, str):
-                    if d[:10] == analysis_date_str:
-                        date_found = True
-                        break
+                    # Create DWDataset
+                    dwds_single = DWDataset(ds_single)
 
-            if not date_found:
-                # Try to find any date in the same month
-                for d in dwds.dates_:
-                    if isinstance(d, pd.Timestamp):
-                        if d.strftime("%Y-%m") == analysis_date:
-                            alt_date_str = d.strftime("%Y-%m-%d")
-                            logger.info(f"   Using alternative date: {alt_date_str} (same month)")
-                            date_found = True
-                            analysis_date_str = alt_date_str
-                            break
-                    elif isinstance(d, np.datetime64):
-                        if pd.Timestamp(d).strftime("%Y-%m") == analysis_date:
-                            alt_date_str = pd.Timestamp(d).strftime("%Y-%m-%d")
-                            logger.info(f"   Using alternative date: {alt_date_str} (same month)")
-                            date_found = True
-                            analysis_date_str = alt_date_str
-                            break
+                    # ========== FIX: Call calculate_break with correct parameters ==========
+                    # NRTBreakpoint.calculate_break expects:
+                    #   - dataset: LakeDataset (dwds_single)
+                    #   - analysis_date: str (analysis_date_str)
+                    #   - object_id: str (id_val)
+                    breaks = bp.calculate_break(
+                        dataset=dwds_single,
+                        analysis_date=analysis_date_str,
+                        object_id=id_val
+                    )
 
-                if not date_found:
-                    logger.warning(f"No dates found for month {analysis_date} in batch {batch_idx + 1}")
-                    # Clean up and continue
-                    ds_historical_batch.close()
-                    ds_new_batch.close()
-                    ds_combined.close()
-                    gc.collect()
+                    if breaks is not None and not breaks.empty:
+                        # Add the ID as a column
+                        breaks['id_geohash'] = id_val
+                        all_results.append(breaks)
+                        total_breakpoints += len(breaks)
+                    total_processed += 1
+
+                except Exception as e:
+                    logger.error(f"Error processing ID {id_val}: {e}")
                     continue
-
-            # ========== FIX: Calculate breakpoints for all IDs in batch ==========
-            # Use the DWDataset directly with calculate_breaks_batch instead of looping
-            # This avoids the "Dimension 'id_geohash' not found" issue
-            try:
-                # The DWDataset already has the id_geohash dimension
-                # We can use calculate_breaks_batch which handles multiple IDs
-                breaks_df = bp.calculate_breaks_batch(dataset=dwds, progress_bar=False)
-
-                if breaks_df is not None and not breaks_df.empty:
-                    # Filter to only IDs in this batch (should already be filtered)
-                    all_results.append(breaks_df)
-                    total_breakpoints += len(breaks_df)
-                    total_processed += len(batch_ids)
-                    logger.info(f"  Found {len(breaks_df)} breakpoints in this batch")
-                else:
-                    logger.warning(f"  No breakpoints found in batch {batch_idx + 1}")
-                    total_processed += len(batch_ids)
-
-            except Exception as e:
-                logger.error(f"Error processing batch {batch_idx + 1}: {e}")
-                import traceback
-                traceback.print_exc()
-                # Try individual processing as fallback
-                logger.info("  Falling back to individual ID processing...")
-                for id_val in batch_ids:
-                    try:
-                        # Keep the dimension by using a list
-                        ds_single = ds_combined.sel(id_geohash=[id_val])
-                        dwds_single = DWDataset(ds_single)
-                        breaks = bp.calculate_break(dataset=dwds_single, analysis_date=analysis_date_str)
-                        if breaks is not None and not breaks.empty:
-                            breaks['id_geohash'] = id_val
-                            all_results.append(breaks)
-                            total_breakpoints += len(breaks)
-                        total_processed += 1
-                    except Exception as e2:
-                        logger.error(f"Error processing ID {id_val}: {e2}")
 
             # Clean up
             ds_historical_batch.close()
