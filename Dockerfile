@@ -1,4 +1,4 @@
-FROM tcnichol/water-timeseries-v2:main
+FROM tcnichol/water-timeseries-v2:latest
 
 # Install the latest water-timeseries from GitHub
 # RUN uv pip install git+https://github.com/permafrostdiscoverygateway/water-timeseries-v2.git@main
