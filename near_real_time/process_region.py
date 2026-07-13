@@ -317,7 +317,8 @@ def main():
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-    original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
+    # original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
+    original_most_recent_dynamic_world_file = os.path.join(dynamic_world_data_dir,'lakes_dw_V2d_compressed.nc')
     logger.debug(f"Dates in the historical file")
     debug_historical_dates(historical_file_path=original_most_recent_dynamic_world_file)
 
