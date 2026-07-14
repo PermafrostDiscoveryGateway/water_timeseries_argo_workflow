@@ -126,12 +126,8 @@ def main():
 
         downloads_complete = verify_downloads_complete(region=REGION, analysis_dates=date_to_run)
         logger.debug(downloads_complete)
-        complete = False
         if downloads_complete.get('need_download', False) or not downloads_complete.get('complete', False):
-            complete = True
-        logger.debug(f"Are downloads complete for region {REGION}? {complete}")
-        if not complete:
-            logger.debug(f"We should run downloads for {REGION} for {incomplete_dates}")
+            logger.debug(f"We should run downloads for {REGION} for {timestamp_to_run}")
             if env_path:
                 download_result = download_near_real_time_region_dates(region=REGION, dates_to_download=timestamp_to_run, env_path=env_path )
                 logger.debug(f"Download result: {download_result}")
