@@ -99,6 +99,14 @@ def main():
     logger.debug(f"This is the most recent dynamic world file {original_most_recent_dynamic_world_file}")
     missing_dates_from_netcdf = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
 
+    downloads_dir = Path(dynamic_world_data_dir) / 'downloads' / REGION
+    merge_dir = Path(dynamic_world_data_dir) / 'merge' / REGION
+
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+    merge_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Ensured directories exist: {downloads_dir}, {merge_dir}")
+
 
 
     TODAY =  datetime.now()
