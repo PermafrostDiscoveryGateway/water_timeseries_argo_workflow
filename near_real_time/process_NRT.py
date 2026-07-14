@@ -1,25 +1,16 @@
-from near_real_time_grid_v2 import verify_downloads_complete, verify_process_complete, merge_near_real_time_region, \
-    process_near_real_time_region_dates_zarr, download_near_real_time_region_dates, generate_expected_dates, \
-    merge_near_real_time_region_v3_simple, process_region_date_new, process_region_date_new_fast, \
-    debug_historical_dates, find_matching_lake_ids, \
-    compare_netcdf_files, verify_merged_netcdf, verify_merged_data, merge_new_results, is_all_new_data_in_file
+from near_real_time_grid_v2 import process_region_date_new_fast, debug_historical_dates
 import sys
 from typing import List, Dict, Any, Optional
-import shutil
 import gc
-import utils.download_new_dynamic_world_data as download_new_dynamic_world_data
 from loguru import logger
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 import os
 import glob
 import time
 import pandas as pd
-import utils.region_boundaries
 from pathlib import Path
 import xarray as xr
-import numpy as np
-
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -241,6 +232,7 @@ def main():
     ]
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
+    # TODO replace with  most recent file
     original_most_recent_dynamic_world_file = os.path.join(dynamic_world_data_dir, 'lakes_dw_V2d_compressed.nc')
     logger.debug(f"Dates in the historical file")
     debug_historical_dates(historical_file_path=original_most_recent_dynamic_world_file)

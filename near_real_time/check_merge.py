@@ -130,7 +130,7 @@ def main():
     if SHOULD_RUN:
         date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
         dates_to_run_string = date_to_run[0].replace('-', '_')
-        name_of_final_merge_file = f"{dynamic_world_data_dir}_lakes_dw_Vdc{dates_to_run_string}.nc"
+        name_of_final_merge_file = f"{dynamic_world_data_dir}_lakes_dw_Vdc_{dates_to_run_string}.nc"
         REGIONS = utils.region_boundaries.get_region_boundaries()
         REGION_NAMES = list(REGIONS.keys())
 
@@ -155,7 +155,7 @@ def main():
 
 
 
-
+# TODO we may not need this anymore
 
 if __name__ == "__main__":
     main()

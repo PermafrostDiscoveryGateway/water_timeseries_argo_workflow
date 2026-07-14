@@ -10,18 +10,12 @@ import zarr
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
-from tqdm import tqdm
-from pathlib import Path
 from dotenv import load_dotenv
 import time
 from loguru import logger
 import sys
 import geemap
 import ee
-import glob
-import os
-import gc
-import shutil
 import psutil
 from water_timeseries.downloader import EarthEngineDownloader
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
@@ -34,8 +28,6 @@ from utils.download_new_dynamic_world_data import download_new_dynamic_world_dat
 from utils.region_boundaries import get_region_boundaries
 import utils.download_new_dynamic_world_data
 import json
-import resource
-import tempfile
 
 import dask
 import dask.dataframe as dd

@@ -10,9 +10,7 @@ import pandas as pd
 from pathlib import Path
 import xarray as xr
 import numpy as np
-import shutil
 import gc
-
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -160,7 +158,8 @@ def main():
     combined_file_name = f"dynamic_world_combined_{date_to_run}.nc"
     combined_file_path = os.path.join(dynamic_world_data_dir, 'merge', combined_file_name)
 
-    debug_id_mismatch(historical_file=original_most_recent_dynamic_world_file, combined_file=combined_file_path)
+    # not necessary, for debugging
+    # debug_id_mismatch(historical_file=original_most_recent_dynamic_world_file, combined_file=combined_file_path)
 
     if os.path.exists(combined_file_path):
         combined_file_size_gb = Path(combined_file_path).stat().st_size / (1024 ** 3)
