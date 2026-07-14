@@ -8430,6 +8430,13 @@ def verify_downloads_complete(
     REGION_NAME = region
     dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
 
+    # ========== CREATE DIRECTORY IF IT DOESN'T EXIST ==========
+    # Create region directory structure to prevent failures
+    region_download_dir = dynamic_world_download_dir / REGION_NAME
+    region_download_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Ensured directory exists: {region_download_dir}")
+    # ========== END DIRECTORY CREATION ==========
+
     # Normalize analysis_dates to string format "YYYY-MM"
     normalized_dates = []
     if analysis_dates is not None:
@@ -8479,16 +8486,40 @@ def verify_downloads_complete(
         if not analysis_dates:
             return {
                 'complete': False,
+                'success': False,
+                'error': 'No dates found to verify',
+                'region': REGION_NAME,
                 'reason': 'No dates found to verify',
                 'discovered_dates': discovered_dates,
-                'date_results': {}
+                'date_results': {},
+                'summary': {
+                    'total_dates': 0,
+                    'complete_count': 0,
+                    'incomplete_count': 0,
+                    'total_expected_downloads': 0,
+                    'total_successful_downloads': 0,
+                    'total_failed_downloads': 0,
+                    'total_skipped_downloads': 0
+                }
             }
     else:
         # No dates provided and auto_discover is False
         return {
             'complete': False,
+            'success': False,
+            'error': 'No dates provided for verification',
+            'region': REGION_NAME,
             'reason': 'No dates provided for verification',
-            'date_results': {}
+            'date_results': {},
+            'summary': {
+                'total_dates': 0,
+                'complete_count': 0,
+                'incomplete_count': 0,
+                'total_expected_downloads': 0,
+                'total_successful_downloads': 0,
+                'total_failed_downloads': 0,
+                'total_skipped_downloads': 0
+            }
         }
 
     logger.info(f"Verifying downloads for region '{REGION_NAME}' for {len(analysis_dates)} date(s): {analysis_dates}")
@@ -8496,6 +8527,7 @@ def verify_downloads_complete(
     date_results = {}
     all_complete = True
     missing_dates = []
+    directory_missing_dates = []
 
     for analysis_date in analysis_dates:
         logger.info(f"\n{'=' * 60}")
@@ -8508,6 +8540,7 @@ def verify_downloads_complete(
         date_result = {
             'analysis_date': analysis_date,
             'complete': False,
+            'success': False,
             'expected_downloads': 0,
             'successful_downloads': 0,
             'failed_downloads': 0,
@@ -8515,23 +8548,34 @@ def verify_downloads_complete(
             'manifest_file': None,
             'completion_file': None,
             'merged_file': None,
-            'details': {}
+            'details': {},
+            'directory_exists': False
         }
 
         # Check if download directory exists
         if not current_download_dir.exists():
             logger.warning(f"Download directory does not exist: {current_download_dir}")
+            date_result['directory_exists'] = False
+            date_result['success'] = False
+            date_result['complete'] = False
             date_result['reason'] = f"Download directory does not exist: {current_download_dir}"
+            date_result['error'] = f"Download directory does not exist: {current_download_dir}"
             date_results[analysis_date] = date_result
             all_complete = False
             missing_dates.append(analysis_date)
+            directory_missing_dates.append(analysis_date)
             continue
+        else:
+            date_result['directory_exists'] = True
 
         # Look for manifest files
         manifest_files = list(current_download_dir.glob(f'download_manifest_*.json'))
         if not manifest_files:
             logger.warning(f"No manifest file found for {analysis_date}")
+            date_result['success'] = False
+            date_result['complete'] = False
             date_result['reason'] = 'No manifest file found'
+            date_result['error'] = 'No manifest file found'
             date_results[analysis_date] = date_result
             all_complete = False
             missing_dates.append(analysis_date)
@@ -8553,6 +8597,7 @@ def verify_downloads_complete(
         if date_result['expected_downloads'] == 0:
             logger.warning(f"No expected downloads for {analysis_date}")
             date_result['reason'] = 'No expected downloads (grid tiles with lakes)'
+            date_result['success'] = True
             date_result['complete'] = True  # Nothing to download means complete
             date_results[analysis_date] = date_result
             continue
@@ -8568,15 +8613,21 @@ def verify_downloads_complete(
         elif partial_markers:
             date_result['completion_file'] = str(max(partial_markers, key=lambda p: p.stat().st_mtime))
             logger.warning(f"⚠️ Found partial completion marker for {analysis_date} - some downloads failed")
+            date_result['success'] = False
+            date_result['complete'] = False
             if strict_mode:
                 all_complete = False
                 date_result[
                     'reason'] = f"Partial downloads: {date_result['failed_downloads']} failed out of {date_result['expected_downloads']}"
+                date_result['error'] = date_result['reason']
                 date_results[analysis_date] = date_result
                 continue
         else:
             logger.warning(f"No completion marker found for {analysis_date}")
+            date_result['success'] = False
+            date_result['complete'] = False
             date_result['reason'] = 'No completion marker found'
+            date_result['error'] = 'No completion marker found'
             all_complete = False
             date_results[analysis_date] = date_result
             missing_dates.append(analysis_date)
@@ -8597,8 +8648,11 @@ def verify_downloads_complete(
             logger.warning(f"Found {len(failed_grids)} failed grid tiles for {analysis_date}")
 
             if strict_mode:
+                date_result['success'] = False
+                date_result['complete'] = False
                 all_complete = False
                 date_result['reason'] = f"{len(failed_grids)} grid tiles failed to download"
+                date_result['error'] = date_result['reason']
                 date_results[analysis_date] = date_result
                 continue
         else:
@@ -8606,6 +8660,7 @@ def verify_downloads_complete(
 
         # All checks passed for this date
         date_result['complete'] = True
+        date_result['success'] = True
         date_result['reason'] = 'All downloads complete and verified'
         date_results[analysis_date] = date_result
         logger.info(f"✅ Date {analysis_date} verification passed")
@@ -8631,14 +8686,19 @@ def verify_downloads_complete(
     else:
         logger.info("✅ All dates are complete and verified!")
 
+    # Determine overall success
+    overall_success = all_complete if strict_mode else len(incomplete_dates) == 0
+
     return {
-        'complete': all_complete if strict_mode else len(incomplete_dates) == 0,
+        'success': overall_success,
+        'complete': overall_success,
         'region': REGION_NAME,
         'dates_verified': analysis_dates,
         'complete_dates': complete_dates,
         'incomplete_dates': incomplete_dates,
         'date_results': date_results,
         'missing_dates': missing_dates,
+        'directory_missing_dates': directory_missing_dates,
         'strict_mode': strict_mode,
         'summary': {
             'total_dates': len(date_results),
@@ -8648,6 +8708,7 @@ def verify_downloads_complete(
             'total_successful_downloads': sum(r.get('successful_downloads', 0) for r in date_results.values()),
             'total_failed_downloads': sum(r.get('failed_downloads', 0) for r in date_results.values()),
             'total_skipped_downloads': sum(r.get('skipped_downloads', 0) for r in date_results.values()),
+            'directories_missing': len(directory_missing_dates)
         }
     }
 
