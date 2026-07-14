@@ -7035,13 +7035,14 @@ def process_region_date_new_fast(
         region: str,
         analysis_date: str,
         env_path: str = None,
-        id_chunk_size: int = 100,
-        n_jobs: int = None,
-        save_interval: int = 10,
+        id_chunk_size: int = 500,  # Reduced from 2000 for memory
+        n_jobs: int = 8,  # Reduced from 12 for memory
+        save_interval: int = 1,  # Save every chunk
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using batch processing for speed.
     Uses NRTBreakpoint.calculate_break with a LIST of IDs for internal parallelization.
+    Memory-optimized version: saves incrementally and clears memory after each chunk.
     """
     from water_timeseries.breakpoint import NRTBreakpoint
     from water_timeseries.dataset import DWDataset
@@ -7055,11 +7056,11 @@ def process_region_date_new_fast(
         load_dotenv()
 
     if n_jobs is None:
-        n_jobs = os.cpu_count() or 1
+        n_jobs = min(8, os.cpu_count() or 1)  # Cap at 8 to prevent memory issues
     logger.info(f"Using {n_jobs} parallel jobs for processing (internal to NRTBreakpoint)")
 
     logger.info(f"\n{'=' * 80}")
-    logger.info(f"PROCESSING {region} FOR DATE: {analysis_date} (FAST MODE)")
+    logger.info(f"PROCESSING {region} FOR DATE: {analysis_date} (FAST MODE - MEMORY OPTIMIZED)")
     logger.info(f"{'=' * 80}")
 
     try:
@@ -7130,7 +7131,6 @@ def process_region_date_new_fast(
 
         # Select only the region IDs (only those that exist in historical data)
         try:
-            # Get intersection of region_ids with historical IDs
             hist_ids = set(ds_historical_full.id_geohash.values)
             valid_region_ids = [id_val for id_val in region_ids_list if id_val in hist_ids]
 
@@ -7269,9 +7269,11 @@ def process_region_date_new_fast(
         current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
         intermediate_file = current_breakpoint_dir / f'intermediate_results_{analysis_date}.parquet'
 
-        # 10. Process in chunks
+        # NEW: File for accumulating results incrementally
+        incremental_file = current_breakpoint_dir / f'incremental_results_{analysis_date}.parquet'
+
+        # 10. Process in chunks - MEMORY OPTIMIZED
         bp = NRTBreakpoint()
-        all_results = []
         total_processed = 0
         total_breakpoints = 0
         total_ids = len(matching_ids_list)
@@ -7281,30 +7283,37 @@ def process_region_date_new_fast(
         logger.info(f"Starting processing of {total_ids:,} IDs in chunks of {id_chunk_size}")
         logger.info(f"NOTE: Each chunk will be passed to NRTBreakpoint.calculate_break as a LIST")
         logger.info(f"       This enables internal parallelization with {n_jobs} workers")
-        logger.info(f"Intermediate results will be saved every {save_interval} chunks")
+        logger.info(f"Results will be saved incrementally after EACH chunk (memory-optimized)")
 
-        # Check for existing intermediate file
-        if intermediate_file.exists():
+        # Check for existing incremental file (resume capability)
+        if incremental_file.exists():
             try:
-                saved_results = pd.read_parquet(intermediate_file)
+                saved_results = pd.read_parquet(incremental_file)
                 saved_ids = set(saved_results['id_geohash'].values)
                 matching_ids_list = [id_val for id_val in matching_ids_list if id_val not in saved_ids]
-                all_results.append(saved_results)
-                total_breakpoints += len(saved_results)
-                logger.info(f"🔄 Resuming from intermediate file: {len(saved_ids)} IDs already processed")
+                total_breakpoints = len(saved_results)
+                logger.info(f"🔄 Resuming from incremental file: {len(saved_ids)} IDs already processed")
                 logger.info(f"   Remaining IDs: {len(matching_ids_list)}")
+                logger.info(f"   Existing breakpoints: {total_breakpoints:,}")
             except Exception as e:
-                logger.warning(f"Error reading intermediate file, starting fresh: {e}")
+                logger.warning(f"Error reading incremental file, starting fresh: {e}")
+                if incremental_file.exists():
+                    incremental_file.unlink()
 
         start_time = time.time()
         processed_since_last_save = 0
-        total_processed = len(all_results) if all_results else 0
 
         all_ids = list(matching_ids_list)
         total_chunks = (len(all_ids) + id_chunk_size - 1) // id_chunk_size if all_ids else 0
 
         if total_chunks == 0:
             logger.warning("No chunks to process")
+            # Check if we have existing data to create Zarr
+            if incremental_file.exists():
+                logger.info("Using existing incremental data to create Zarr")
+                return create_final_zarr_from_incremental(
+                    incremental_file, zarr_path, region, analysis_date, analysis_source, total_ids
+                )
             return {'success': True, 'total_ids': total_ids, 'processed': 0, 'breakpoints_found': 0,
                     'zarr_path': str(zarr_path)}
 
@@ -7339,124 +7348,195 @@ def process_region_date_new_fast(
                     if 'id_geohash' not in breaks_df.columns:
                         breaks_df = breaks_df.reset_index()
 
-                    all_results.append(breaks_df)
-                    total_breakpoints += len(breaks_df)
-                    total_processed += len(chunk_ids)
-                    processed_since_last_save += len(chunk_ids)
+                    # SAVE INCREMENTALLY IMMEDIATELY (don't accumulate in memory)
+                    if incremental_file.exists():
+                        # Append to existing file
+                        existing = pd.read_parquet(incremental_file)
+                        combined = pd.concat([existing, breaks_df], ignore_index=True)
+                        combined.to_parquet(incremental_file)
+                    else:
+                        # First save
+                        breaks_df.to_parquet(incremental_file)
 
-                    logger.info(f"  ✅ Chunk {chunk_idx + 1} complete: {len(breaks_df)} breakpoints found")
+                    total_breakpoints += len(breaks_df)
+
+                    # Clear breaks_df from memory
+                    del breaks_df
+
+                    logger.info(
+                        f"  ✅ Chunk {chunk_idx + 1} complete: {len(breaks_df)} breakpoints found (saved incrementally)")
                 else:
                     logger.info(f"  ✅ Chunk {chunk_idx + 1} complete: 0 breakpoints found")
-                    total_processed += len(chunk_ids)
-                    processed_since_last_save += len(chunk_ids)
 
-                # Save intermediate results periodically
-                if processed_since_last_save >= save_interval * id_chunk_size:
-                    save_intermediate_results(all_results, intermediate_file, analysis_date)
-                    processed_since_last_save = 0
-                    logger.info(f"💾 Intermediate results saved ({total_processed:,} IDs processed)")
+                total_processed += len(chunk_ids)
 
                 # Log chunk timing
                 chunk_time = time.time() - chunk_start_time
                 ids_per_second = len(chunk_ids) / chunk_time if chunk_time > 0 else 0
                 logger.info(f"  ⏱️ Chunk {chunk_idx + 1} took {chunk_time:.1f}s ({ids_per_second:.1f} IDs/sec)")
 
-                # Clean up
-                ds_historical_chunk.close()
-                ds_analysis_chunk.close()
-                ds_combined.close()
+                # Memory cleanup after each chunk
+                del ds_historical_chunk, ds_analysis_chunk, ds_combined, dwds
                 gc.collect()
 
             except Exception as e:
                 logger.error(f"Error processing chunk {chunk_idx + 1}: {e}")
                 import traceback
                 traceback.print_exc()
-                # Emergency save
-                if all_results:
-                    save_intermediate_results(all_results, intermediate_file, analysis_date)
-                    logger.info(f"💾 Emergency save completed after chunk error")
                 # Continue to next chunk instead of failing completely
                 continue
 
-        # Final save before combining
-        if all_results:
-            save_intermediate_results(all_results, intermediate_file, analysis_date)
-            logger.info(f"💾 Final intermediate save completed")
+        # 11. Create final Zarr file from incremental data
+        final_result = create_final_zarr_from_incremental(
+            incremental_file, zarr_path, region, analysis_date, analysis_source, total_ids
+        )
 
-        # 11. Combine results and save
-        if all_results:
-            try:
-                breaks_merged = pd.concat(all_results, ignore_index=True)
-                total_time = time.time() - start_time
-                minutes, seconds = divmod(total_time, 60)
-
-                logger.info(f"\n{'=' * 60}")
-                logger.info(f"📊 FINAL SUMMARY for {region} {analysis_date}")
-                logger.info(f"{'=' * 60}")
-                logger.info(f"   Total IDs processed: {total_processed:,}")
-                logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
-                logger.info(f"   Total chunks: {total_chunks}")
-                logger.info(f"   Total time: {int(minutes)}m {int(seconds)}s")
-                if total_processed > 0:
-                    logger.info(f"   Average time per ID: {total_time / total_processed:.2f}s")
-                logger.info(f"{'=' * 60}")
-
-                logger.info(f"💾 Saving to Zarr: {zarr_path}")
-                ds_breaks = breaks_merged.set_index('id_geohash').to_xarray()
-                ds_breaks.to_zarr(zarr_path, mode='w')
-                logger.info(f"   ✅ Zarr saved successfully")
-
-                path_to_joined_file = current_breakpoint_dir / f'drain_{analysis_date}.parquet'
-                breaks_merged.to_parquet(path_to_joined_file)
-                logger.info(f"   ✅ Parquet backup saved to {path_to_joined_file}")
-
-                if intermediate_file.exists():
-                    intermediate_file.unlink()
-                    logger.info(f"   🧹 Intermediate file cleaned up")
-
-                if zarr_path.exists():
-                    zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
-                    logger.info(f"   📦 Zarr file size: {zarr_size_gb:.2f} GB")
-
-            except Exception as e:
-                logger.error(f"Error saving results: {e}")
-                import traceback
-                traceback.print_exc()
-                ds_historical.close()
-                ds_analysis.close()
-                return {'success': False, 'error': str(e)}
-        else:
-            logger.warning(f"No breakpoints found for {region} {analysis_date}")
-            try:
-                empty_result = pd.DataFrame(columns=[
-                    'date', 'water_observed', 'water_predicted', 'water_residual',
-                    'water_predicted_lower_90', 'water_predicted_upper_90',
-                    'water_historical_mean', 'water_historical_median',
-                    'water_historical_std', 'water_historical_min',
-                    'water_historical_max', 'drainage_confidence'
-                ])
-                empty_ds = empty_result.to_xarray()
-                empty_ds.attrs.update({
-                    'region': region,
-                    'analysis_date': analysis_date,
-                    'created_at': datetime.now().isoformat(),
-                    'complete': False,
-                    'empty': True,
-                    'analysis_source': analysis_source
-                })
-                empty_ds.to_zarr(zarr_path, mode='w')
-                logger.info(f"Created empty Zarr file for {analysis_date}")
-                empty_ds.close()
-
-                if intermediate_file.exists():
-                    intermediate_file.unlink()
-                    logger.info(f"   🧹 Intermediate file cleaned up")
-            except Exception as e:
-                logger.error(f"Error creating empty Zarr: {e}")
-
+        # Clean up
         ds_historical.close()
         ds_analysis.close()
         gc.collect()
+
+        total_time = time.time() - start_time
+        minutes, seconds = divmod(total_time, 60)
+
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"📊 FINAL SUMMARY for {region} {analysis_date}")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"   Total IDs processed: {total_processed:,}")
+        logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
+        logger.info(f"   Total chunks: {total_chunks}")
+        logger.info(f"   Total time: {int(minutes)}m {int(seconds)}s")
+        if total_processed > 0:
+            logger.info(f"   Average time per ID: {total_time / total_processed:.2f}s")
+        logger.info(f"{'=' * 60}")
+
+        return final_result
+
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in process_region_date_new_fast: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': str(e),
+            'region': region,
+            'analysis_date': analysis_date
+        }
+
+
+def create_final_zarr_from_incremental(
+        incremental_file: Path,
+        zarr_path: Path,
+        region: str,
+        analysis_date: str,
+        analysis_source: str,
+        total_ids: int
+) -> Dict[str, Any]:
+    """
+    Create the final Zarr file from incremental results.
+    """
+    logger.info(f"\n{'=' * 60}")
+    logger.info(f"📦 CREATING FINAL ZARR FROM INCREMENTAL DATA")
+    logger.info(f"{'=' * 60}")
+
+    if not incremental_file.exists():
+        logger.warning(f"No incremental file found at {incremental_file}")
+        # Create empty Zarr
+        empty_result = pd.DataFrame(columns=[
+            'id_geohash', 'date', 'water_observed', 'water_predicted', 'water_residual',
+            'water_predicted_lower_90', 'water_predicted_upper_90',
+            'water_historical_mean', 'water_historical_median',
+            'water_historical_std', 'water_historical_min',
+            'water_historical_max', 'drainage_confidence'
+        ])
+        empty_ds = empty_result.set_index('id_geohash').to_xarray()
+        empty_ds.attrs.update({
+            'region': region,
+            'analysis_date': analysis_date,
+            'created_at': datetime.now().isoformat(),
+            'complete': True,
+            'empty': True,
+            'analysis_source': analysis_source,
+            'total_ids': total_ids
+        })
+        empty_ds.to_zarr(zarr_path, mode='w')
+        empty_ds.close()
+        return {
+            'success': True,
+            'total_ids': total_ids,
+            'processed': 0,
+            'breakpoints_found': 0,
+            'zarr_path': str(zarr_path)
+        }
+
+    try:
+        # Load all incremental results
+        logger.info(f"Loading incremental results from {incremental_file}")
+        breaks_merged = pd.read_parquet(incremental_file)
+
+        if breaks_merged.empty:
+            logger.warning("Incremental file is empty")
+            # Create empty Zarr
+            empty_result = pd.DataFrame(columns=[
+                'id_geohash', 'date', 'water_observed', 'water_predicted', 'water_residual',
+                'water_predicted_lower_90', 'water_predicted_upper_90',
+                'water_historical_mean', 'water_historical_median',
+                'water_historical_std', 'water_historical_min',
+                'water_historical_max', 'drainage_confidence'
+            ])
+            empty_ds = empty_result.set_index('id_geohash').to_xarray()
+            empty_ds.attrs.update({
+                'region': region,
+                'analysis_date': analysis_date,
+                'created_at': datetime.now().isoformat(),
+                'complete': True,
+                'empty': True,
+                'analysis_source': analysis_source,
+                'total_ids': total_ids
+            })
+            empty_ds.to_zarr(zarr_path, mode='w')
+            empty_ds.close()
+            return {
+                'success': True,
+                'total_ids': total_ids,
+                'processed': 0,
+                'breakpoints_found': 0,
+                'zarr_path': str(zarr_path)
+            }
+
+        # Save to Zarr
+        logger.info(f"💾 Saving {len(breaks_merged):,} records to Zarr: {zarr_path}")
+
+        # Set index and create dataset
+        ds_breaks = breaks_merged.set_index('id_geohash').to_xarray()
+        ds_breaks.attrs.update({
+            'region': region,
+            'analysis_date': analysis_date,
+            'created_at': datetime.now().isoformat(),
+            'complete': True,
+            'analysis_source': analysis_source,
+            'total_ids': total_ids,
+            'breakpoints_found': len(breaks_merged)
+        })
+
+        ds_breaks.to_zarr(zarr_path, mode='w')
+        logger.info(f"   ✅ Zarr saved successfully")
+
+        # Optional: Save Parquet backup
+        current_breakpoint_dir = incremental_file.parent
+        path_to_joined_file = current_breakpoint_dir / f'drain_{analysis_date}.parquet'
+        breaks_merged.to_parquet(path_to_joined_file)
+        logger.info(f"   ✅ Parquet backup saved to {path_to_joined_file}")
+
+        # Clean up incremental file (optional - keep for debugging)
+        # incremental_file.unlink()
+        # logger.info(f"   🧹 Incremental file cleaned up")
+
+        if zarr_path.exists():
+            zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
+            logger.info(f"   📦 Zarr file size: {zarr_size_gb:.2f} GB")
+
+        ds_breaks.close()
 
         return {
             'success': True,
@@ -7464,13 +7544,13 @@ def process_region_date_new_fast(
             'analysis_date': analysis_date,
             'analysis_source': analysis_source,
             'total_ids': total_ids,
-            'processed': total_processed,
-            'breakpoints_found': total_breakpoints,
+            'processed': len(breaks_merged),
+            'breakpoints_found': len(breaks_merged),
             'zarr_path': str(zarr_path)
         }
 
     except Exception as e:
-        logger.error(f"❌ Unexpected error in process_region_date_new_fast: {e}")
+        logger.error(f"Error creating Zarr from incremental data: {e}")
         import traceback
         traceback.print_exc()
         return {

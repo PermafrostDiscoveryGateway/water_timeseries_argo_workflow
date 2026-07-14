@@ -222,7 +222,8 @@ spec:
             output_dir=/data/water_timeseries/output
             region_name=EURASIA1
             id_chunk_size=1000
-            save_interval=1000
+            save_interval=1
+            n_jobs=8
             
             EOF
             

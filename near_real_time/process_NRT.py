@@ -244,8 +244,9 @@ def main():
     # Get region from environment or use specific regions
     region_name = os.environ.get("region_name", "ALL")
 
-    id_chunk_size = int(os.environ.get("id_chunk_size", 2000))
-    save_interval = int(os.environ.get("save_interval", 2000))
+    id_chunk_size = int(os.environ.get("id_chunk_size", 500))
+    save_interval = int(os.environ.get("save_interval", 1))
+    n_jobs = int(os.environ.get("n_jobs", 1))
 
     # Define regions to process - you can customize this list
     if region_name == "ALL":
@@ -302,9 +303,9 @@ def main():
             region=region,
             date_str=target_date,
             env_path=env_path,
-            n_jobs=12,          # Use 12 parallel workers
-            id_chunk_size=id_chunk_size,  # Process 100 IDs per chunk
-            save_interval=save_interval    # Save every 10 chunks (1000 IDs)
+            n_jobs=n_jobs,
+            id_chunk_size=id_chunk_size,
+            save_interval=save_interval
         )
 
         all_results[region] = result
