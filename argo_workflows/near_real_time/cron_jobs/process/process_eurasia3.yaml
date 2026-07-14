@@ -238,7 +238,7 @@ spec:
             cd /app
             
             # Use python -u for unbuffered output and capture exit code properly
-            python -u /app/near_real_time/process_EURASIA3.py /data/eurasia3_process/.env
+            python -u /app/near_real_time/process_NRT.py /data/eurasia3_process/.env
             SCRIPT_EXIT_CODE=$?
             
             echo "=== SCRIPT COMPLETED with exit code: $SCRIPT_EXIT_CODE ==="

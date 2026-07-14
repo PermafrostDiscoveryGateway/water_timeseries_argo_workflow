@@ -241,7 +241,7 @@ spec:
             cd /app
             
             # Use python -u for unbuffered output and capture exit code properly
-            python -u /app/near_real_time/merge_region_new_results.py /data/merge/.env
+            python -u /app/near_real_time/merge_recent_downloads.py /data/merge/.env
             SCRIPT_EXIT_CODE=$?
             
             echo "=== SCRIPT COMPLETED with exit code: $SCRIPT_EXIT_CODE ==="
