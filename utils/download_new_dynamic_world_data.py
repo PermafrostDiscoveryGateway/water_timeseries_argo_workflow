@@ -716,9 +716,6 @@ def download_new_dynamic_world_data_split_files(env_path=None):
 
     # Merge all downloaded chunks
     logger.info("Merging downloaded chunks...")
-
-
-    # TODO combine here
     new_dynamic_world_data = combine_new_dynamic_world_data_with_latest(path_to_new_data=current_split_download_directory, env_path=env_path)
     logger.info(f"New data is {new_dynamic_world_data}")
 

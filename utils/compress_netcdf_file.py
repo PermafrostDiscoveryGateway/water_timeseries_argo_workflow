@@ -6,11 +6,13 @@ import sys
 import netCDF4 as nc
 import numpy as np
 from datetime import datetime
-
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+
+# this was used to compress the NETCDF file, the original historical dynamic world data was not compressed
+# reducing size made it easier to stay within memory bounds on argo workflows
 
 def verify_netcdf_data(first_file, second_file):
     """

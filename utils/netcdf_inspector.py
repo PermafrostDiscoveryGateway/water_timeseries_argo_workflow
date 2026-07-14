@@ -4,6 +4,7 @@ import numpy as np
 from pathlib import Path
 from loguru import logger
 
+# prints out basic information on a netcdf file
 
 def inspect_netcdf(file_path: str, verbose: bool = True) -> dict:
     """
