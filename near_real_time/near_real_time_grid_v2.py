@@ -7500,6 +7500,7 @@ def save_intermediate_results(all_results: list, intermediate_file: Path, analys
         logger.debug(f"Saved {len(combined)} intermediate results to {intermediate_file}")
     except Exception as e:
         logger.error(f"Error saving intermediate results: {e}")
+
 def process_region_direct(
         region: str,
         analysis_date: str,
