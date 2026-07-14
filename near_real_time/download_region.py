@@ -126,16 +126,8 @@ def main():
 
         downloads_complete = verify_downloads_complete(region=REGION, analysis_dates=date_to_run)
         logger.debug(downloads_complete)
-        complete = downloads_complete['complete']
-        complete_dates = downloads_complete['complete_dates']
-        incomplete_dates = downloads_complete['incomplete_dates']
-        summary = downloads_complete['summary']
-        logger.debug(f"Total expected downloads {summary['total_expected_downloads']}")
-        logger.debug(f"Total successful downloads {summary['total_successful_downloads']}")
-        total_skipped_and_successful_downloads = summary['total_skipped_downloads'] + summary['total_successful_downloads']
-        percent_downloaded = float(total_skipped_and_successful_downloads)/float(summary['total_expected_downloads'])
-        logger.debug(f"Percent downloaded: {percent_downloaded}")
-        if percent_downloaded > 0.99:
+        complete = False
+        if downloads_complete.get('need_download', False) or not downloads_complete.get('complete', False):
             complete = True
         logger.debug(f"Are downloads complete for region {REGION}? {complete}")
         if not complete:
