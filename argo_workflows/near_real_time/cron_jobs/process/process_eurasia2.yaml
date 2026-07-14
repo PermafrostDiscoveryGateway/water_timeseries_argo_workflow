@@ -222,7 +222,7 @@ spec:
             output_dir=/data/water_timeseries/output
             region_name=EURASIA2
             id_chunk_size=2000
-            save_interal=2000
+            save_interval=2000
             EOF
             
             # Save environment info to PVC
