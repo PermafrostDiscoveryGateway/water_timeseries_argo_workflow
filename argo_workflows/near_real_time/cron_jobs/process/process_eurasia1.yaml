@@ -221,6 +221,9 @@ spec:
             vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
             output_dir=/data/water_timeseries/output
             region_name=EURASIA1
+            id_chunk_size=1000
+            save_interal=1000
+            
             EOF
             
             # Save environment info to PVC

@@ -252,6 +252,9 @@ def main():
     # Get region from environment or use specific regions
     region_name = os.environ.get("region_name", "ALL")
 
+    id_chunk_size = int(os.environ.get("id_chunk_size", 2000))
+    save_interval = int(os.environ.get("save_interval", 2000))
+
     # Define regions to process - you can customize this list
     if region_name == "ALL":
         # All regions except TEST_v1, CANADA_v1, etc. (only the main ones)
@@ -299,6 +302,8 @@ def main():
         logger.info(f"\n{'=' * 80}")
         logger.info(f"📌 PROCESSING REGION: {region}")
         logger.info(f"{'=' * 80}")
+        logger.debug(f"Using id chunk: {id_chunk_size}")
+        logger.debug(f"With save interval {save_interval}")
 
         # Process the single date
         result = process_single_date_for_region(
@@ -306,8 +311,8 @@ def main():
             date_str=target_date,
             env_path=env_path,
             n_jobs=12,          # Use 12 parallel workers
-            id_chunk_size=2000,  # Process 100 IDs per chunk
-            save_interval=10    # Save every 10 chunks (1000 IDs)
+            id_chunk_size=id_chunk_size,  # Process 100 IDs per chunk
+            save_interval=save_interval    # Save every 10 chunks (1000 IDs)
         )
 
         all_results[region] = result
