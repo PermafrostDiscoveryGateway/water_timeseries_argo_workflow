@@ -15,5 +15,16 @@ regions = {
     'EURASIA3': {'Y_MIN_START': 55, 'Y_MIN_END': 80, 'X_MIN_START': -180, 'X_MIN_END': -169},
 }
 
+regions_canada = {
+    'CANADA1': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -141,'X_MIN_END': -119 },
+    # 'CANADA1_1': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -141, 'X_MIN_END': -119},
+    'CANADA2': {'Y_MIN_START': 50, 'Y_MIN_END': 80,   'X_MIN_START': -119,'X_MIN_END': -97 },
+    'CANADA3': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -97,'X_MIN_END': -75},
+    'CANADA4': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -75,'X_MIN_END': -54},
+}
+
 def get_region_boundaries():
     return regions
+
+def get_regions_canada():
+    return regions_canada

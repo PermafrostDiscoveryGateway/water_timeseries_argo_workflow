@@ -725,7 +725,7 @@ def main():
 
     # ========== Get all regions ==========
     import utils.region_boundaries
-    boundaries = utils.region_boundaries.get_region_boundaries()
+    boundaries = utils.region_boundaries.get_regions_canada()
     all_regions = list(boundaries.keys())
     logger.info(f"Available regions: {all_regions}")
 
