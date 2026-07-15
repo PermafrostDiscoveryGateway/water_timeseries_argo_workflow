@@ -135,6 +135,8 @@ def main():
                 logger.debug(f"Missing env path")
                 download_result = download_near_real_time_region_dates(region=REGION, dates_to_download=timestamp_to_run)
                 logger.debug(f"Download result: {download_result}")
+        else:
+            logger.debug(f"Already done downloading {REGION} for {date_to_run}")
 
     else:
         logger.debug(f"Too early in the month to run downloads for {REGION}")
