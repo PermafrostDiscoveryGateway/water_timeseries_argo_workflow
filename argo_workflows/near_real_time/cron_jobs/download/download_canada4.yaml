@@ -34,25 +34,25 @@ spec:
       - name: init
         resources:
           requests:
-            cpu: "100m"
-            memory: "128Mi"
+            cpu: "50m"        # Was 100m
+            memory: "64Mi"    # Was 128Mi
             ephemeral-storage: "1Gi"
       containers:
       - name: wait
         resources:
           requests:
-            cpu: "100m"
-            memory: "128Mi"
+            cpu: "50m"        # Was 100m
+            memory: "64Mi"    # Was 128Mi
             ephemeral-storage: "1Gi"
       - name: main
         resources:
           requests:
-            cpu: "8"
-            memory: "32Gi"
+            cpu: "2"          # Was 8
+            memory: "20Gi"    # Was 32Gi
             ephemeral-storage: "8Gi"
           limits:
-            cpu: "16"
-            memory: "48Gi"
+            cpu: "4"          # Was 16
+            memory: "28Gi"    # Was 48Gi
             ephemeral-storage: "16Gi"
 
     artifactRepository:
@@ -98,11 +98,16 @@ spec:
       container:
         image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:27-create-near-real-time-cron-jobs
         imagePullPolicy: Always
+        # In your container resources section:
         resources:
           requests:
-            memory: "32Gi"
-            cpu: "8"
+            memory: "20Gi"    # Was 32Gi - reduced by 37%
+            cpu: "2"          # Was 8 - reduced by 75%!
             ephemeral-storage: "8Gi"
+          limits:
+            memory: "28Gi"    # Was 48Gi - reduced by 42%
+            cpu: "4"          # Was 16 - reduced by 75%!
+            ephemeral-storage: "16Gi"
         command: ["bash", "-c"]
         args:
           - |
@@ -216,7 +221,7 @@ spec:
             bucket_path=pdg-storage-default/water_timeseries_v2/data/input
             base_dir=/data/water_timeseries
             dynamic_world_dir=/data/water_timeseries/dynamic_world_data_v1
-            dynamic_world_data=/data/water_timeseries/dynamic_world_data+v1
+            dynamic_world_data=/data/water_timeseries/dynamic_world_data_v1
             dynamic_world_downloads=/data/water_timeseries/dynamic_world_data_v1/downloads
             vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
             output_dir=/data/water_timeseries/output
