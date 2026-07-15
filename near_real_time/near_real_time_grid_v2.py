@@ -6998,7 +6998,7 @@ def process_region_date_new(
             empty_ds.attrs.update({
                 'region': region,
                 'analysis_date': analysis_date,
-                'created_at': datetime.now().isoformat(),
+                'created_at': datetime.datetime.now().isoformat(),
                 'complete': False,
                 'empty': True,
                 'analysis_source': analysis_source
@@ -7453,7 +7453,7 @@ def create_final_zarr_from_incremental(
         empty_ds.attrs.update({
             'region': region,
             'analysis_date': analysis_date,
-            'created_at': datetime.now().isoformat(),
+            'created_at': datetime.datetime.now().isoformat(),
             'complete': True,
             'empty': True,
             'analysis_source': analysis_source,
@@ -7488,7 +7488,7 @@ def create_final_zarr_from_incremental(
             empty_ds.attrs.update({
                 'region': region,
                 'analysis_date': analysis_date,
-                'created_at': datetime.now().isoformat(),
+                'created_at': datetime.datetime.now().isoformat(),
                 'complete': True,
                 'empty': True,
                 'analysis_source': analysis_source,
@@ -7512,7 +7512,7 @@ def create_final_zarr_from_incremental(
         ds_breaks.attrs.update({
             'region': region,
             'analysis_date': analysis_date,
-            'created_at': datetime.now().isoformat(),
+            'created_at': datetime.datetime.now().isoformat(),
             'complete': True,
             'analysis_source': analysis_source,
             'total_ids': total_ids,
