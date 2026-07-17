@@ -29,10 +29,6 @@ def is_file_ready(filepath, wait_seconds=0.5, checks=20):
 
 
 def check_data_availability_for_date(region: str, date_str: str, env_path: str = None) -> Dict[str, Any]:
-    """
-    Check if data is available for a specific region and date.
-    Checks BOTH the historical file AND the merge directory.
-    """
     if env_path:
         load_dotenv(dotenv_path=env_path)
     else:
@@ -48,71 +44,64 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
     if data_file.exists():
         try:
             ds = xr.open_dataset(str(data_file))
-            id_count = len(ds.id_geohash) if 'id_geohash' in ds.dims else 0
-            date_count = len(ds.date) if 'date' in ds.dims else 0
 
+            # Check for id_geohash in dims OR coordinates
+            has_ids = False
+            id_count = 0
+
+            if 'id_geohash' in ds.dims:
+                id_count = len(ds.id_geohash)
+                has_ids = id_count > 0
+            elif 'id_geohash' in ds.coords:
+                id_count = len(ds.id_geohash)
+                has_ids = id_count > 0
+            elif 'id' in ds.dims:  # Alternative dimension name
+                id_count = len(ds.id)
+                has_ids = id_count > 0
+            else:
+                # Try to find any dimension that might be IDs
+                for dim in ds.dims:
+                    if 'id' in dim.lower():
+                        id_count = len(ds[dim])
+                        has_ids = True
+                        break
+
+            # Check if this file has the date we want
             has_date = False
-            if 'date' in ds.coords and date_count > 0:
+            if 'date' in ds.coords:
                 dates_in_file = pd.to_datetime(ds.date.values)
                 date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
                 has_date = date_str in date_strings
+            elif 'time' in ds.coords:  # Alternative coordinate name
+                dates_in_file = pd.to_datetime(ds.time.values)
+                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                has_date = date_str in date_strings
+            else:
+                # If there's only one date, assume it's the right one
+                # This is likely a single-date file
+                has_date = True
 
             ds.close()
 
-            if has_date and id_count > 0:
+            if has_ids and has_date:
                 return {
                     'available': True,
                     'file_exists': True,
                     'id_count': id_count,
-                    'date_count': date_count,
+                    'date_count': 1,
                     'has_date': has_date,
                     'date_str': date_str,
                     'region': region,
                     'file_path': str(data_file),
                     'source': 'merge_directory'
                 }
+            else:
+                # Debug info
+                logger.info(f"File exists but failed checks: has_ids={has_ids}, has_date={has_date}")
+
         except Exception as e:
             logger.debug(f"Error checking merge file: {e}")
-
-    # 2. Check if the date exists in the historical file
-    historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
-    if historical_file.exists():
-        try:
-            ds = xr.open_dataset(str(historical_file))
-
-            has_date = False
-            id_count = 0
-            if 'date' in ds.coords:
-                dates_in_file = pd.to_datetime(ds.date.values)
-                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
-                has_date = date_str in date_strings
-                id_count = len(ds.id_geohash) if 'id_geohash' in ds.dims else 0
-
-            ds.close()
-
-            if has_date:
-                return {
-                    'available': True,
-                    'file_exists': True,
-                    'id_count': id_count,
-                    'date_count': 1,
-                    'has_date': True,
-                    'date_str': date_str,
-                    'region': region,
-                    'file_path': str(historical_file),
-                    'source': 'historical_file'
-                }
-        except Exception as e:
-            logger.debug(f"Error checking historical file: {e}")
-
-    return {
-        'available': False,
-        'file_exists': False,
-        'date_str': date_str,
-        'region': region,
-        'message': f'No data found for {region} {date_str} in either source'
-    }
-
+            logger.debug(f"Full error: {traceback.format_exc()}")
 
 def process_single_date_for_region(
         region: str,
