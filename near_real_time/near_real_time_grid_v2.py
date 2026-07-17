@@ -7321,9 +7321,8 @@ def process_region_date_new_fast(
             start_idx = chunk_idx * id_chunk_size
             end_idx = min(start_idx + id_chunk_size, len(all_ids))
             chunk_ids = all_ids[start_idx:end_idx]
-
             chunk_start_time = time.time()
-            progress_pct = (total_processed / total_ids) * 100 if total_ids > 0 else 0
+            progress_pct = (float(total_processed) / float(total_ids))
             logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs ({progress_pct:.1f}%)")
 
             try:
