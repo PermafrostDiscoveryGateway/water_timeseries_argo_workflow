@@ -40,7 +40,7 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
 
     # 1. Check if merged file exists in merge directory
     data_file = Path(dynamic_world_data_dir) / 'merge' / f'dw_{region}_{date_str}.nc'
-
+    logger.debug(f"Checking if file {data_file} exists: {os.path.exists(data_file)}")
     if data_file.exists():
         try:
             ds = xr.open_dataset(str(data_file))
