@@ -2,6 +2,7 @@ from near_real_time_grid_v2 import process_region_date_new_fast, debug_historica
 import sys
 from typing import List, Dict, Any, Optional
 import gc
+import traceback
 from loguru import logger
 from datetime import datetime
 from dotenv import load_dotenv
@@ -103,6 +104,52 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
             logger.debug(f"Error checking merge file: {e}")
             logger.debug(f"Full error: {traceback.format_exc()}")
 
+    # 2. Check historical file
+    historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
+    if historical_file.exists():
+        try:
+            ds = xr.open_dataset(str(historical_file))
+
+            # Check if date exists
+            has_date = False
+            id_count = 0
+
+            if 'date' in ds.coords:
+                dates_in_file = pd.to_datetime(ds.date.values)
+                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                has_date = date_str in date_strings
+
+                # Get ID count for the region
+                if 'id_geohash' in ds.dims:
+                    id_count = len(ds.id_geohash)
+                elif 'id' in ds.dims:
+                    id_count = len(ds.id)
+
+            ds.close()
+
+            if has_date:
+                return {
+                    'available': True,
+                    'file_exists': True,
+                    'id_count': id_count,
+                    'date_count': 1,
+                    'has_date': True,
+                    'date_str': date_str,
+                    'region': region,
+                    'file_path': str(historical_file),
+                    'source': 'historical_file'
+                }
+        except Exception as e:
+            logger.debug(f"Error checking historical file: {e}")
+
+    # If we get here, no data was found
+    return {
+        'available': False,
+        'file_exists': False,
+        'date_str': date_str,
+        'region': region,
+        'message': f'No data found for {region} {date_str} in either source'
+    }
 def process_single_date_for_region(
         region: str,
         date_str: str,
