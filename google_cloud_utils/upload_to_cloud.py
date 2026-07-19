@@ -5,7 +5,6 @@ import os
 from loguru import logger
 from google.cloud import storage
 from google.auth import default
-from google.oauth2 import credentials
 
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -15,21 +14,15 @@ if str(project_root) not in sys.path:
 def get_storage_client():
     """Get authenticated storage client using application default credentials"""
     try:
-        # Use the default credentials - this handles both service accounts and OAuth2 user credentials
         creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
 
         if creds_path and os.path.exists(creds_path):
             logger.info(f"Using credentials from: {creds_path}")
-
-            # Use the default credentials loader
-            # This will work with both service account keys and OAuth2 user credentials
             credentials, project = default()
-
             client = storage.Client(
                 credentials=credentials,
                 project=os.environ.get('EE_PROJECT', 'pdg-project-406720')
             )
-
             logger.info("✅ Storage client created successfully")
             return client
         else:
@@ -38,20 +31,18 @@ def get_storage_client():
 
     except Exception as e:
         logger.error(f"Failed to create storage client: {e}")
-        logger.error("Make sure your credentials file is valid and has the right permissions")
         return None
 
 
-def sync_directory_to_gcs(output_dir: str, bucket_name: str, path_to_cloud_folder: str,
-                          delete_extra_files: bool = False, dry_run: bool = False):
+def sync_breakpoint_zarr_dirs_to_gcs(base_output_dir: str, bucket_name: str, path_to_cloud_folder: str,
+                                     dry_run: bool = False):
     """
-    Sync a local directory to GCS using the Python client library
+    Sync only breakpoint_zarr directories from local to GCS
 
     Args:
-        output_dir: Local directory to sync from
+        base_output_dir: Base output directory (e.g., '/data/water_timeseries/output')
         bucket_name: GCS bucket name
         path_to_cloud_folder: Cloud folder path (e.g., 'water-timeseries-v2/data/output')
-        delete_extra_files: If True, delete files in cloud that don't exist locally
         dry_run: If True, show what would happen without actually syncing
     """
     client = get_storage_client()
@@ -64,78 +55,70 @@ def sync_directory_to_gcs(output_dir: str, bucket_name: str, path_to_cloud_folde
         # Verify bucket exists and is accessible
         if not bucket.exists():
             logger.error(f"Bucket {bucket_name} does not exist or is not accessible")
-            logger.error("Make sure the bucket name is correct and you have permissions")
             return False
 
         logger.info(f"Connected to bucket: {bucket_name}")
 
-        # Walk through local directory and upload files
-        local_dir = Path(output_dir)
-        if not local_dir.exists():
-            logger.error(f"Local directory {output_dir} does not exist")
+        # Walk through local directory and find breakpoint_zarr directories
+        base_dir = Path(base_output_dir)
+        if not base_dir.exists():
+            logger.error(f"Base output directory {base_output_dir} does not exist")
             return False
 
-        # Get list of existing files in cloud
-        existing_blobs = {}
-        if delete_extra_files:
-            logger.info("Building list of existing cloud files...")
-            for blob in bucket.list_blobs(prefix=path_to_cloud_folder):
-                # Get the relative path from the folder prefix
-                rel_path = blob.name[len(path_to_cloud_folder):].lstrip('/')
-                if rel_path:  # Skip empty
-                    existing_blobs[rel_path] = blob
-            logger.info(f"Found {len(existing_blobs)} existing files in cloud")
+        # Find all breakpoint_zarr directories
+        breakpoint_dirs = []
+        for path in base_dir.rglob('*'):
+            if path.is_dir() and path.name == 'breakpoint_zarr':
+                breakpoint_dirs.append(path)
 
-        # Collect local files
-        local_files = {}
-        for file_path in local_dir.rglob('*'):
-            if file_path.is_file():
-                rel_path = str(file_path.relative_to(local_dir))
-                local_files[rel_path] = file_path
+        if not breakpoint_dirs:
+            logger.warning("No breakpoint_zarr directories found")
+            return True
 
-        logger.info(f"Found {len(local_files)} files in local directory")
+        logger.info(f"Found {len(breakpoint_dirs)} breakpoint_zarr directories to sync")
 
-        # Upload new/changed files
+        # Process each breakpoint_zarr directory
         uploaded_count = 0
         skipped_count = 0
         error_count = 0
 
-        for rel_path, file_path in local_files.items():
-            blob_path = f"{path_to_cloud_folder}/{rel_path}"
+        for local_zarr_dir in breakpoint_dirs:
+            # Get the relative path from base_dir
+            rel_path = local_zarr_dir.relative_to(base_dir)
+            # This will be something like 'ALASKA/breakpoint_zarr' or 'CANADA/breakpoint_zarr'
+            cloud_dir = f"{path_to_cloud_folder}/{rel_path}"
 
-            if dry_run:
-                logger.info(f"[DRY RUN] Would upload: {rel_path}")
-                uploaded_count += 1
-                continue
+            logger.info(f"Syncing: {local_zarr_dir} -> gs://{bucket_name}/{cloud_dir}")
 
-            blob = bucket.blob(blob_path)
+            # Walk through files in this breakpoint_zarr directory
+            for file_path in local_zarr_dir.rglob('*'):
+                if not file_path.is_file():
+                    continue
 
-            # Check if file already exists
-            if blob.exists():
-                skipped_count += 1
-                continue
+                # Get relative path from the breakpoint_zarr directory
+                file_rel_path = file_path.relative_to(local_zarr_dir)
+                blob_path = f"{cloud_dir}/{file_rel_path}"
 
-            try:
-                # Upload the file
-                logger.info(f"Uploading: {rel_path}")
-                blob.upload_from_filename(str(file_path))
-                uploaded_count += 1
-            except Exception as e:
-                logger.error(f"Failed to upload {rel_path}: {e}")
-                error_count += 1
+                if dry_run:
+                    logger.info(f"[DRY RUN] Would upload: {file_rel_path}")
+                    uploaded_count += 1
+                    continue
 
-        # Handle delete_extra_files
-        if delete_extra_files and not dry_run:
-            deleted_count = 0
-            for cloud_file in existing_blobs:
-                if cloud_file not in local_files:
-                    blob_path = f"{path_to_cloud_folder}/{cloud_file}"
-                    blob = bucket.blob(blob_path)
-                    blob.delete()
-                    logger.info(f"Deleted from cloud: {cloud_file}")
-                    deleted_count += 1
-            if deleted_count > 0:
-                logger.info(f"Deleted {deleted_count} files from cloud")
+                blob = bucket.blob(blob_path)
+
+                # Check if file already exists
+                if blob.exists():
+                    # Could check if file size matches or content has changed
+                    skipped_count += 1
+                    continue
+
+                try:
+                    logger.info(f"Uploading: {file_rel_path}")
+                    blob.upload_from_filename(str(file_path))
+                    uploaded_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to upload {file_rel_path}: {e}")
+                    error_count += 1
 
         logger.info(f"Sync summary: Uploaded {uploaded_count}, Skipped {skipped_count}, Errors {error_count}")
 
@@ -184,14 +167,13 @@ def main():
     bucket_name = 'pdg-storage-default'
     path_to_cloud_folder = 'water-timeseries-v2/data/output'
 
-    # Sync local output_dir to cloud
-    logger.info(f"Syncing {output_dir} to gs://{bucket_name}/{path_to_cloud_folder}")
+    # Sync only breakpoint_zarr directories to cloud
+    logger.info(f"Syncing breakpoint_zarr directories from {output_dir} to gs://{bucket_name}/{path_to_cloud_folder}")
 
-    success = sync_directory_to_gcs(
-        output_dir=output_dir,
+    success = sync_breakpoint_zarr_dirs_to_gcs(
+        base_output_dir=output_dir,
         bucket_name=bucket_name,
         path_to_cloud_folder=path_to_cloud_folder,
-        delete_extra_files=False,  # Set to True if you want to delete cloud files not in local
         dry_run=False  # Set to True to preview changes
     )
 
