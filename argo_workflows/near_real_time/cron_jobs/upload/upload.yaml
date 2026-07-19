@@ -168,6 +168,8 @@ spec:
             
             # Create .env file
             echo "=== CREATING .env FILE ==="
+            mkdir -p /data/upload
+            chmod -R 755 /data/upload
             cat > /data/upload/.env << 'EOF'
             project=pdg-project-406720
             vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
