@@ -1,6 +1,6 @@
-from utils.near_real_time_grid_v2 import verify_downloads_complete , download_near_real_time_region_dates, compare_netcdf_files
+from utils.helper_functions import verify_downloads_complete , download_near_real_time_region_dates, compare_netcdf_files
 import sys
-import utils.download_new_dynamic_world_data as download_new_dynamic_world_data
+import utils.download_utils as download_new_dynamic_world_data
 from loguru import logger
 from datetime import date, datetime
 from dotenv import load_dotenv
@@ -97,7 +97,7 @@ def main():
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
     logger.debug(f"This is the most recent dynamic world file {original_most_recent_dynamic_world_file}")
-    missing_dates_from_netcdf = utils.download_new_dynamic_world_data.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
+    missing_dates_from_netcdf = utils.download_utils.check_missing_data_in_netcdf(original_most_recent_dynamic_world_file)
 
     downloads_dir = Path(dynamic_world_data_dir) / 'downloads' / REGION
     merge_dir = Path(dynamic_world_data_dir) / 'merge' / REGION

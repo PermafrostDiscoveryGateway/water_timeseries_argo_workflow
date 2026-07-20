@@ -1,4 +1,4 @@
-from utils.near_real_time_grid_v2 import verify_downloads_complete, merge_new_results
+from utils.helper_functions import verify_downloads_complete, merge_new_results
 import sys
 from loguru import logger
 from datetime import datetime
