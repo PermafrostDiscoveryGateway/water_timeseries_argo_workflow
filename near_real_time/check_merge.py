@@ -1,4 +1,4 @@
-from near_real_time_grid_v2 import compare_netcdf_files, enable_memory_tracking, log_memory_usage, has_region_been_merged_for_dates, get_ids_for_region_from_vector_file
+from utils.near_real_time_grid_v2 import compare_netcdf_files, enable_memory_tracking, log_memory_usage, has_region_been_merged_for_dates, get_ids_for_region_from_vector_file
 import sys
 import gc
 from loguru import logger

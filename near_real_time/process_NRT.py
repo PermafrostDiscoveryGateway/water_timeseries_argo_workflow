@@ -1,4 +1,4 @@
-from near_real_time_grid_v2 import process_region_date_new_fast, debug_historical_dates
+from utils.near_real_time_grid_v2 import process_region_date_new_fast, debug_historical_dates
 import sys
 from typing import List, Dict, Any, Optional
 import gc

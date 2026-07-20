@@ -1,4 +1,4 @@
-from near_real_time_grid_v2 import verify_merged_netcdf
+from utils.near_real_time_grid_v2 import verify_merged_netcdf
 import sys
 from loguru import logger
 from datetime import datetime

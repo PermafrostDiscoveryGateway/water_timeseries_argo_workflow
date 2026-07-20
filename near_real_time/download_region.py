@@ -1,4 +1,4 @@
-from near_real_time_grid_v2 import verify_downloads_complete , download_near_real_time_region_dates, compare_netcdf_files
+from utils.near_real_time_grid_v2 import verify_downloads_complete , download_near_real_time_region_dates, compare_netcdf_files
 import sys
 import utils.download_new_dynamic_world_data as download_new_dynamic_world_data
 from loguru import logger
