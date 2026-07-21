@@ -116,7 +116,7 @@ def check_region_merges_completed(dynamic_world_data_dir: str, date_to_run: str,
     region_merge_files = glob.glob(os.path.join(merge_dir, date_merge_pattern))
 
     # Check if we have merge files for all regions
-    expected_files = [f"dynamic_world_region_{region}_{date_to_run}.nc" for region in regions]
+    expected_files = [f"dw_{region}_{date_to_run}.nc" for region in regions]
     existing_files = [os.path.basename(f) for f in region_merge_files]
 
     missing_files = [f for f in expected_files if f not in existing_files]
