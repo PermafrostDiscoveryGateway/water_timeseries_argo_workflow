@@ -11,6 +11,7 @@ from pathlib import Path
 import xarray as xr
 import numpy as np
 import gc
+from typing import List, Dict, Any
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
@@ -145,6 +146,135 @@ def check_region_merges_completed(dynamic_world_data_dir: str, date_to_run: str,
     logger.info("✅ All region merge files verified successfully")
     return True
 
+
+def combine_region_files(
+        region_files: List[str],
+        output_file: str,
+        env_path: str = None
+) -> Dict[str, Any]:
+    """
+    Combine multiple region NetCDF files into a single combined file.
+    """
+    logger.info(f"\n{'=' * 80}")
+    logger.info("COMBINING REGION FILES")
+    logger.info(f"{'=' * 80}")
+    logger.info(f"Number of files to combine: {len(region_files)}")
+    logger.info(f"Output file: {output_file}")
+
+    if not region_files:
+        logger.error("No region files to combine")
+        return {'success': False, 'error': 'No region files to combine'}
+
+    # Verify all files exist
+    missing_files = [f for f in region_files if not Path(f).exists()]
+    if missing_files:
+        logger.error(f"Missing files: {missing_files}")
+        return {'success': False, 'error': f'Missing files: {missing_files}'}
+
+    try:
+        logger.info("Loading region datasets...")
+        datasets = []
+        file_info = []
+
+        for file_path in region_files:
+            try:
+                ds = xr.open_dataset(file_path)
+                id_count = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
+                date_count = len(ds['date']) if 'date' in ds.dims else 0
+                file_size_gb = Path(file_path).stat().st_size / (1024 ** 3)
+
+                file_info.append({
+                    'file': file_path,
+                    'id_count': id_count,
+                    'date_count': date_count,
+                    'file_size_gb': round(file_size_gb, 4)
+                })
+
+                datasets.append(ds)
+
+            except Exception as e:
+                logger.error(f"Error opening {file_path}: {e}")
+                for ds in datasets:
+                    try:
+                        ds.close()
+                    except:
+                        pass
+                return {'success': False, 'error': f'Error opening {file_path}: {e}'}
+
+        logger.info("\nFiles to combine:")
+        for info in file_info:
+            logger.info(
+                f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB")
+
+        logger.info("Combining datasets...")
+        combined = None
+
+        for ds in datasets:
+            if combined is None:
+                combined = ds
+            else:
+                combined = xr.concat([combined, ds], dim='id_geohash')
+                _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
+                if len(unique_idx) < len(combined['id_geohash']):
+                    removed_count = len(combined['id_geohash']) - len(unique_idx)
+                    logger.info(f"Removed {removed_count} duplicate IDs")
+                    combined = combined.isel(id_geohash=np.sort(unique_idx))
+
+        if combined is None:
+            logger.error("No datasets to combine")
+            return {'success': False, 'error': 'No datasets to combine'}
+
+        combined = combined.sortby(['id_geohash', 'date'])
+
+        logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
+
+        logger.info(f"Writing combined file to {output_file}")
+
+        encoding = {}
+        for var in combined.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True
+            }
+
+        combined.to_netcdf(output_file, encoding=encoding)
+
+        file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
+
+        for ds in datasets:
+            try:
+                ds.close()
+            except:
+                pass
+        combined.close()
+        gc.collect()
+
+        result = {
+            'success': True,
+            'file_path': output_file,
+            'id_count': len(combined['id_geohash']),
+            'date_count': len(combined['date']),
+            'file_size_gb': round(file_size_gb, 4),
+            'files_combined': len(datasets),
+            'file_info': file_info
+        }
+
+        logger.info(f"✅ Combined file created successfully!")
+        logger.info(f"  File: {output_file}")
+        logger.info(f"  IDs: {result['id_count']:,}")
+        logger.info(f"  Dates: {result['date_count']}")
+        logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error combining files: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+
+
 def main():
     logger.debug(f"Beginning historical run for ALL regions (fast mode)")
     env_path = None
@@ -196,16 +326,47 @@ def main():
 
     logger.info("✅ Region merges completed. Proceeding to step 2...")
 
-    # ========== Continue with existing logic ==========
+    # ========== STEP 2: Create combined file if it doesn't exist ==========
+    combined_file_name = f"dynamic_world_combined_{date_to_run}.nc"
+    combined_file_path = os.path.join(dynamic_world_data_dir, 'merge', combined_file_name)
+
+    if not os.path.exists(combined_file_path):
+        logger.info("=" * 80)
+        logger.info("STEP 2: Combined file does not exist. Creating it from region files...")
+        logger.info("=" * 80)
+
+        # Get all region files for this date
+        merge_dir = os.path.join(dynamic_world_data_dir, 'merge')
+        region_files = glob.glob(os.path.join(merge_dir, f"dw_*_{date_to_run}.nc"))
+
+        if not region_files:
+            logger.error(f"No region files found for date {date_to_run}")
+            return
+
+        logger.info(f"Found {len(region_files)} region files to combine")
+
+        # Combine the region files
+        combine_result = combine_region_files(
+            region_files=region_files,
+            output_file=combined_file_path,
+            env_path=env_path
+        )
+
+        if not combine_result.get('success', False):
+            logger.error(f"Failed to create combined file: {combine_result.get('error', 'Unknown error')}")
+            return
+
+        logger.info("✅ Combined file created successfully!")
+    else:
+        logger.info(f"Combined file {combined_file_name} already exists. Proceeding to step 3...")
+
+    # ========== STEP 3: Continue with merging to historical file ==========
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
 
     # Get file sizes for logging
     historical_file_size_gb = Path(original_most_recent_dynamic_world_file).stat().st_size / (1024 ** 3)
     logger.info(f"Historical file size: {historical_file_size_gb:.2f} GB")
-
-    combined_file_name = f"dynamic_world_combined_{date_to_run}.nc"
-    combined_file_path = os.path.join(dynamic_world_data_dir, 'merge', combined_file_name)
 
     if os.path.exists(combined_file_path):
         combined_file_size_gb = Path(combined_file_path).stat().st_size / (1024 ** 3)
