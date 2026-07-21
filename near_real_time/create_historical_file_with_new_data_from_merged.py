@@ -112,11 +112,14 @@ def debug_id_mismatch(historical_file: str, combined_file: str):
 def check_region_merges_completed(dynamic_world_data_dir: str, date_to_run: str, regions: list) -> bool:
     """Check if all region merge files exist for the given date."""
     merge_dir = os.path.join(dynamic_world_data_dir, 'merge')
-    date_merge_pattern = f"dw_region_*_{date_to_run}.nc"
+
+    # FIX: Use the correct pattern without "region" in the filename
+    date_merge_pattern = f"dw_*_{date_to_run}.nc"
     region_merge_files = glob.glob(os.path.join(merge_dir, date_merge_pattern))
 
     # Check if we have merge files for all regions
-    expected_files = [f"dw_region_{region}_{date_to_run}.nc" for region in regions]
+    # FIX: Remove "region_" from the expected filename pattern
+    expected_files = [f"dw_{region}_{date_to_run}.nc" for region in regions]
     existing_files = [os.path.basename(f) for f in region_merge_files]
 
     missing_files = [f for f in expected_files if f not in existing_files]
@@ -141,7 +144,6 @@ def check_region_merges_completed(dynamic_world_data_dir: str, date_to_run: str,
 
     logger.info("✅ All region merge files verified successfully")
     return True
-
 
 def main():
     logger.debug(f"Beginning historical run for ALL regions (fast mode)")
