@@ -4,7 +4,7 @@
 regions = {
     'TEST': {'Y_MIN_START': 62, 'Y_MIN_END': 64, 'X_MIN_START': 153, 'X_MIN_END': 156},
     'ALASKA': {'Y_MIN_START': 55, 'Y_MIN_END': 72, 'X_MIN_START': -168, 'X_MIN_END': -138},
-    'CANADA': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -141, 'X_MIN_END': -54},
+    # 'CANADA': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -141, 'X_MIN_END': -54},
     'CANADA1': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -141,'X_MIN_END': -119 },
     # 'CANADA1_1': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -141, 'X_MIN_END': -119},
     'CANADA2': {'Y_MIN_START': 50, 'Y_MIN_END': 80,   'X_MIN_START': -119,'X_MIN_END': -97 },
