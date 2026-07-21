@@ -59,13 +59,13 @@ def merge_new_results(
 
     if merged_file_path is None:
         dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+        # Ensure directory exists
+        merge_directory = os.path.join(dynamic_world_data_dir, 'merge')
+        Path(merge_directory).parent.mkdir(parents=True, exist_ok=True)
         if not dynamic_world_data_dir:
             logger.error("dynamic_world_data not set in environment")
             return {'success': False, 'error': 'dynamic_world_data not set'}
-        merged_file_path = os.path.join(dynamic_world_data_dir, f"dw_{region}_{date_to_merge}.nc")
-
-    # Ensure directory exists
-    Path(merged_file_path).parent.mkdir(parents=True, exist_ok=True)
+        merged_file_path = os.path.join(dynamic_world_data_dir, 'merge', f"dw_{region}_{date_to_merge}.nc")
 
     # Find downloaded files for this date
     dynamic_world_download_dir = Path(os.environ.get('dynamic_world_downloads', ''))
