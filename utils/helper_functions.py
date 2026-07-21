@@ -86,7 +86,7 @@ def verify_merged_netcdf(file_path, expected_id_count=None, expected_date_count=
         expected_date_count: Optional expected number of dates
 
     Returns:
-        dict: Verification results
+        dict: Verification results with 'success' and 'valid' keys
     """
     try:
         logger.info(f"Verifying merged NetCDF file: {file_path}")
@@ -96,7 +96,8 @@ def verify_merged_netcdf(file_path, expected_id_count=None, expected_date_count=
         date_count = len(ds['date'])
 
         result = {
-            'valid': True,
+            'success': True,  # Added: success key for compatibility
+            'valid': True,    # Keep: existing valid key
             'id_count': id_count,
             'date_count': date_count,
             'file_size_gb': get_file_size_gb(str(file_path)),
@@ -106,11 +107,13 @@ def verify_merged_netcdf(file_path, expected_id_count=None, expected_date_count=
         if expected_id_count is not None and id_count != expected_id_count:
             logger.warning(f"ID count mismatch: expected {expected_id_count}, got {id_count}")
             result['valid'] = False
+            result['success'] = False  # Added: set success to False
             result['id_count_mismatch'] = True
 
         if expected_date_count is not None and date_count != expected_date_count:
             logger.warning(f"Date count mismatch: expected {expected_date_count}, got {date_count}")
             result['valid'] = False
+            result['success'] = False  # Added: set success to False
             result['date_count_mismatch'] = True
 
         ds.close()
@@ -119,8 +122,11 @@ def verify_merged_netcdf(file_path, expected_id_count=None, expected_date_count=
 
     except Exception as e:
         logger.error(f"❌ Failed to verify NetCDF file: {e}")
-        return {'valid': False, 'error': str(e)}
-
+        return {
+            'success': False,  # Added: success key
+            'valid': False,    # Keep: existing valid key
+            'error': str(e)
+        }
 
 def compare_netcdf_files(
         file1_path: str,
