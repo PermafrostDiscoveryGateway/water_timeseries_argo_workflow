@@ -372,25 +372,7 @@ def main():
         combined_file_size_gb = Path(combined_file_path).stat().st_size / (1024 ** 3)
         logger.info(f"Combined file size: {combined_file_size_gb:.2f} GB")
 
-        # Check if file has not been modified for at least 12 hours
-        file_mtime = Path(combined_file_path).stat().st_mtime
-        file_age_seconds = time.time() - file_mtime
-        file_age_hours = file_age_seconds / 3600
-
-        if file_age_hours < 0.0001:
-            logger.warning(
-                f"Combined file {combined_file_name} was modified {file_age_hours:.1f} hours ago (< 12 hours). Waiting...")
-            wait_seconds = (12 * 3600) - file_age_seconds + 60
-            logger.info(f"Waiting {wait_seconds / 3600:.1f} hours for file to stabilize...")
-            time.sleep(wait_seconds)
-
-            file_mtime = Path(combined_file_path).stat().st_mtime
-            file_age_hours = (time.time() - file_mtime) / 3600
-            if file_age_hours < 12:
-                logger.warning(
-                    f"File still not old enough ({file_age_hours:.1f} hours). Proceeding anyway but data may be incomplete.")
-
-        logger.debug(f"Combined file {combined_file_name} exists and is {file_age_hours:.1f} hours old.")
+        # REMOVED: File age check - we're doing this all in one step
 
         # Create a new file with a timestamp to avoid overwriting
         new_historical_file_name = f"dynamic_world_historical_{date_to_run}.nc"
@@ -470,6 +452,10 @@ def main():
                 comb_ds.close()
                 return
 
+            # Close the filtered dataset to free memory
+            comb_ds_filtered.close()
+            gc.collect()
+
             # Now concatenate along the date dimension
             logger.info(f"Merging datasets...")
             merged_ds = xr.concat([hist_ds, comb_ds_reindexed], dim='date')
@@ -503,6 +489,10 @@ def main():
                     logger.info(f"These are IDs that exist in historical but not in combined file")
                     logger.info(f"They will remain as NaN for the new date (no data available)")
 
+                # Clean up sample data
+                sample_data.close()
+                gc.collect()
+
             # Write the merged file
             logger.info(f"Writing merged file to {new_historical_file_path}...")
             logger.info(f"Expected size: ~{(historical_file_size_gb + combined_file_size_gb):.2f} GB")
@@ -525,6 +515,7 @@ def main():
             # Clean up
             hist_ds.close()
             comb_ds.close()
+            comb_ds_reindexed.close()
             merged_ds.close()
             gc.collect()
 
