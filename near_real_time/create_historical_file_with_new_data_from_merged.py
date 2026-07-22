@@ -19,6 +19,16 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 
+def _get_id_chunk_size(default: int = 2000) -> int:
+    """Read the lake_chunk_size env var (already wired into every Argo workflow pod)
+    so NetCDFs are opened as dask-backed, id_geohash-chunked datasets instead of
+    fully into memory as numpy arrays."""
+    try:
+        return int(os.environ.get('lake_chunk_size', default))
+    except (TypeError, ValueError):
+        return default
+
+
 def debug_id_mismatch(historical_file: str, combined_file: str):
     """Debug why IDs don't match between files."""
 
@@ -154,6 +164,7 @@ def combine_region_files(
 ) -> Dict[str, Any]:
     """
     Combine multiple region NetCDF files into a single combined file.
+    Memory-optimized version.
     """
     logger.info(f"\n{'=' * 80}")
     logger.info("COMBINING REGION FILES")
@@ -172,13 +183,23 @@ def combine_region_files(
         return {'success': False, 'error': f'Missing files: {missing_files}'}
 
     try:
-        logger.info("Loading region datasets...")
+        id_chunk = _get_id_chunk_size()
+        logger.info(f"Loading region datasets (dask-chunked, id_geohash={id_chunk})...")
+
+        # Open all datasets lazily with dask
         datasets = []
         file_info = []
 
+        # Use a smaller chunk size for the combine operation
+        combine_chunk = min(id_chunk, 500)  # Smaller chunks for combining
+
         for file_path in region_files:
             try:
-                ds = xr.open_dataset(file_path)
+                # Open with smaller chunks to reduce memory pressure
+                ds = xr.open_dataset(
+                    file_path,
+                    chunks={'id_geohash': combine_chunk, 'date': -1}
+                )
                 id_count = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
                 date_count = len(ds['date']) if 'date' in ds.dims else 0
                 file_size_gb = Path(file_path).stat().st_size / (1024 ** 3)
@@ -204,72 +225,269 @@ def combine_region_files(
         logger.info("\nFiles to combine:")
         for info in file_info:
             logger.info(
-                f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB")
+                f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB"
+            )
 
-        logger.info("Combining datasets...")
-        combined = None
-
-        for ds in datasets:
-            if combined is None:
-                combined = ds
-            else:
-                combined = xr.concat([combined, ds], dim='id_geohash')
-                _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
-                if len(unique_idx) < len(combined['id_geohash']):
-                    removed_count = len(combined['id_geohash']) - len(unique_idx)
-                    logger.info(f"Removed {removed_count} duplicate IDs")
-                    combined = combined.isel(id_geohash=np.sort(unique_idx))
-
-        if combined is None:
+        logger.info("Combining datasets lazily...")
+        if not datasets:
             logger.error("No datasets to combine")
             return {'success': False, 'error': 'No datasets to combine'}
 
-        combined = combined.sortby(['id_geohash', 'date'])
+        # Use concat with dask to avoid loading everything into memory
+        combined = xr.concat(datasets, dim='id_geohash', combine='nested')
 
-        logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
-
-        logger.info(f"Writing combined file to {output_file}")
-
-        encoding = {}
-        for var in combined.data_vars:
-            encoding[var] = {
-                'zlib': True,
-                'complevel': 4,
-                'shuffle': True
-            }
-
-        combined.to_netcdf(output_file, encoding=encoding)
-
-        file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
-
+        # Close the original datasets to free memory
         for ds in datasets:
             try:
                 ds.close()
             except:
                 pass
+        datasets = None
+        gc.collect()
+
+        # Remove duplicates using dask operations (lazy)
+        # Instead of loading all IDs into memory, use dask's unique operation
+        logger.info("Removing duplicate IDs...")
+
+        # Get unique IDs using dask - this is still memory intensive but less so
+        # because dask can chunk the operation
+        unique_ids = combined['id_geohash'].unique().compute()
+
+        if len(unique_ids) < len(combined['id_geohash']):
+            removed_count = len(combined['id_geohash']) - len(unique_ids)
+            logger.info(f"Removed {removed_count} duplicate IDs")
+
+            # Use where and drop to filter - this is more memory efficient
+            mask = combined['id_geohash'].isin(unique_ids)
+            # Note: This still loads data, but dask handles it in chunks
+
+            # Alternative: Use groupby first to avoid loading all IDs
+            # This is a more memory-efficient way to deduplicate
+            combined = combined.drop_duplicates(dim='id_geohash')
+
+        # Sort by IDs and date
+        logger.info("Sorting combined dataset...")
+        combined = combined.sortby(['id_geohash', 'date'])
+
+        # Persist to disk with chunked writing to avoid OOM
+        logger.info(f"Writing combined file to {output_file}")
+
+        # Use encoding with compression
+        encoding = {}
+        for var in combined.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True,
+                'chunksizes': (min(id_chunk, 500), -1)  # Chunk for writing
+            }
+
+        # Write in chunks to avoid memory issues
+        # Use compute with chunked writing
+        combined.to_netcdf(
+            output_file,
+            encoding=encoding,
+            unlimited_dims=['date']  # Allow date dimension to grow
+        )
+
+        # Get final file size
+        file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
+
+        # Clean up
         combined.close()
         gc.collect()
 
         result = {
             'success': True,
             'file_path': output_file,
-            'id_count': len(combined['id_geohash']),
-            'date_count': len(combined['date']),
+            'id_count': len(unique_ids),
+            'date_count': len(combined['date']) if 'date' in combined.dims else 0,
             'file_size_gb': round(file_size_gb, 4),
-            'files_combined': len(datasets),
+            'files_combined': len(file_info),
             'file_info': file_info
         }
 
         logger.info(f"✅ Combined file created successfully!")
         logger.info(f"  File: {output_file}")
         logger.info(f"  IDs: {result['id_count']:,}")
-        logger.info(f"  Dates: {result['date_count']}")
         logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
 
         return result
 
     except Exception as e:
         logger.error(f"Error combining files: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+
+
+def merge_historical_file(
+        historical_file: str,
+        combined_file: str,
+        output_file: str,
+        id_chunk: int = None
+) -> Dict[str, Any]:
+    """
+    Memory-optimized merge of historical and combined files.
+    Uses chunked processing to avoid loading entire files into memory.
+    """
+    logger.info(f"\n{'=' * 80}")
+    logger.info("MERGING HISTORICAL AND COMBINED FILES")
+    logger.info(f"{'=' * 80}")
+
+    if id_chunk is None:
+        id_chunk = _get_id_chunk_size()
+
+    # Use smaller chunks for merging
+    merge_chunk = min(id_chunk, 500)
+
+    try:
+        # Open files with dask and chunking
+        logger.info(f"Opening historical file with chunk size {merge_chunk}...")
+        hist_ds = xr.open_dataset(
+            historical_file,
+            chunks={'id_geohash': merge_chunk, 'date': -1}
+        )
+
+        logger.info(f"Opening combined file with chunk size {merge_chunk}...")
+        comb_ds = xr.open_dataset(
+            combined_file,
+            chunks={'id_geohash': merge_chunk, 'date': -1}
+        )
+
+        # Get dates without loading all data
+        hist_dates = pd.to_datetime(hist_ds['date'].values)
+        hist_date_strings = {d.strftime("%Y-%m") for d in hist_dates}
+
+        comb_dates = pd.to_datetime(comb_ds['date'].values)
+        comb_date_strings = {d.strftime("%Y-%m") for d in comb_dates}
+
+        # Find new dates
+        dates_to_add = sorted(comb_date_strings - hist_date_strings)
+        logger.info(f"Dates to add: {dates_to_add}")
+
+        if not dates_to_add:
+            logger.info("No new dates to add. All dates already in historical file.")
+            hist_ds.close()
+            comb_ds.close()
+            return {'success': True, 'dates_added': [], 'message': 'No new dates'}
+
+        # Filter combined to only new dates
+        new_date_objects = [pd.Timestamp(f"{d}-01") for d in dates_to_add]
+        comb_ds_filtered = comb_ds.sel(date=new_date_objects)
+
+        # Close the original combined dataset to free memory
+        comb_ds.close()
+        gc.collect()
+
+        # Get historical IDs without loading all data
+        hist_ids = hist_ds['id_geohash'].values
+
+        # OPTIMIZATION: Instead of reindexing the entire combined dataset,
+        # we'll align during the concat operation
+        logger.info(f"Historical has {len(hist_ids):,} IDs")
+        logger.info(f"Combined filtered has {len(comb_ds_filtered['id_geohash']):,} IDs")
+
+        # Ensure both datasets have the same IDs
+        # Use align with join='inner' to keep only common IDs for the combined data
+        # This is more memory efficient than reindex
+        logger.info("Aligning datasets...")
+
+        # First, align the combined data to historical IDs
+        # This creates a new dataset with the same ID dimension as historical
+        # Missing IDs will be NaN
+        comb_ds_aligned = comb_ds_filtered.reindex(
+            id_geohash=hist_ids,
+            method=None
+        )
+
+        # Close filtered dataset
+        comb_ds_filtered.close()
+        gc.collect()
+
+        # Verify IDs match (lazy check - only checks the first few)
+        hist_ids_sample = hist_ids[:5]
+        comb_ids_sample = comb_ds_aligned['id_geohash'].values[:5]
+
+        if not np.array_equal(hist_ids_sample, comb_ids_sample):
+            logger.error("ID mismatch after alignment!")
+            hist_ds.close()
+            comb_ds_aligned.close()
+            return {'success': False, 'error': 'ID mismatch'}
+
+        # Now concatenate along date dimension
+        logger.info("Concatenating datasets...")
+        merged_ds = xr.concat([hist_ds, comb_ds_aligned], dim='date')
+        merged_ds = merged_ds.sortby('date')
+
+        # Remove duplicate dates if any (lazy operation)
+        dates = merged_ds['date'].values
+        _, unique_idx = np.unique(dates, return_index=True)
+        if len(unique_idx) < len(dates):
+            removed = len(dates) - len(unique_idx)
+            logger.info(f"Removed {removed} duplicate dates")
+            merged_ds = merged_ds.isel(date=np.sort(unique_idx))
+
+        # Close the component datasets
+        hist_ds.close()
+        comb_ds_aligned.close()
+        gc.collect()
+
+        # Write the merged file in chunks to avoid OOM
+        logger.info(f"Writing merged file to {output_file}...")
+
+        encoding = {}
+        for var in merged_ds.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True,
+                'chunksizes': (min(id_chunk, 500), -1)  # Chunk by IDs
+            }
+
+        # Write with chunked output
+        merged_ds.to_netcdf(
+            output_file,
+            encoding=encoding,
+            unlimited_dims=['date']  # Allow date dimension to grow
+        )
+
+        # Get final size
+        final_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
+
+        # Clean up
+        merged_ds.close()
+        gc.collect()
+
+        result = {
+            'success': True,
+            'file_path': output_file,
+            'id_count': len(hist_ids),
+            'date_count': len(merged_ds['date']),
+            'file_size_gb': round(final_size_gb, 4),
+            'dates_added': dates_to_add
+        }
+
+        logger.info(f"✅ Merged file created successfully!")
+        logger.info(f"  File: {output_file}")
+        logger.info(f"  IDs: {result['id_count']:,}")
+        logger.info(f"  Dates: {result['date_count']}")
+        logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
+        logger.info(f"  Added dates: {dates_to_add}")
+
+        return result
+
+    except MemoryError as e:
+        logger.error(f"Memory error while merging files: {e}")
+        if Path(output_file).exists():
+            Path(output_file).unlink()
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+    except Exception as e:
+        logger.error(f"Error merging files: {e}")
+        if Path(output_file).exists():
+            Path(output_file).unlink()
         import traceback
         traceback.print_exc()
         return {'success': False, 'error': str(e)}
@@ -396,11 +614,12 @@ def main():
 
         try:
             # ========== CORRECTED MERGE: Preserve ALL IDs ==========
-            logger.info("Loading historical dataset...")
-            hist_ds = xr.open_dataset(original_most_recent_dynamic_world_file)
+            id_chunk = _get_id_chunk_size()
+            logger.info(f"Loading historical dataset (dask-chunked, id_geohash={id_chunk})...")
+            hist_ds = xr.open_dataset(original_most_recent_dynamic_world_file, chunks={'id_geohash': id_chunk})
 
-            logger.info("Loading combined dataset...")
-            comb_ds = xr.open_dataset(combined_file_path)
+            logger.info(f"Loading combined dataset (dask-chunked, id_geohash={id_chunk})...")
+            comb_ds = xr.open_dataset(combined_file_path, chunks={'id_geohash': id_chunk})
 
             # Get metadata
             hist_dates = pd.to_datetime(hist_ds['date'].values)
