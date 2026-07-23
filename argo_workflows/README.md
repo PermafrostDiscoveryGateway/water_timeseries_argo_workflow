@@ -29,6 +29,11 @@ Canada1, 2, 3, and 4. By running both downloading and processing for Canada in p
 
 ## Sync Bucket with the Latest Output
 
+kubectl -n argo apply -f upload/upload.yaml
+
+Make sure this is running first, it will check the output directory at regular intervals
+and sync the bucket with the new contents
+
 ## Downloading
 
 Apply the following files
@@ -43,8 +48,45 @@ kubectl -n argo apply -f download/download_eurasia1.yaml
 kubectl -n argo apply -f download/download_eurasia2.yaml
 kubectl -n argo apply -f download/download_eurasia3.yaml
 
+These will continue to run and retry if there are downloading failures for
+any region. Additionally, we found that some zones would get stuck showing 99% completion, so their rule is that,
+if after a retry, the zone is still 99% complete, it considers it finished.
+
 ## Merging the partial results for a region into a single netcdf file
+
+kubectl -n argo apply -f merge/merge_new_region_results.yaml
+
+This merges if the downloading is finished. 
 
 ## Running the NRT Pipeline
 
+kubetl -n argo apply -f process/process_alaska.yaml
+kubetl -n argo apply -f process/process_test.yaml
+kubetl -n argo apply -f process/process_canada1.yaml
+kubetl -n argo apply -f process/process_canada2.yaml
+kubetl -n argo apply -f process/process_canada3.yaml
+kubetl -n argo apply -f process/process_canada4.yaml
+kubectl -n argo apply -f process/process_eurasia1.yaml
+kubectl -n argo apply -f process/process_eurasia2.yaml
+kubectl -n argo apply -f process/process_eurasia3.yaml
+
+These jobs check for the new merged netcdf file that contains all new data
+for a region and the latest summer month. If that file exists and is verified
+to contain all downloaded data, it will process, if the processing is not finished.
+This also can restart and retry on a fail, saving intermediate progress.
+
+The output of this is the zarr dataset for the region/month. 
+
 ## Create New Historical File
+
+kubectl -n argo apply -f merge/create_new_historical_file.yaml
+
+This latest historical dynamic world file will combine existing historical data 
+and all newly downloaded data, once the downloading and merging is done. This is meant to run after
+processing, so that scripts do not end up using different input files. 
+
+## Where to Find New Output
+
+The new output (for now) will be located in this google cloud bucket
+
+gs://pdg-storage-default/water-timeseries-v2/data/output
