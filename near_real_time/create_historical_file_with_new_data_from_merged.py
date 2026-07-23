@@ -1,15 +1,17 @@
-from utils.helper_functions import verify_merged_netcdf
+from utils.helper_functions import verify_merged_netcdf, enable_memory_tracking, log_memory_usage
 import sys
 from loguru import logger
 from datetime import datetime
 from dotenv import load_dotenv
 import os
 import glob
+import dask
 import time
 import pandas as pd
 from pathlib import Path
 import xarray as xr
 import numpy as np
+import dask
 import gc
 from typing import List, Dict, Any
 
@@ -27,6 +29,25 @@ def _get_id_chunk_size(default: int = 2000) -> int:
         return int(os.environ.get('lake_chunk_size', default))
     except (TypeError, ValueError):
         return default
+
+
+def _configure_dask_for_low_memory():
+    """Bound the default in-process dask scheduler.
+
+    The Argo pod sets DASK_DISTRIBUTED__WORKER__MEMORY__* env vars, but nothing
+    in this script starts a dask.distributed cluster, so those spill-to-disk
+    thresholds are never actually consulted -- xarray falls back to the plain
+    threaded scheduler, which has no memory awareness at all and will happily
+    materialize as many chunks in memory at once as there are CPUs, then let
+    the OS OOM-kill the pod. Capping worker count bounds how many chunks can
+    be resident at once. split_large_chunks guards against xarray/dask
+    silently collapsing an out-of-order reindex (aligning the new month's IDs
+    onto the historical ID order) into one giant, unchunked array.
+    """
+    num_workers = int(os.environ.get('dask_num_workers', 2))
+    dask.config.set(scheduler='threads', num_workers=num_workers)
+    dask.config.set({'array.slicing.split_large_chunks': True})
+    logger.info(f"Dask configured: threaded scheduler capped at {num_workers} concurrent workers")
 
 
 def debug_id_mismatch(historical_file: str, combined_file: str):
@@ -245,41 +266,36 @@ def combine_region_files(
         datasets = None
         gc.collect()
 
-        # Remove duplicates using dask operations (lazy)
-        # Instead of loading all IDs into memory, use dask's unique operation
+        # Remove duplicate IDs. id_geohash is a dimension coordinate, so it's
+        # always memory-resident regardless of dask chunking -- this doesn't
+        # touch the chunked data_vars.
         logger.info("Removing duplicate IDs...")
-
-        # Get unique IDs using dask - this is still memory intensive but less so
-        # because dask can chunk the operation
-        unique_ids = combined['id_geohash'].unique().compute()
-
-        if len(unique_ids) < len(combined['id_geohash']):
-            removed_count = len(combined['id_geohash']) - len(unique_ids)
-            logger.info(f"Removed {removed_count} duplicate IDs")
-
-            # Use where and drop to filter - this is more memory efficient
-            mask = combined['id_geohash'].isin(unique_ids)
-            # Note: This still loads data, but dask handles it in chunks
-
-            # Alternative: Use groupby first to avoid loading all IDs
-            # This is a more memory-efficient way to deduplicate
-            combined = combined.drop_duplicates(dim='id_geohash')
+        original_id_count = len(combined['id_geohash'])
+        combined = combined.drop_duplicates(dim='id_geohash')
+        unique_id_count = len(combined['id_geohash'])
+        if unique_id_count < original_id_count:
+            logger.info(f"Removed {original_id_count - unique_id_count} duplicate IDs")
 
         # Sort by IDs and date
         logger.info("Sorting combined dataset...")
         combined = combined.sortby(['id_geohash', 'date'])
+        log_memory_usage("After combine+sort, before write")
 
         # Persist to disk with chunked writing to avoid OOM
         logger.info(f"Writing combined file to {output_file}")
 
-        # Use encoding with compression
+        # Use encoding with compression. chunksizes needs concrete positive
+        # ints for every dimension -- unlike dask's chunks= argument, netCDF
+        # encoding doesn't understand -1 as "the whole dimension" and would
+        # fail at write time.
+        date_len = len(combined['date']) if 'date' in combined.dims else 1
         encoding = {}
         for var in combined.data_vars:
             encoding[var] = {
                 'zlib': True,
                 'complevel': 4,
                 'shuffle': True,
-                'chunksizes': (min(id_chunk, 500), -1)  # Chunk for writing
+                'chunksizes': (min(id_chunk, 500), date_len)
             }
 
         # Write in chunks to avoid memory issues
@@ -300,7 +316,7 @@ def combine_region_files(
         result = {
             'success': True,
             'file_path': output_file,
-            'id_count': len(unique_ids),
+            'id_count': unique_id_count,
             'date_count': len(combined['date']) if 'date' in combined.dims else 0,
             'file_size_gb': round(file_size_gb, 4),
             'files_combined': len(file_info),
@@ -396,6 +412,7 @@ def merge_historical_file(
         # First, align the combined data to historical IDs
         # This creates a new dataset with the same ID dimension as historical
         # Missing IDs will be NaN
+        log_memory_usage("Before reindex")
         comb_ds_aligned = comb_ds_filtered.reindex(
             id_geohash=hist_ids,
             method=None
@@ -404,6 +421,7 @@ def merge_historical_file(
         # Close filtered dataset
         comb_ds_filtered.close()
         gc.collect()
+        log_memory_usage("After reindex")
 
         # Verify IDs match (lazy check - only checks the first few)
         hist_ids_sample = hist_ids[:5]
@@ -435,14 +453,16 @@ def merge_historical_file(
 
         # Write the merged file in chunks to avoid OOM
         logger.info(f"Writing merged file to {output_file}...")
+        log_memory_usage("Before to_netcdf write")
 
+        date_len = len(merged_ds['date'])
         encoding = {}
         for var in merged_ds.data_vars:
             encoding[var] = {
                 'zlib': True,
                 'complevel': 4,
                 'shuffle': True,
-                'chunksizes': (min(id_chunk, 500), -1)  # Chunk by IDs
+                'chunksizes': (min(id_chunk, 500), date_len)  # Chunk by IDs
             }
 
         # Write with chunked output
@@ -451,6 +471,7 @@ def merge_historical_file(
             encoding=encoding,
             unlimited_dims=['date']  # Allow date dimension to grow
         )
+        log_memory_usage("After to_netcdf write")
 
         # Get final size
         final_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
@@ -495,6 +516,10 @@ def merge_historical_file(
 
 def main():
     logger.debug(f"Beginning historical run for ALL regions (fast mode)")
+    enable_memory_tracking()
+    log_memory_usage("Program start")
+    _configure_dask_for_low_memory()
+
     env_path = None
     if len(sys.argv) > 1:
         env_path = sys.argv[1]
@@ -612,191 +637,49 @@ def main():
 
         logger.debug(f"Combining new data from {combined_file_name} to {new_historical_file_path}")
 
-        try:
-            # ========== CORRECTED MERGE: Preserve ALL IDs ==========
-            id_chunk = _get_id_chunk_size()
-            logger.info(f"Loading historical dataset (dask-chunked, id_geohash={id_chunk})...")
-            hist_ds = xr.open_dataset(original_most_recent_dynamic_world_file, chunks={'id_geohash': id_chunk})
+        id_chunk = _get_id_chunk_size()
+        log_memory_usage("Before merge_historical_file")
+        merge_result = merge_historical_file(
+            historical_file=original_most_recent_dynamic_world_file,
+            combined_file=combined_file_path,
+            output_file=new_historical_file_path,
+            id_chunk=id_chunk
+        )
+        log_memory_usage("After merge_historical_file")
 
-            logger.info(f"Loading combined dataset (dask-chunked, id_geohash={id_chunk})...")
-            comb_ds = xr.open_dataset(combined_file_path, chunks={'id_geohash': id_chunk})
-
-            # Get metadata
-            hist_dates = pd.to_datetime(hist_ds['date'].values)
-            hist_date_strings = {d.strftime("%Y-%m") for d in hist_dates}
-
-            comb_dates = pd.to_datetime(comb_ds['date'].values)
-            comb_date_strings = {d.strftime("%Y-%m") for d in comb_dates}
-
-            # Find new dates
-            dates_to_add = sorted(comb_date_strings - hist_date_strings)
-            logger.info(f"Dates to add: {dates_to_add}")
-
-            if not dates_to_add:
-                logger.info("No new dates to add. All dates already in historical file.")
-                hist_ds.close()
-                comb_ds.close()
-                return
-
-            # Filter combined to only new dates
-            new_date_objects = [pd.Timestamp(f"{d}-01") for d in dates_to_add]
-            comb_ds_filtered = comb_ds.sel(date=new_date_objects)
-
-            # ========== CRITICAL FIX: Don't filter to common IDs ==========
-            # Instead, reindex the combined data to match the historical IDs
-            # This preserves ALL historical IDs
-
-            logger.info(f"Historical has {len(hist_ds['id_geohash']):,} IDs")
-            logger.info(f"Combined has {len(comb_ds_filtered['id_geohash']):,} IDs")
-
-            # Get the historical IDs in order
-            hist_id_values = hist_ds['id_geohash'].values
-
-            # Reindex the combined data to match historical ID order
-            # Missing IDs will be filled with NaN
-            logger.info("Reindexing combined data to match historical ID order...")
-            comb_ds_reindexed = comb_ds_filtered.reindex(
-                id_geohash=hist_id_values,
-                method=None  # Don't interpolate
-            )
-
-            # Now both datasets have the same IDs in the same order
-            logger.info(
-                f"Reindexed combined shape: {len(comb_ds_reindexed['id_geohash']):,} IDs x {len(comb_ds_reindexed['date'])} dates")
-
-            # Verify the IDs match
-            if not np.array_equal(hist_ds['id_geohash'].values, comb_ds_reindexed['id_geohash'].values):
-                logger.error("ID mismatch after reindexing!")
-                hist_ds.close()
-                comb_ds.close()
-                return
-
-            # Close the filtered dataset to free memory
-            comb_ds_filtered.close()
-            gc.collect()
-
-            # Now concatenate along the date dimension
-            logger.info(f"Merging datasets...")
-            merged_ds = xr.concat([hist_ds, comb_ds_reindexed], dim='date')
-            merged_ds = merged_ds.sortby('date')
-
-            # Remove duplicate dates if any
-            _, unique_idx = np.unique(merged_ds['date'].values, return_index=True)
-            if len(unique_idx) < len(merged_ds['date']):
-                removed = len(merged_ds['date']) - len(unique_idx)
-                logger.info(f"Removed {removed} duplicate dates")
-                merged_ds = merged_ds.isel(date=np.sort(unique_idx))
-
-            logger.info(f"Merged shape: {len(merged_ds['id_geohash']):,} IDs x {len(merged_ds['date'])} dates")
-
-            # Check for NaN values in the new dates (IDs that were missing in combined)
-            if len(dates_to_add) > 0:
-                # Check the first new date for NaN values
-                first_new_date = new_date_objects[0]
-                sample_data = merged_ds.sel(date=first_new_date)
-
-                # Count how many IDs have data vs NaN
-                # Check a sample variable
-                sample_var = list(merged_ds.data_vars)[0]
-                data_values = sample_data[sample_var].values
-                nan_count = np.isnan(data_values).sum()
-                total_count = len(data_values)
-
-                if nan_count > 0:
-                    logger.warning(
-                        f"For date {dates_to_add[0]}, {nan_count:,}/{total_count:,} IDs have NaN (missing from combined file)")
-                    logger.info(f"These are IDs that exist in historical but not in combined file")
-                    logger.info(f"They will remain as NaN for the new date (no data available)")
-
-                # Clean up sample data
-                sample_data.close()
-                gc.collect()
-
-            # Write the merged file
-            logger.info(f"Writing merged file to {new_historical_file_path}...")
-            logger.info(f"Expected size: ~{(historical_file_size_gb + combined_file_size_gb):.2f} GB")
-
-            start_write = time.time()
-
-            encoding = {}
-            for var in merged_ds.data_vars:
-                encoding[var] = {
-                    'zlib': True,
-                    'complevel': 4,
-                    'shuffle': True
-                }
-
-            merged_ds.to_netcdf(new_historical_file_path, encoding=encoding)
-
-            write_time = time.time() - start_write
-            logger.info(f"Write completed in {write_time:.1f} seconds")
-
-            # Clean up
-            hist_ds.close()
-            comb_ds.close()
-            comb_ds_reindexed.close()
-            merged_ds.close()
-            gc.collect()
-
-            # Verify the file
-            logger.info("Verifying merged file...")
-            final_size_gb = Path(new_historical_file_path).stat().st_size / (1024 ** 3)
-            logger.info(f"Final file size: {final_size_gb:.4f} GB")
-
-            # Quick verification
-            try:
-                verify_ds = xr.open_dataset(new_historical_file_path)
-                verify_id_count = len(verify_ds['id_geohash'])
-                verify_date_count = len(verify_ds['date'])
-                verify_ds.close()
-
-                logger.info(f"Verified file has {verify_id_count:,} IDs and {verify_date_count} dates")
-
-                # Check if we have the expected number of IDs (should match historical)
-                expected_ids = len(hist_id_values)
-                if verify_id_count == expected_ids:
-                    logger.info(f"✅ All {expected_ids:,} IDs preserved!")
-                else:
-                    logger.warning(f"⚠️ ID count mismatch! Expected {expected_ids:,}, got {verify_id_count:,}")
-            except Exception as e:
-                logger.warning(f"Could not verify file: {e}")
-
-            # Also run the standard verification from near_real_time_grid_v2
-            verify_result = verify_merged_netcdf(new_historical_file_path)
-            if verify_result.get('success', False):
-                logger.info("✅ Merged file verification passed")
-            else:
-                logger.warning(f"⚠️ Merged file verification failed: {verify_result.get('error', 'Unknown error')}")
-
-            logger.info("=" * 80)
-            logger.info("✅ SUCCESS: New historical file created!")
-            logger.info("=" * 80)
-            logger.info(f"  Original historical file (KEPT): {original_most_recent_dynamic_world_file}")
-            logger.info(f"  Combined file (KEPT): {combined_file_path}")
-            logger.info(f"  NEW merged file: {new_historical_file_path}")
-            logger.info(f"  File size: {final_size_gb:.4f} GB")
-            logger.info(f"  Added dates: {dates_to_add}")
-            logger.info(f"  Total IDs: {verify_id_count if 'verify_id_count' in locals() else 'unknown':,}")
-            logger.info(f"  Total dates: {verify_date_count if 'verify_date_count' in locals() else 'unknown'}")
-            logger.info("=" * 80)
-            logger.info("⚠️  No files were deleted. All original files are preserved.")
-            logger.info("=" * 80)
-
-        except MemoryError as e:
-            logger.error(f"Memory error while processing files: {e}")
-            import traceback
-            traceback.print_exc()
-            if os.path.exists(new_historical_file_path):
-                os.remove(new_historical_file_path)
-
-        except Exception as e:
-            logger.error(f"Error merging files: {e}")
-            import traceback
-            traceback.print_exc()
-            if os.path.exists(new_historical_file_path):
-                os.remove(new_historical_file_path)
-            gc.collect()
+        if not merge_result.get('success', False):
+            logger.error(f"Failed to merge historical file: {merge_result.get('error', 'Unknown error')}")
             return
+
+        if not merge_result.get('dates_added'):
+            logger.info(merge_result.get('message', 'No new dates to add.'))
+            return
+
+        # Also run the standard verification from helper_functions
+        verify_result = verify_merged_netcdf(new_historical_file_path)
+        if verify_result.get('success', False):
+            logger.info("✅ Merged file verification passed")
+        else:
+            logger.warning(f"⚠️ Merged file verification failed: {verify_result.get('error', 'Unknown error')}")
+
+        expected_ids = merge_result['id_count']
+        verified_ids = verify_result.get('id_count', 'unknown')
+        if verified_ids != 'unknown' and verified_ids != expected_ids:
+            logger.warning(f"⚠️ ID count mismatch! Expected {expected_ids:,}, got {verified_ids:,}")
+
+        logger.info("=" * 80)
+        logger.info("✅ SUCCESS: New historical file created!")
+        logger.info("=" * 80)
+        logger.info(f"  Original historical file (KEPT): {original_most_recent_dynamic_world_file}")
+        logger.info(f"  Combined file (KEPT): {combined_file_path}")
+        logger.info(f"  NEW merged file: {new_historical_file_path}")
+        logger.info(f"  File size: {merge_result['file_size_gb']:.4f} GB")
+        logger.info(f"  Added dates: {merge_result['dates_added']}")
+        logger.info(f"  Total IDs: {expected_ids:,}")
+        logger.info(f"  Total dates: {merge_result['date_count']}")
+        logger.info("=" * 80)
+        logger.info("⚠️  No files were deleted. All original files are preserved.")
+        logger.info("=" * 80)
     else:
         logger.info(f"Combined file {combined_file_name} does not exist. Nothing to merge.")
 
