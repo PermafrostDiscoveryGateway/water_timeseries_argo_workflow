@@ -241,7 +241,7 @@ spec:
             cd /app
             
             # Use python -u for unbuffered output and capture exit code properly
-            python -u /app/near_real_time/create_historical_file_with_new_data_from_merged.py /data/merge/.env
+            python -u /app/near_real_time/create_new_historical_file.py /data/merge/.env
             SCRIPT_EXIT_CODE=$?
             
             echo "=== SCRIPT COMPLETED with exit code: $SCRIPT_EXIT_CODE ==="
