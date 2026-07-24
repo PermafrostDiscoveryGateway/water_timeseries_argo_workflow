@@ -5,6 +5,7 @@ import numpy as np
 import sys
 from pathlib import Path
 import os
+import glob
 from typing import List, Optional, Dict, Any
 import zarr
 # Add project root to Python path
@@ -1568,7 +1569,8 @@ def process_region_date_new_fast(
             return {'success': False, 'error': 'dynamic_world_data not set in environment'}
 
         merge_dir = Path(dynamic_world_data_dir) / 'merge'
-        historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
+        nc_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+        historical_file = max(nc_files, key=os.path.getmtime)
         new_data_file = merge_dir / f"dw_{region}_{analysis_date}.nc"
         vector_lake_file = os.environ.get('vector_lake_file')
 
