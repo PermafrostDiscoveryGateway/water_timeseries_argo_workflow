@@ -2012,7 +2012,7 @@ def process_region_date_new_fast_historical(
         # 4. Load historical data - ONLY for the region IDs
         logger.info(f"Loading historical data for training (only {len(region_ids_list):,} IDs)...")
 
-        if not historical_file.exists():
+        if not Path(historical_file).exists():
             logger.error(f"❌ Historical file not found: {historical_file}")
             return {'success': False, 'error': 'Historical file not found'}
 
@@ -2058,7 +2058,7 @@ def process_region_date_new_fast_historical(
         analysis_source = None
         ds_analysis = None
 
-        if ds_analysis is None and historical_file.exists():
+        if ds_analysis is None and Path(historical_file).exists():
             try:
                 ds_historical_check = xr.open_dataset(str(historical_file))
                 if 'date' in ds_historical_check.coords:
@@ -2278,6 +2278,684 @@ def process_region_date_new_fast_historical(
 
     except Exception as e:
         logger.error(f"❌ Unexpected error in process_region_date_new_fast_NRT: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': str(e),
+            'region': region,
+            'analysis_date': analysis_date
+        }
+
+
+def process_region_date_new_fast_historical_safe(
+        region: str,
+        analysis_date: str,
+        env_path: str = None,
+        id_chunk_size: int = 1,
+        n_jobs: int = 1,
+        save_interval: int = 1,
+        beast_kwargs: Dict[str, Any] = None,
+        break_threshold: float = 0.5,
+        max_lakes_per_batch: int = 1,
+        debug_mode: bool = True,
+) -> Dict[str, Any]:
+    """
+    Safe version for historical processing that avoids segmentation faults.
+
+    Processes lakes individually to prevent RBEAST C++ extension crashes.
+    Includes comprehensive debugging and error handling.
+
+    Args:
+        region: Region name (e.g., "TEST", "AFRICA")
+        analysis_date: Date in "YYYY-MM" format
+        env_path: Optional path to .env file
+        id_chunk_size: Number of IDs per chunk (forced to 1 for safety)
+        n_jobs: Number of parallel jobs (forced to 1)
+        save_interval: Save intermediate results every N chunks
+        beast_kwargs: Optional RBEAST parameters
+        break_threshold: Probability threshold for break detection
+        max_lakes_per_batch: Maximum lakes to process at once (forced to 1)
+        debug_mode: If True, shows detailed error information
+
+    Returns:
+        dict: Processing results with status and metadata
+    """
+    import time
+    import os
+    import geopandas as gpd
+    from tqdm import tqdm
+    from water_timeseries.dataset import DWDataset
+    from water_timeseries.breakpoint import BeastBreakpoint
+    import traceback
+    import signal
+
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    # Force safe settings
+    n_jobs = 1
+    id_chunk_size = 1
+    max_lakes_per_batch = 1
+
+    logger.info(f"Using BeastBreakpoint (RBEAST) for historical breakpoint detection (SAFE MODE)")
+    logger.info(f"Processing lakes INDIVIDUALLY to avoid segmentation faults")
+
+    if debug_mode:
+        logger.info("🔍 DEBUG MODE ENABLED - Will show detailed error information")
+
+    logger.info(f"\n{'=' * 80}")
+    logger.info(f"PROCESSING {region} FOR DATE: {analysis_date} (SAFE MODE - INDIVIDUAL LAKES)")
+    logger.info(f"{'=' * 80}")
+
+    try:
+        # 1. Setup paths
+        dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+        if not dynamic_world_data_dir:
+            logger.error("❌ dynamic_world_data not set in environment")
+            return {'success': False, 'error': 'dynamic_world_data not set in environment'}
+
+        merge_dir = Path(dynamic_world_data_dir) / 'merge'
+        nc_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+        if not nc_files:
+            logger.error("❌ No NetCDF files found in dynamic_world_data directory")
+            return {'success': False, 'error': 'No NetCDF files found'}
+
+        historical_file = max(nc_files, key=os.path.getmtime)
+        new_data_file = merge_dir / f"dw_{region}_{analysis_date}.nc"
+        vector_lake_file = os.environ.get('vector_lake_file')
+
+        # 2. Get region boundaries
+        from utils.region_boundaries import get_region_boundaries
+        region_boundaries = get_region_boundaries()
+
+        if region not in region_boundaries:
+            logger.error(f"❌ Region {region} not found in boundaries!")
+            return {'success': False, 'error': f'Region {region} not found in boundaries'}
+
+        bounds = region_boundaries[region]
+        logger.info(f"📍 Region boundaries for {region}:")
+        logger.info(f"   X_MIN_START: {bounds['X_MIN_START']}")
+        logger.info(f"   X_MIN_END: {bounds['X_MIN_END']}")
+        logger.info(f"   Y_MIN_START: {bounds['Y_MIN_START']}")
+        logger.info(f"   Y_MIN_END: {bounds['Y_MIN_END']}")
+
+        # 3. Load vector file and filter by region boundaries
+        logger.info(f"Loading vector file and filtering for region {region}...")
+
+        if not vector_lake_file or not Path(vector_lake_file).exists():
+            logger.error(f"❌ Vector file not found: {vector_lake_file}")
+            return {'success': False, 'error': 'Vector file not found'}
+
+        gdf = gpd.read_parquet(vector_lake_file)
+
+        # Handle Polygon geometries - convert to centroids for filtering
+        if gdf.geometry.geom_type.iloc[0] in ['Polygon', 'MultiPolygon']:
+            logger.info("Converting Polygon geometries to centroids for spatial filtering")
+            gdf['centroid'] = gdf.geometry.centroid
+            gdf = gdf.set_geometry('centroid')
+
+        # Filter by region boundaries
+        region_ids = gdf[
+            (gdf.geometry.x >= bounds['X_MIN_START']) &
+            (gdf.geometry.x <= bounds['X_MIN_END']) &
+            (gdf.geometry.y >= bounds['Y_MIN_START']) &
+            (gdf.geometry.y <= bounds['Y_MIN_END'])
+            ]['id_geohash'].values
+
+        region_ids_list = list(region_ids)
+        logger.info(f"📍 {region} has {len(region_ids_list):,} IDs in vector file")
+
+        if len(region_ids_list) == 0:
+            logger.error(f"❌ No IDs found for region {region} in vector file!")
+            return {'success': False, 'error': f'No IDs found for region {region}'}
+
+        # 4. Load historical data - ONLY for the region IDs
+        logger.info(f"Loading historical data for training (only {len(region_ids_list):,} IDs)...")
+
+        if not Path(historical_file).exists():
+            logger.error(f"❌ Historical file not found: {historical_file}")
+            return {'success': False, 'error': 'Historical file not found'}
+
+        ds_historical_full = xr.open_dataset(str(historical_file))
+
+        # Select only the region IDs (only those that exist in historical data)
+        try:
+            hist_ids = set(ds_historical_full.id_geohash.values)
+            valid_region_ids = [id_val for id_val in region_ids_list if id_val in hist_ids]
+
+            if len(valid_region_ids) != len(region_ids_list):
+                logger.warning(
+                    f"Filtered {len(region_ids_list) - len(valid_region_ids)} IDs not found in historical data")
+                region_ids_list = valid_region_ids
+
+            if len(region_ids_list) == 0:
+                logger.error("❌ No valid region IDs found in historical data!")
+                ds_historical_full.close()
+                return {'success': False, 'error': 'No valid region IDs found in historical data'}
+
+            ds_historical = ds_historical_full.sel(id_geohash=region_ids_list)
+            logger.info(f"Loaded historical data for {len(ds_historical.id_geohash)} IDs")
+        except Exception as e:
+            logger.error(f"Error selecting region IDs from historical file: {e}")
+            ds_historical_full.close()
+            return {'success': False, 'error': f'Error loading historical data: {e}'}
+
+        ds_historical_full.close()
+        del ds_historical_full
+        gc.collect()
+
+        analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
+        ds_historical_train = ds_historical.where(ds_historical.date < analysis_timestamp, drop=True)
+
+        if len(ds_historical_train.date) == 0:
+            logger.warning(f"No training data before {analysis_date}, using all historical data")
+            ds_historical_train = ds_historical
+
+        logger.info(f"Training data has {len(ds_historical_train.date)} dates")
+        logger.info(f"Training data has {len(ds_historical_train.id_geohash)} IDs")
+
+        # 5. Determine where the analysis data comes from
+        analysis_source = None
+        ds_analysis = None
+
+        if Path(new_data_file).exists():
+            try:
+                ds_analysis = xr.open_dataset(str(new_data_file))
+                if 'date' in ds_analysis.coords:
+                    dates_in_file = pd.to_datetime(ds_analysis.date.values)
+                    date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                    if analysis_date in date_strings:
+                        analysis_source = 'downloaded'
+                        logger.info(f"📊 Using DOWNLOADED data for {analysis_date} from: {new_data_file}")
+                        logger.info(f"   IDs in downloaded data: {len(ds_analysis.id_geohash)}")
+                    else:
+                        ds_analysis.close()
+                        ds_analysis = None
+            except Exception as e:
+                logger.warning(f"Error reading new data file: {e}")
+                if ds_analysis:
+                    ds_analysis.close()
+                    ds_analysis = None
+
+        if ds_analysis is None and Path(historical_file).exists():
+            try:
+                ds_historical_check = xr.open_dataset(str(historical_file))
+                if 'date' in ds_historical_check.coords:
+                    dates_in_file = pd.to_datetime(ds_historical_check.date.values)
+                    date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                    if analysis_date in date_strings:
+                        # Use .sel with drop=True to avoid scalar issues
+                        ds_analysis = ds_historical_check.sel(
+                            id_geohash=region_ids_list,
+                            date=analysis_timestamp
+                        )
+                        analysis_source = 'historical'
+                        logger.info(f"📊 Using HISTORICAL data for {analysis_date} from: {historical_file}")
+                        logger.info(f"   IDs in historical analysis data: {len(ds_analysis.id_geohash)}")
+                    else:
+                        logger.warning(f"Date {analysis_date} not found in historical file")
+                ds_historical_check.close()
+            except Exception as e:
+                logger.error(f"Error reading historical file: {e}")
+
+        if ds_analysis is None:
+            logger.error(f"❌ No data found for {region} {analysis_date} in either downloaded or historical files")
+            ds_historical.close()
+            return {'success': False, 'error': f'No data found for {region} {analysis_date}'}
+
+        # 6. Filter analysis data to only IDs that exist in region_ids_list
+        analysis_ids = set(ds_analysis.id_geohash.values) if 'id_geohash' in ds_analysis.dims else set()
+        region_ids_set = set(region_ids_list)
+        common_ids = analysis_ids.intersection(region_ids_set)
+
+        if len(common_ids) < len(region_ids_list):
+            logger.info(f"Filtered {len(region_ids_list) - len(common_ids)} IDs not found in analysis data")
+            region_ids_list = list(common_ids)
+            logger.info(f"Updated region IDs: {len(region_ids_list):,}")
+
+        if len(region_ids_list) == 0:
+            logger.error(f"❌ No overlapping IDs between region and analysis data!")
+            ds_historical.close()
+            ds_analysis.close()
+            return {'success': False, 'error': 'No overlapping IDs found'}
+
+        # Now filter ds_analysis to only region IDs
+        if 'id_geohash' in ds_analysis.dims:
+            ds_analysis = ds_analysis.sel(id_geohash=region_ids_list)
+
+        # 7. Get matching IDs (only region IDs that exist in both datasets)
+        train_ids = set(ds_historical_train.id_geohash.values) if 'id_geohash' in ds_historical_train.dims else set()
+        analysis_ids = set(ds_analysis.id_geohash.values) if 'id_geohash' in ds_analysis.dims else set()
+
+        matching_ids = train_ids.intersection(analysis_ids)
+        logger.info(f"📊 ID Summary:")
+        logger.info(f"   IDs in training data: {len(train_ids):,}")
+        logger.info(f"   IDs in analysis data: {len(analysis_ids):,}")
+        logger.info(f"   Matching IDs: {len(matching_ids):,}")
+
+        if len(matching_ids) == 0:
+            logger.error(f"No matching IDs found between training and analysis data!")
+            ds_historical.close()
+            ds_analysis.close()
+            return {'success': False, 'error': 'No matching IDs found'}
+
+        # 8. Filter datasets to matching IDs
+        matching_ids_list = list(matching_ids)
+        ds_historical_train = ds_historical_train.sel(id_geohash=matching_ids_list)
+        ds_analysis = ds_analysis.sel(id_geohash=matching_ids_list)
+
+        logger.info(f"Filtered training data to {len(ds_historical_train.id_geohash)} IDs")
+        logger.info(f"Filtered analysis data to {len(ds_analysis.id_geohash)} IDs")
+
+        # 9. Setup output directories
+        output_dir = os.environ.get('output_dir')
+        if not output_dir:
+            logger.error("❌ output_dir not set in environment")
+            return {'success': False, 'error': 'output_dir not set in environment'}
+
+        output_dir = Path(output_dir) / region
+        zarr_output_dir = output_dir / 'breakpoint_zarr'
+        zarr_output_dir.mkdir(exist_ok=True, parents=True)
+        zarr_path = zarr_output_dir / f'breakpoints_{analysis_date}.zarr'
+
+        current_breakpoint_dir = output_dir / f'breakpoint_{analysis_date}'
+        current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
+
+        # File for accumulating results incrementally
+        incremental_file = current_breakpoint_dir / f'incremental_results_{analysis_date}.parquet'
+
+        # 10. Initialize BeastBreakpoint with conservative settings
+        if beast_kwargs is None:
+            beast_kwargs = {
+                'trendMaxOrder': 0,
+                'trendMinSepDist': 1,
+                'nCpMax': 3,
+                'maxK': 2,
+            }
+
+        bp = BeastBreakpoint(
+            kwargs_break=beast_kwargs,
+            break_threshold=break_threshold
+        )
+
+        # 11. Process lakes INDIVIDUALLY with DEBUGGING
+        total_ids = len(matching_ids_list)
+        total_breakpoints = 0
+        processed_count = 0
+        failed_count = 0
+        breakpoint_data = []
+
+        logger.info(f"Starting SAFE processing of {total_ids:,} lakes individually")
+        logger.info(f"RBEAST parameters: {beast_kwargs}")
+        logger.info(f"Break threshold: {break_threshold}")
+        logger.info(f"Results will be saved incrementally to: {incremental_file}")
+
+        start_time = time.time()
+
+        # Check for existing incremental file (resume capability)
+        if incremental_file.exists():
+            try:
+                saved_results = pd.read_parquet(incremental_file)
+                saved_ids = set(saved_results['id_geohash'].values) if 'id_geohash' in saved_results.columns else set()
+                matching_ids_list = [id_val for id_val in matching_ids_list if id_val not in saved_ids]
+                total_breakpoints = len(saved_results)
+                logger.info(f"🔄 Resuming from incremental file: {len(saved_ids)} IDs already processed")
+                logger.info(f"   Remaining IDs: {len(matching_ids_list)}")
+                logger.info(f"   Existing breakpoints: {total_breakpoints:,}")
+            except Exception as e:
+                logger.warning(f"Error reading incremental file, starting fresh: {e}")
+                if incremental_file.exists():
+                    incremental_file.unlink()
+
+        # Process each lake individually with debugging
+        for idx, lake_id in enumerate(tqdm(matching_ids_list, desc="Processing lakes")):
+            try:
+                if debug_mode:
+                    logger.debug(f"\n{'=' * 60}")
+                    logger.debug(f"Processing lake {idx + 1}/{total_ids}: {lake_id}")
+                    logger.debug(f"{'=' * 60}")
+
+                # Get data for this single lake
+                if debug_mode:
+                    logger.debug(f"  Step 1: Loading historical data for {lake_id}")
+                ds_lake_historical = ds_historical_train.sel(id_geohash=lake_id)
+                if debug_mode:
+                    # Fix: Check if water exists and get shape safely
+                    if 'water' in ds_lake_historical:
+                        water_data = ds_lake_historical.water
+                        if hasattr(water_data, 'shape'):
+                            logger.debug(f"    Historical data shape: {water_data.shape}")
+                        else:
+                            logger.debug(f"    Historical data: scalar value")
+                    else:
+                        logger.debug(f"    Historical data: no 'water' variable")
+
+                if debug_mode:
+                    logger.debug(f"  Step 2: Loading analysis data for {lake_id}")
+                ds_lake_analysis = ds_analysis.sel(id_geohash=lake_id)
+                if debug_mode:
+                    # Fix: Handle scalar date properly
+                    try:
+                        # Try to get the size (works for both scalar and array)
+                        n_dates = ds_lake_analysis.date.size
+                        logger.debug(f"    Analysis data: {n_dates} dates")
+                    except AttributeError:
+                        # If .size doesn't work, it's a scalar
+                        logger.debug(f"    Analysis data: scalar date (single value)")
+                # Combine historical and analysis data
+                if debug_mode:
+                    logger.debug(f"  Step 3: Combining datasets")
+                ds_combined = xr.concat([ds_lake_historical, ds_lake_analysis], dim='date')
+                ds_combined = ds_combined.sortby('date')
+                if debug_mode:
+                    if hasattr(ds_combined.date, 'shape'):
+                        logger.debug(f"    Combined data: {len(ds_combined.date)} dates")
+                    else:
+                        logger.debug(f"    Combined data: scalar date")
+
+                if debug_mode:
+                    logger.debug(f"  Step 4: Creating DWDataset")
+                dwds = DWDataset(ds_combined)
+
+                # Process single lake
+                if debug_mode:
+                    logger.debug(f"  Step 5: Calling RBEAST calculate_break for {lake_id}")
+                    if hasattr(dwds.ds.water, 'values'):
+                        logger.debug(f"    Data length: {len(dwds.ds.water.values)}")
+                    else:
+                        logger.debug(f"    Data: scalar value")
+
+                # Define timeout handler
+                def timeout_handler(signum, frame):
+                    raise TimeoutError("RBEAST processing timed out")
+
+                # Set timeout (5 minutes per lake)
+                try:
+                    signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(300)  # 5 minute timeout
+
+                    result = bp.calculate_break(dataset=dwds, object_id=lake_id)
+
+                    signal.alarm(0)  # Cancel timeout
+                except TimeoutError as e:
+                    logger.error(f"⏱️ RBEAST timed out for lake {lake_id} after 5 minutes")
+                    raise e
+                except Exception as e:
+                    logger.error(f"❌ RBEAST failed for lake {lake_id}: {e}")
+                    raise e
+
+                if result is not None and not result.empty:
+                    # Ensure id_geohash is a column
+                    if 'id_geohash' not in result.columns:
+                        result = result.reset_index()
+
+                    # Save incrementally
+                    if incremental_file.exists():
+                        existing = pd.read_parquet(incremental_file)
+                        combined = pd.concat([existing, result], ignore_index=True)
+                        combined.to_parquet(incremental_file)
+                    else:
+                        result.to_parquet(incremental_file)
+
+                    total_breakpoints += len(result)
+                    breakpoint_data.append(result)
+                    logger.info(f"✅ Lake {idx + 1}/{total_ids} ({lake_id}): {len(result)} breakpoints found")
+                else:
+                    if debug_mode:
+                        logger.debug(f"⏭️ Lake {idx + 1}/{total_ids} ({lake_id}): No breakpoints found")
+
+                processed_count += 1
+
+                # Clean up memory after each lake
+                del ds_lake_historical, ds_lake_analysis, ds_combined, dwds
+                if result is not None:
+                    del result
+
+                # Force garbage collection every 5 lakes
+                if idx % 5 == 0:
+                    gc.collect()
+
+            except TimeoutError as e:
+                failed_count += 1
+                logger.error(f"⏱️ TIMEOUT processing lake {idx + 1} ({lake_id}): {e}")
+                # Log lake data info for debugging
+                try:
+                    logger.debug(f"  Lake {lake_id} data info:")
+                    if hasattr(ds_lake_historical.date, 'shape'):
+                        logger.debug(f"    Historical dates: {len(ds_lake_historical.date)}")
+                    else:
+                        logger.debug(f"    Historical dates: scalar")
+                    if hasattr(ds_lake_analysis.date, 'shape'):
+                        logger.debug(f"    Analysis dates: {len(ds_lake_analysis.date)}")
+                    else:
+                        logger.debug(f"    Analysis dates: scalar")
+                    if 'water' in ds_lake_historical:
+                        if hasattr(ds_lake_historical.water, 'values'):
+                            logger.debug(f"    Water values (first 5): {ds_lake_historical.water.values[:5]}")
+                except:
+                    pass
+                continue
+
+            except Exception as e:
+                failed_count += 1
+                logger.error(f"❌ Error processing lake {idx + 1} ({lake_id}): {e}")
+
+                # Print full traceback in debug mode
+                if debug_mode:
+                    logger.error(f"Full traceback:")
+                    traceback.print_exc()
+
+                # Log lake data info for debugging
+                try:
+                    logger.debug(f"  Lake {lake_id} data info:")
+                    if hasattr(ds_lake_historical.date, 'shape'):
+                        logger.debug(f"    Historical dates: {len(ds_lake_historical.date)}")
+                    else:
+                        logger.debug(f"    Historical dates: scalar")
+                    if hasattr(ds_lake_analysis.date, 'shape'):
+                        logger.debug(f"    Analysis dates: {len(ds_lake_analysis.date)}")
+                    else:
+                        logger.debug(f"    Analysis dates: scalar")
+                    if 'water' in ds_lake_historical:
+                        if hasattr(ds_lake_historical.water, 'values'):
+                            logger.debug(f"    Water values (first 5): {ds_lake_historical.water.values[:5]}")
+                except:
+                    pass
+
+                # If in debug mode and this is the first lake, stop to investigate
+                if debug_mode and idx == 0:
+                    logger.error("🔍 First lake failed in debug mode - stopping to investigate")
+                    raise e
+
+                continue
+
+        # 12. Create final Zarr file from incremental data
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"📦 CREATING FINAL ZARR FROM INCREMENTAL DATA")
+        logger.info(f"{'=' * 60}")
+
+        final_result = create_final_zarr_from_incremental(
+            incremental_file,
+            zarr_path,
+            region,
+            analysis_date,
+            analysis_source,
+            total_ids
+        )
+
+        # Clean up
+        ds_historical.close()
+        ds_analysis.close()
+        gc.collect()
+
+        total_time = time.time() - start_time
+        minutes, seconds = divmod(total_time, 60)
+
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"📊 FINAL SUMMARY for {region} {analysis_date}")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"   Total IDs processed: {processed_count:,}")
+        logger.info(f"   Lakes with breakpoints: {len(breakpoint_data):,}")
+        logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
+        logger.info(f"   Failed lakes: {failed_count:,}")
+        logger.info(f"   Total time: {int(minutes)}m {int(seconds)}s")
+        if processed_count > 0:
+            logger.info(f"   Average time per lake: {total_time / processed_count:.2f}s")
+        logger.info(f"{'=' * 60}")
+
+        return final_result
+
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in process_region_date_new_fast_historical_safe: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': str(e),
+            'region': region,
+            'analysis_date': analysis_date
+        }
+
+
+def create_final_zarr_from_incremental(
+        incremental_file: Path,
+        zarr_path: Path,
+        region: str,
+        analysis_date: str,
+        analysis_source: str,
+        total_ids: int
+) -> Dict[str, Any]:
+    """
+    Create the final Zarr file from incremental results.
+
+    Args:
+        incremental_file: Path to incremental Parquet file
+        zarr_path: Path where Zarr file should be saved
+        region: Region name
+        analysis_date: Date in "YYYY-MM" format
+        analysis_source: Source of the data ("historical" or "downloaded")
+        total_ids: Total number of IDs processed
+
+    Returns:
+        dict: Result with status and metadata
+    """
+    logger.info(f"\n{'=' * 60}")
+    logger.info(f"📦 CREATING FINAL ZARR FROM INCREMENTAL DATA")
+    logger.info(f"{'=' * 60}")
+
+    if not incremental_file.exists():
+        logger.warning(f"No incremental file found at {incremental_file}")
+        # Create empty Zarr
+        empty_result = pd.DataFrame(columns=[
+            'id_geohash', 'date_break', 'date_before_break', 'date_after_break',
+            'break_method', 'break_number', 'proba_rbeast',
+            'water_area_before', 'water_area_after',
+            'water_area_before_normalized', 'water_area_after_normalized'
+        ])
+        empty_ds = empty_result.set_index('id_geohash').to_xarray()
+        empty_ds.attrs.update({
+            'region': region,
+            'analysis_date': analysis_date,
+            'created_at': datetime.now().isoformat(),
+            'complete': True,
+            'empty': True,
+            'analysis_source': analysis_source,
+            'total_ids': total_ids
+        })
+        empty_ds.to_zarr(zarr_path, mode='w')
+        empty_ds.close()
+        return {
+            'success': True,
+            'total_ids': total_ids,
+            'processed': 0,
+            'breakpoints_found': 0,
+            'zarr_path': str(zarr_path)
+        }
+
+    try:
+        # Load all incremental results
+        logger.info(f"Loading incremental results from {incremental_file}")
+        breaks_merged = pd.read_parquet(incremental_file)
+
+        if breaks_merged.empty:
+            logger.warning("Incremental file is empty")
+            # Create empty Zarr
+            empty_result = pd.DataFrame(columns=[
+                'id_geohash', 'date_break', 'date_before_break', 'date_after_break',
+                'break_method', 'break_number', 'proba_rbeast',
+                'water_area_before', 'water_area_after',
+                'water_area_before_normalized', 'water_area_after_normalized'
+            ])
+            empty_ds = empty_result.set_index('id_geohash').to_xarray()
+            empty_ds.attrs.update({
+                'region': region,
+                'analysis_date': analysis_date,
+                'created_at': datetime.now().isoformat(),
+                'complete': True,
+                'empty': True,
+                'analysis_source': analysis_source,
+                'total_ids': total_ids
+            })
+            empty_ds.to_zarr(zarr_path, mode='w')
+            empty_ds.close()
+            return {
+                'success': True,
+                'total_ids': total_ids,
+                'processed': 0,
+                'breakpoints_found': 0,
+                'zarr_path': str(zarr_path)
+            }
+
+        # Save to Zarr
+        logger.info(f"💾 Saving {len(breaks_merged):,} records to Zarr: {zarr_path}")
+
+        # Set index and create dataset
+        ds_breaks = breaks_merged.set_index('id_geohash').to_xarray()
+        ds_breaks.attrs.update({
+            'region': region,
+            'analysis_date': analysis_date,
+            'created_at': datetime.now().isoformat(),
+            'complete': True,
+            'analysis_source': analysis_source,
+            'total_ids': total_ids,
+            'breakpoints_found': len(breaks_merged)
+        })
+
+        ds_breaks.to_zarr(zarr_path, mode='w')
+        logger.info(f"   ✅ Zarr saved successfully")
+
+        # Optional: Save Parquet backup
+        current_breakpoint_dir = incremental_file.parent
+        path_to_joined_file = current_breakpoint_dir / f'drain_{analysis_date}.parquet'
+        breaks_merged.to_parquet(path_to_joined_file)
+        logger.info(f"   ✅ Parquet backup saved to {path_to_joined_file}")
+
+        # Clean up incremental file (optional - keep for debugging)
+        # incremental_file.unlink()
+        # logger.info(f"   🧹 Incremental file cleaned up")
+
+        if zarr_path.exists():
+            zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
+            logger.info(f"   📦 Zarr file size: {zarr_size_gb:.2f} GB")
+
+        ds_breaks.close()
+
+        return {
+            'success': True,
+            'region': region,
+            'analysis_date': analysis_date,
+            'analysis_source': analysis_source,
+            'total_ids': total_ids,
+            'processed': len(breaks_merged),
+            'breakpoints_found': len(breaks_merged),
+            'zarr_path': str(zarr_path)
+        }
+
+    except Exception as e:
+        logger.error(f"Error creating Zarr from incremental data: {e}")
         import traceback
         traceback.print_exc()
         return {

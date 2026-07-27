@@ -1,5 +1,4 @@
-from utils.helper_functions import  debug_historical_dates, \
-    process_region_date_new_fast_historical
+from utils.helper_functions import debug_historical_dates, process_region_date_new_fast_historical_safe
 import sys
 from typing import List, Dict, Any, Optional
 import gc
@@ -13,6 +12,7 @@ import time
 import pandas as pd
 from pathlib import Path
 import xarray as xr
+
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -31,6 +31,17 @@ def is_file_ready(filepath, wait_seconds=0.5, checks=20):
 
 
 def check_data_availability_for_date(region: str, date_str: str, env_path: str = None) -> Dict[str, Any]:
+    """
+    Check if data exists for a specific region and date.
+
+    Args:
+        region: Region name (e.g., "TEST", "AFRICA")
+        date_str: Date in "YYYY-MM" format
+        env_path: Optional path to .env file
+
+    Returns:
+        dict: Availability status and metadata
+    """
     if env_path:
         load_dotenv(dotenv_path=env_path)
     else:
@@ -43,6 +54,7 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
     # 1. Check if merged file exists in merge directory
     data_file = Path(dynamic_world_data_dir) / 'merge' / f'dw_{region}_{date_str}.nc'
     logger.debug(f"Checking if file {data_file} exists: {os.path.exists(data_file)}")
+
     if data_file.exists():
         try:
             ds = xr.open_dataset(str(data_file))
@@ -57,7 +69,7 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
             elif 'id_geohash' in ds.coords:
                 id_count = len(ds.id_geohash)
                 has_ids = id_count > 0
-            elif 'id' in ds.dims:  # Alternative dimension name
+            elif 'id' in ds.dims:
                 id_count = len(ds.id)
                 has_ids = id_count > 0
             else:
@@ -74,13 +86,12 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
                 dates_in_file = pd.to_datetime(ds.date.values)
                 date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
                 has_date = date_str in date_strings
-            elif 'time' in ds.coords:  # Alternative coordinate name
+            elif 'time' in ds.coords:
                 dates_in_file = pd.to_datetime(ds.time.values)
                 date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
                 has_date = date_str in date_strings
             else:
                 # If there's only one date, assume it's the right one
-                # This is likely a single-date file
                 has_date = True
 
             ds.close()
@@ -98,7 +109,6 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
                     'source': 'merge_directory'
                 }
             else:
-                # Debug info
                 logger.info(f"File exists but failed checks: has_ids={has_ids}, has_date={has_date}")
 
         except Exception as e:
@@ -151,30 +161,39 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
         'region': region,
         'message': f'No data found for {region} {date_str} in either source'
     }
+
+
 def process_single_date_for_region(
         region: str,
         date_str: str,
         env_path: str = None,
-        n_jobs: int = 12,
-        id_chunk_size: int = 2000,  # Number of IDs per chunk (passed to calculate_break)
-        save_interval: int = 10,   # Save every N chunks
+        n_jobs: int = 1,  # Keep at 1 for RBEAST stability
+        id_chunk_size: int = 50,  # Reduced for RBEAST
+        save_interval: int = 1,
+        beast_kwargs: Dict[str, Any] = None,
+        break_threshold: float = 0.5
 ) -> Dict[str, Any]:
     """
-    Process a single date for a region using the FAST method.
+    Process a single date for a region using the SAFE historical method.
+
+    This version uses individual lake processing to avoid segmentation faults
+    in RBEAST (C++ extension).
 
     Args:
         region: Region name
         date_str: Date in "YYYY-MM" format
         env_path: Optional path to .env file
-        n_jobs: Number of parallel jobs (passed to NRTBreakpoint internally)
-        id_chunk_size: Number of IDs to process per chunk (default: 100)
-        save_interval: Save intermediate results every N chunks (default: 10)
+        n_jobs: Number of parallel jobs (must be 1 for RBEAST)
+        id_chunk_size: Number of IDs to process per chunk (recommended: 1-50)
+        save_interval: Save intermediate results every N chunks
+        beast_kwargs: Optional RBEAST parameters
+        break_threshold: Probability threshold for break detection (default: 0.5)
 
     Returns:
         dict: Processing results
     """
     logger.info(f"\n{'=' * 80}")
-    logger.info(f"PROCESSING {region} FOR {date_str} (FAST METHOD)")
+    logger.info(f"PROCESSING {region} FOR {date_str} (SAFE HISTORICAL METHOD)")
     logger.info(f"{'=' * 80}")
 
     # Load environment if env_path provided
@@ -184,6 +203,16 @@ def process_single_date_for_region(
     else:
         load_dotenv()
         logger.info("Loading environment from default .env file")
+
+    # Validate n_jobs - must be 1 for RBEAST stability
+    if n_jobs > 1:
+        logger.warning(f"n_jobs={n_jobs} > 1 is not recommended for RBEAST. Forcing n_jobs=1 for safety.")
+        n_jobs = 1
+
+    # Validate id_chunk_size - small chunks for RBEAST
+    if id_chunk_size > 100:
+        logger.warning(f"id_chunk_size={id_chunk_size} is large for RBEAST. Consider reducing to 1-50 for stability.")
+        # Don't force change, but warn user
 
     # Check if data is available
     availability = check_data_availability_for_date(region, date_str, env_path)
@@ -204,19 +233,33 @@ def process_single_date_for_region(
     logger.info(f"✅ Data available for {region} {date_str} (source: {source})")
     logger.info(f"   IDs in file: {availability.get('id_count', 0):,}")
 
-    # Process using FAST method
-    try:
-        logger.info(f"🚀 Processing {region} for {date_str} with {n_jobs} parallel jobs...")
-        logger.info(f"   Each chunk: {id_chunk_size} IDs")
-        logger.info(f"   Save interval: every {save_interval} chunks ({save_interval * id_chunk_size} IDs)")
+    # Default RBEAST parameters for stability
+    if beast_kwargs is None:
+        beast_kwargs = {
+            'trendMaxOrder': 0,
+            'trendMinSepDist': 1,
+            'nCpMax': 3,  # Limit maximum number of change points
+            'maxK': 2,  # Reduce model complexity
+        }
 
-        process_result = process_region_date_new_fast_historical(
+    # Process using SAFE method (individual lakes)
+    try:
+        logger.info(f"🚀 Processing {region} for {date_str} with SAFE method...")
+        logger.info(f"   Each chunk: {id_chunk_size} IDs (processed individually for RBEAST)")
+        logger.info(f"   RBEAST parameters: {beast_kwargs}")
+        logger.info(f"   Break threshold: {break_threshold}")
+        logger.info(f"   Save interval: every {save_interval} chunks")
+
+        process_result = process_region_date_new_fast_historical_safe(
             region=region,
             analysis_date=date_str,
             env_path=env_path,
             n_jobs=n_jobs,
             id_chunk_size=id_chunk_size,
-            save_interval=save_interval
+            save_interval=save_interval,
+            beast_kwargs=beast_kwargs,
+            break_threshold=break_threshold,
+            debug_mode=True
         )
 
         if process_result.get('success', False):
@@ -242,10 +285,10 @@ def process_single_date_for_region(
 
 
 def main():
-    """Main function to process June 2026 for all regions."""
+    """Main function to process historical dates with RBEAST."""
 
     logger.debug("=" * 80)
-    logger.debug("PROCESS_REGION.PY STARTED (JUNE 2026 ONLY)")
+    logger.debug("PROCESS_HISTORICAL_RBEAST.PY STARTED")
     logger.debug("=" * 80)
 
     # Load environment
@@ -268,11 +311,13 @@ def main():
         'region_name'
     ]
 
-    dynamic_world_data_dir = os.environ['dynamic_world_data']
-    # TODO replace with  most recent file
-    original_most_recent_dynamic_world_file = os.path.join(dynamic_world_data_dir, 'lakes_dw_V2d_compressed.nc')
-    logger.debug(f"Dates in the historical file")
-    debug_historical_dates(historical_file_path=original_most_recent_dynamic_world_file)
+    dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+    if dynamic_world_data_dir:
+        original_most_recent_dynamic_world_file = os.path.join(
+            dynamic_world_data_dir, 'lakes_dw_V2d_compressed.nc'
+        )
+        logger.debug(f"Dates in the historical file")
+        debug_historical_dates(historical_file_path=original_most_recent_dynamic_world_file)
 
     for var in env_vars_to_check:
         value = os.environ.get(var, 'NOT SET')
@@ -281,20 +326,24 @@ def main():
     # Get region from environment or use specific regions
     region_name = os.environ.get("region_name", "ALL")
 
-    id_chunk_size = int(os.environ.get("id_chunk_size", 500))
+    # SAFE defaults for RBEAST
+    id_chunk_size = int(os.environ.get("id_chunk_size", 50))  # Small chunks
     save_interval = int(os.environ.get("save_interval", 1))
-    n_jobs = int(os.environ.get("n_jobs", 1))
+    n_jobs = 1  # Force to 1 for RBEAST
 
-    # Define regions to process - you can customize this list
+    # RBEAST parameters
+    break_threshold = float(os.environ.get("break_threshold", 0.5))
+
+    # Define regions to process
     if region_name == "ALL":
-        # All regions except TEST_v1, CANADA_v1, etc. (only the main ones)
+        # All main regions - can be customized
         regions_to_process = ['TEST', 'ALASKA', 'CANADA', 'EURASIA1', 'EURASIA2', 'EURASIA3']
         logger.info(f"Processing ALL main regions: {regions_to_process}")
     else:
         regions_to_process = [region_name]
         logger.info(f"Processing single region: {region_name}")
 
-    # ONLY process June 2026
+    # Target date (can be modified)
     target_date = "2025-06"
     logger.info(f"🎯 Target date: {target_date}")
 
@@ -323,7 +372,7 @@ def main():
         logger.info("Skipping processing - conditions not met")
         return
 
-    # Process each region for June 2026
+    # Process each region
     all_results = {}
     success_count = 0
     failure_count = 0
@@ -335,14 +384,21 @@ def main():
         logger.debug(f"Using id chunk: {id_chunk_size}")
         logger.debug(f"With save interval {save_interval}")
 
-        # Process the single date
+        # Process the single date with safe method
         result = process_single_date_for_region(
             region=region,
             date_str=target_date,
             env_path=env_path,
             n_jobs=n_jobs,
             id_chunk_size=id_chunk_size,
-            save_interval=save_interval
+            save_interval=save_interval,
+            beast_kwargs={
+                'trendMaxOrder': 0,
+                'trendMinSepDist': 1,
+                'nCpMax': 3,
+                'maxK': 2,
+            },
+            break_threshold=break_threshold
         )
 
         all_results[region] = result
@@ -385,7 +441,7 @@ def main():
         logger.info(f"  {status} {region}: {breakpoints:,} breakpoints from {total_ids:,} IDs")
 
     logger.info("=" * 80)
-    logger.info("PROCESS_REGION.PY COMPLETED")
+    logger.info("PROCESS_HISTORICAL_RBEAST.PY COMPLETED")
     logger.info("=" * 80)
 
 
