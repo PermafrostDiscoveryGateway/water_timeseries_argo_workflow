@@ -1,4 +1,4 @@
-from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates, \
+from utils.helper_functions import  debug_historical_dates, \
     process_region_date_new_fast_historical
 import sys
 from typing import List, Dict, Any, Optional
@@ -295,7 +295,7 @@ def main():
         logger.info(f"Processing single region: {region_name}")
 
     # ONLY process June 2026
-    target_date = "2026-06"
+    target_date = "2025-06"
     logger.info(f"🎯 Target date: {target_date}")
 
     # Check if we should run based on date
