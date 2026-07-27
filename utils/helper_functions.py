@@ -1531,7 +1531,7 @@ def debug_historical_dates(historical_file_path: str) -> None:
     print("=" * 80)
 
 
-def process_region_date_new_fast(
+def process_region_date_new_fast_NRT(
         region: str,
         analysis_date: str,
         env_path: str = None,
@@ -1911,7 +1911,7 @@ def process_region_date_new_fast(
         return final_result
 
     except Exception as e:
-        logger.error(f"❌ Unexpected error in process_region_date_new_fast: {e}")
+        logger.error(f"❌ Unexpected error in process_region_date_new_fast_NRT: {e}")
         import traceback
         traceback.print_exc()
         return {

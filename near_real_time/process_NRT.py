@@ -1,4 +1,4 @@
-from utils.helper_functions import process_region_date_new_fast, debug_historical_dates
+from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates
 import sys
 from typing import List, Dict, Any, Optional
 import gc
@@ -209,7 +209,7 @@ def process_single_date_for_region(
         logger.info(f"   Each chunk: {id_chunk_size} IDs")
         logger.info(f"   Save interval: every {save_interval} chunks ({save_interval * id_chunk_size} IDs)")
 
-        process_result = process_region_date_new_fast(
+        process_result = process_region_date_new_fast_NRT(
             region=region,
             analysis_date=date_str,
             env_path=env_path,
