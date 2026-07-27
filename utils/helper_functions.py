@@ -21,7 +21,7 @@ import psutil
 from water_timeseries.downloader import EarthEngineDownloader
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
 from water_timeseries.dataset import DWDataset
-from water_timeseries.breakpoint import NRTBreakpoint
+from water_timeseries.breakpoint import NRTBreakpoint, BeastBreakpoint
 import datetime
 from utils.region_boundaries import get_region_boundaries
 import json
@@ -1945,7 +1945,7 @@ def process_region_date_new_fast_historical(
 
     if n_jobs is None:
         n_jobs = min(8, os.cpu_count() or 1)  # Cap at 8 to prevent memory issues
-    logger.info(f"Using {n_jobs} parallel jobs for processing (internal to NRTBreakpoint)")
+    logger.info(f"Using BeastBreakpoint (RBEAST) for historical breakpoint detection")
 
     logger.info(f"\n{'=' * 80}")
     logger.info(f"PROCESSING {region} FOR DATE: {analysis_date} (FAST MODE - MEMORY OPTIMIZED)")
@@ -2058,25 +2058,6 @@ def process_region_date_new_fast_historical(
         analysis_source = None
         ds_analysis = None
 
-        if new_data_file.exists():
-            try:
-                ds_analysis = xr.open_dataset(str(new_data_file))
-                if 'date' in ds_analysis.coords:
-                    dates_in_file = pd.to_datetime(ds_analysis.date.values)
-                    date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
-                    if analysis_date in date_strings:
-                        analysis_source = 'downloaded'
-                        logger.info(f"📊 Using DOWNLOADED data for {analysis_date} from: {new_data_file}")
-                        logger.info(f"   IDs in downloaded data: {len(ds_analysis.id_geohash)}")
-                    else:
-                        ds_analysis.close()
-                        ds_analysis = None
-            except Exception as e:
-                logger.warning(f"Error reading new data file: {e}")
-                if ds_analysis:
-                    ds_analysis.close()
-                    ds_analysis = None
-
         if ds_analysis is None and historical_file.exists():
             try:
                 ds_historical_check = xr.open_dataset(str(historical_file))
@@ -2162,7 +2143,7 @@ def process_region_date_new_fast_historical(
         incremental_file = current_breakpoint_dir / f'incremental_results_{analysis_date}.parquet'
 
         # 10. Process in chunks - MEMORY OPTIMIZED
-        bp = NRTBreakpoint()
+        bp = BeastBreakpoint()
         total_processed = 0
         total_breakpoints = 0
         total_ids = len(matching_ids_list)
@@ -2170,8 +2151,8 @@ def process_region_date_new_fast_historical(
 
         logger.info(f"Using analysis date: {analysis_date_str}")
         logger.info(f"Starting processing of {total_ids:,} IDs in chunks of {id_chunk_size}")
-        logger.info(f"NOTE: Each chunk will be passed to NRTBreakpoint.calculate_break as a LIST")
-        logger.info(f"       This enables internal parallelization with {n_jobs} workers")
+        logger.info(f"NOTE: Each chunk is passed to BeastBreakpoint.calculate_breaks_batch")
+        logger.info(f"       BEAST (RBEAST) detects breakpoints across the full historical series per lake")
         logger.info(f"Results will be saved incrementally after EACH chunk (memory-optimized)")
 
         # Check for existing incremental file (resume capability)
@@ -2223,13 +2204,8 @@ def process_region_date_new_fast_historical(
                 ds_combined = ds_combined.sortby('date')
                 dwds = DWDataset(ds_combined)
 
-                # Pass the ENTIRE LIST of IDs to calculate_break
-                breaks_df = bp.calculate_break(
-                    dataset=dwds,
-                    analysis_date=analysis_date_str,
-                    object_id=chunk_ids,  # <-- PASS THE LIST!
-                    keep_nans=False
-                )
+                # dwds already contains only chunk_ids; run BEAST over every lake in the chunk
+                breaks_df = bp.calculate_breaks_batch(dataset=dwds)
 
                 if breaks_df is not None and not breaks_df.empty:
                     # Ensure id_geohash is a column
