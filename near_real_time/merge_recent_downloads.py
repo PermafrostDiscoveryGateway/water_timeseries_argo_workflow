@@ -677,7 +677,7 @@ def process_region_fast(
         return result
 
     # Step 2: Check if already merged (quick check)
-    merged_file_path = os.path.join(dynamic_world_data_dir, f"dw_{region}_{date_to_run}.nc")
+    merged_file_path = os.path.join(dynamic_world_data_dir, 'merge', f"dw_{region}_{date_to_run}.nc")
 
     if quick_check_merged_file(merged_file_path, date_to_run):
         logger.info(f"✅ Region {region} already has date {date_to_run} - skipping merge")
@@ -758,6 +758,7 @@ def main():
     failure_count = 0
     skipped_count = 0
     region_files = []
+    all_regions = ['TEST']
     for region in all_regions:
         try:
             logger.info(f"\n{'#' * 80}")
