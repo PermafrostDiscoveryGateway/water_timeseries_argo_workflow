@@ -51,14 +51,15 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
     if not dynamic_world_data_dir:
         return {'available': False, 'error': 'dynamic_world_data not set'}
 
-    # 1. Check if merged file exists in merge directory
-    data_file = Path(dynamic_world_data_dir) / 'merge' / f'dw_{region}_{date_str}.nc'
-    logger.debug(f"Checking if file {data_file} exists: {os.path.exists(data_file)}")
+    # Check historical file
+    dynamic_world_data_dir = os.environ['dynamic_world_data']
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    if not all_dynamic_world_files:
+        logger.error(f"No .nc files found in {dynamic_world_data_dir}")
+        return {'success': False, 'error': 'No .nc files found'}
 
-    # 2. Check historical file
-    original_most_recent_dynamic_world_file = os.path.join(dynamic_world_data_dir, 'lakes_dw_V2d_compressed.nc')
-    historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
-    if historical_file.exists():
+    historical_file = max(all_dynamic_world_files, key=os.path.getctime)
+    if Path(historical_file).exists():
         try:
             ds = xr.open_dataset(str(historical_file))
 
@@ -244,11 +245,14 @@ def main():
         'region_name'
     ]
 
-    dynamic_world_data_dir = os.environ.get('dynamic_world_data')
-    if dynamic_world_data_dir:
-        original_most_recent_dynamic_world_file = os.path.join(
-            dynamic_world_data_dir, 'lakes_dw_V2d_compressed.nc'
-        )
+    dynamic_world_data_dir = os.environ['dynamic_world_data']
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    if not all_dynamic_world_files:
+        logger.error(f"No .nc files found in {dynamic_world_data_dir}")
+        return {'success': False, 'error': 'No .nc files found'}
+
+    original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+    if dynamic_world_data_dir and original_most_recent_dynamic_world_file:
         logger.debug(f"Dates in the historical file")
         debug_historical_dates(historical_file_path=original_most_recent_dynamic_world_file)
 
@@ -285,33 +289,8 @@ def main():
         logger.info(f"Processing single region: {region_name}")
 
     # Target date (can be modified)
+    # TODO use this for now, change for later
     target_date = "2025-06"
-    logger.info(f"🎯 Target date: {target_date}")
-
-    # Check if we should run based on date
-    SHOULD_RUN = False
-    summer_months = [6, 7, 8, 9]
-    TODAY = datetime.now()
-    TODAY_MONTH = TODAY.month
-
-    # Always run if we're processing all regions or if it's summer
-    if region_name == "ALL":
-        SHOULD_RUN = True
-        logger.info("Running for all regions (forced)")
-    elif TODAY_MONTH - 1 in summer_months:
-        TODAY_DAY = TODAY.day
-        if TODAY_DAY > 3:
-            SHOULD_RUN = True
-            logger.debug(f"TODAY_DAY: {TODAY_DAY} - Should run: {SHOULD_RUN}")
-    else:
-        # Still run for testing historical data
-        if region_name != "ALL":
-            SHOULD_RUN = True
-            logger.info("Running for single region (testing mode)")
-
-    if not SHOULD_RUN:
-        logger.info("Skipping processing - conditions not met")
-        return
 
     # Process each region
     all_results = {}

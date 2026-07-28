@@ -2149,7 +2149,27 @@ def process_region_date_beast_historical(
         if incremental_file.exists():
             try:
                 saved_results = pd.read_parquet(incremental_file)
-                saved_ids = set(saved_results['id_geohash'].values) if 'id_geohash' in saved_results.columns else set()
+                # Check if id_geohash exists as a column or is the index
+                if 'id_geohash' in saved_results.columns:
+                    saved_ids = set(saved_results['id_geohash'].values)
+                elif saved_results.index.name == 'id_geohash':
+                    saved_ids = set(saved_results.index.values)
+                else:
+                    # Try to find a column that looks like IDs
+                    id_col = None
+                    for col in saved_results.columns:
+                        if 'id' in col.lower() or 'geohash' in col.lower():
+                            id_col = col
+                            break
+                    if id_col:
+                        saved_ids = set(saved_results[id_col].values)
+                    else:
+                        # Assume the first column or index contains IDs
+                        if len(saved_results.columns) > 0:
+                            saved_ids = set(saved_results[saved_results.columns[0]].values)
+                        else:
+                            saved_ids = set(saved_results.index.values)
+
                 region_ids_list = [id_val for id_val in region_ids_list if id_val not in saved_ids]
                 total_breakpoints = len(saved_results)
                 logger.info(f"🔄 Resuming from incremental file: {len(saved_ids)} IDs already processed")
@@ -2203,9 +2223,34 @@ def process_region_date_beast_historical(
                 )
 
                 if breaks_df is not None and not breaks_df.empty:
-                    # Ensure id_geohash is a column
-                    if 'id_geohash' not in breaks_df.columns:
+                    # ========== FIX: Ensure id_geohash is a column ==========
+                    # Check if id_geohash is the index or a column
+                    if breaks_df.index.name == 'id_geohash':
+                        # Reset index to make id_geohash a column
                         breaks_df = breaks_df.reset_index()
+                    elif 'id_geohash' not in breaks_df.columns:
+                        # Try to find a column that contains IDs
+                        id_col = None
+                        for col in breaks_df.columns:
+                            if 'id' in col.lower() or 'geohash' in col.lower():
+                                id_col = col
+                                break
+
+                        if id_col:
+                            # Rename the column to id_geohash
+                            breaks_df = breaks_df.rename(columns={id_col: 'id_geohash'})
+                        else:
+                            # Use the index as the ID column
+                            breaks_df['id_geohash'] = breaks_df.index
+                            breaks_df = breaks_df.reset_index(drop=True)
+
+                    # Ensure id_geohash is the first column
+                    if 'id_geohash' in breaks_df.columns:
+                        cols = ['id_geohash'] + [c for c in breaks_df.columns if c != 'id_geohash']
+                        breaks_df = breaks_df[cols]
+
+                    logger.debug(f"Chunk {chunk_idx + 1} DataFrame columns: {breaks_df.columns.tolist()}")
+                    logger.debug(f"Chunk {chunk_idx + 1} has {len(breaks_df)} rows")
 
                     # SAVE INCREMENTALLY IMMEDIATELY
                     if incremental_file.exists():
@@ -3197,6 +3242,8 @@ def create_final_zarr_from_incremental(
     """
     Create the final Zarr file from incremental results.
 
+    Handles DataFrames where id_geohash might be the index or a column named 'index'.
+
     Args:
         incremental_file: Path to incremental Parquet file
         zarr_path: Path where Zarr file should be saved
@@ -3208,13 +3255,15 @@ def create_final_zarr_from_incremental(
     Returns:
         dict: Result with status and metadata
     """
+    import datetime
+
     logger.info(f"\n{'=' * 60}")
     logger.info(f"📦 CREATING FINAL ZARR FROM INCREMENTAL DATA")
     logger.info(f"{'=' * 60}")
 
     if not incremental_file.exists():
         logger.warning(f"No incremental file found at {incremental_file}")
-        # Create empty Zarr
+        # Create empty Zarr with proper structure
         empty_result = pd.DataFrame(columns=[
             'id_geohash', 'date_break', 'date_before_break', 'date_after_break',
             'break_method', 'break_number', 'proba_rbeast',
@@ -3225,7 +3274,7 @@ def create_final_zarr_from_incremental(
         empty_ds.attrs.update({
             'region': region,
             'analysis_date': analysis_date,
-            'created_at': datetime.now().isoformat(),
+            'created_at': datetime.datetime.now().isoformat(),
             'complete': True,
             'empty': True,
             'analysis_source': analysis_source,
@@ -3246,6 +3295,10 @@ def create_final_zarr_from_incremental(
         logger.info(f"Loading incremental results from {incremental_file}")
         breaks_merged = pd.read_parquet(incremental_file)
 
+        logger.debug(f"Initial DataFrame columns: {breaks_merged.columns.tolist()}")
+        logger.debug(f"Initial DataFrame index: {breaks_merged.index.name}")
+        logger.debug(f"DataFrame shape: {breaks_merged.shape}")
+
         if breaks_merged.empty:
             logger.warning("Incremental file is empty")
             # Create empty Zarr
@@ -3259,7 +3312,7 @@ def create_final_zarr_from_incremental(
             empty_ds.attrs.update({
                 'region': region,
                 'analysis_date': analysis_date,
-                'created_at': datetime.now().isoformat(),
+                'created_at': datetime.datetime.now().isoformat(),
                 'complete': True,
                 'empty': True,
                 'analysis_source': analysis_source,
@@ -3275,22 +3328,73 @@ def create_final_zarr_from_incremental(
                 'zarr_path': str(zarr_path)
             }
 
+        # ========== FIX: Handle id_geohash properly ==========
+        # Check if 'id_geohash' exists as a column
+        if 'id_geohash' in breaks_merged.columns:
+            logger.info("✅ Found 'id_geohash' as a column")
+            # Set it as index
+            breaks_merged = breaks_merged.set_index('id_geohash')
+        elif 'index' in breaks_merged.columns:
+            # The 'index' column contains the id_geohash values
+            logger.info("🔄 Found 'index' column - renaming to 'id_geohash' and setting as index")
+            breaks_merged = breaks_merged.rename(columns={'index': 'id_geohash'})
+            breaks_merged = breaks_merged.set_index('id_geohash')
+        elif breaks_merged.index.name == 'id_geohash' or breaks_merged.index.name is None:
+            # Check if the index itself is the id_geohash
+            # For the first chunk, the index might be the default RangeIndex
+            # We need to check if the index values look like geohash strings
+            if breaks_merged.index.name is None:
+                # Try to infer if index contains geohash-like strings
+                sample_val = breaks_merged.index[0] if len(breaks_merged) > 0 else None
+                if sample_val is not None and isinstance(sample_val, str) and len(sample_val) >= 10:
+                    # Looks like a geohash - set the index name
+                    logger.info("🔄 Index appears to contain geohash strings - naming it 'id_geohash'")
+                    breaks_merged.index.name = 'id_geohash'
+                else:
+                    # The index might be the geohash but we need to verify
+                    # Try to find a column that looks like it contains IDs
+                    id_col = None
+                    for col in breaks_merged.columns:
+                        if 'id' in col.lower() or 'geohash' in col.lower():
+                            id_col = col
+                            break
+
+                    if id_col:
+                        logger.info(f"🔄 Found ID-like column '{id_col}' - using as id_geohash")
+                        breaks_merged = breaks_merged.set_index(id_col)
+                    else:
+                        # Last resort: use the index as-is but rename it
+                        logger.warning("⚠️ Could not find id_geohash column - using index as id_geohash")
+                        breaks_merged.index.name = 'id_geohash'
+        else:
+            # The index has a different name - try to rename it
+            logger.warning(f"⚠️ Index name is '{breaks_merged.index.name}' - renaming to 'id_geohash'")
+            breaks_merged.index.name = 'id_geohash'
+
+        # Verify we have a proper index
+        logger.info(f"Final index name: {breaks_merged.index.name}")
+        logger.info(f"Number of unique IDs: {len(breaks_merged.index.unique())}")
+        logger.debug(f"Sample IDs: {list(breaks_merged.index[:5])}")
+
         # Save to Zarr
         logger.info(f"💾 Saving {len(breaks_merged):,} records to Zarr: {zarr_path}")
 
-        # Set index and create dataset
-        ds_breaks = breaks_merged.set_index('id_geohash').to_xarray()
+        # Convert to xarray dataset
+        ds_breaks = breaks_merged.to_xarray()
+
+        # Add attributes
         ds_breaks.attrs.update({
             'region': region,
             'analysis_date': analysis_date,
-            'created_at': datetime.now().isoformat(),
+            'created_at': datetime.datetime.now().isoformat(),
             'complete': True,
             'analysis_source': analysis_source,
             'total_ids': total_ids,
             'breakpoints_found': len(breaks_merged)
         })
 
-        ds_breaks.to_zarr(zarr_path, mode='w')
+        # Write to Zarr
+        ds_breaks.to_zarr(zarr_path, mode='w', consolidated=True)
         logger.info(f"   ✅ Zarr saved successfully")
 
         # Optional: Save Parquet backup
@@ -3299,10 +3403,7 @@ def create_final_zarr_from_incremental(
         breaks_merged.to_parquet(path_to_joined_file)
         logger.info(f"   ✅ Parquet backup saved to {path_to_joined_file}")
 
-        # Clean up incremental file (optional - keep for debugging)
-        # incremental_file.unlink()
-        # logger.info(f"   🧹 Incremental file cleaned up")
-
+        # Check Zarr file size
         if zarr_path.exists():
             zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
             logger.info(f"   📦 Zarr file size: {zarr_size_gb:.2f} GB")
@@ -3332,7 +3433,7 @@ def create_final_zarr_from_incremental(
         }
 
 
-def create_final_zarr_from_incremental(
+def create_final_zarr_from_incremental_2(
         incremental_file: Path,
         zarr_path: Path,
         region: str,
