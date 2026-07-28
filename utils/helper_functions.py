@@ -1687,7 +1687,7 @@ def process_region_date_new_fast_NRT(
                     ds_analysis.close()
                     ds_analysis = None
 
-        if ds_analysis is None and historical_file.exists():
+        if ds_analysis is None and Path(historical_file).exists():
             try:
                 ds_historical_check = xr.open_dataset(str(historical_file))
                 if 'date' in ds_historical_check.coords:
