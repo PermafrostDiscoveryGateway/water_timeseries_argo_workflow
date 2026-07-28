@@ -1921,6 +1921,372 @@ def process_region_date_new_fast_NRT(
             'analysis_date': analysis_date
         }
 
+
+def process_region_date_beast_historical(
+        region: str,
+        analysis_date: str,
+        env_path: str = None,
+        id_chunk_size: int = 500,
+        n_jobs: int = 8,
+        save_interval: int = 1,
+        break_threshold: float = 0.5,
+        beast_kwargs: Dict[str, Any] = None,
+) -> Dict[str, Any]:
+    """
+    Process a single date for a region using BEAST (RBEAST) breakpoint detection
+    on historical data only.
+
+    This function is designed to work like process_region_date_new_fast_NRT but
+    uses the BEAST breakpoint method on the historical NetCDF file. It processes
+    lakes in chunks, saves intermediate results incrementally, and creates a
+    final Zarr file.
+
+    Args:
+        region: Region name (e.g., "TEST", "ALASKA", "CANADA")
+        analysis_date: Date in "YYYY-MM" format (e.g., "2026-06")
+        env_path: Optional path to .env file
+        id_chunk_size: Number of IDs to process per chunk (default: 500)
+        n_jobs: Number of parallel jobs for processing (default: 8)
+        save_interval: Save intermediate results every N chunks (default: 1)
+        break_threshold: Probability threshold for break detection (default: 0.5)
+        beast_kwargs: Optional RBEAST parameters. Default:
+            {
+                'trendMaxOrder': 0,
+                'trendMinSepDist': 1,
+                'nCpMax': 3,
+                'maxK': 2,
+            }
+
+    Returns:
+        dict: Processing results with keys:
+            - success: bool indicating if processing completed
+            - region: region name
+            - analysis_date: date processed
+            - total_ids: total number of IDs processed
+            - breakpoints_found: total number of breakpoints found
+            - zarr_path: path to the output Zarr file
+            - processed_chunks: number of chunks processed
+            - total_chunks: total number of chunks
+            - error: error message if success is False
+    """
+    import time
+    import os
+    import geopandas as gpd
+    import gc
+
+    # Load environment
+    if env_path:
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
+
+    # Set default beast_kwargs if not provided
+    if beast_kwargs is None:
+        beast_kwargs = {
+            'trendMaxOrder': 0,
+            'trendMinSepDist': 1,
+            'nCpMax': 3,
+            'maxK': 2,
+        }
+
+    # Set n_jobs
+    if n_jobs is None:
+        n_jobs = min(8, os.cpu_count() or 1)
+
+    logger.info(f"\n{'=' * 80}")
+    logger.info(f"PROCESSING {region} FOR DATE: {analysis_date} (BEAST HISTORICAL)")
+    logger.info(f"{'=' * 80}")
+    logger.info(f"Using BeastBreakpoint (RBEAST) for historical breakpoint detection")
+    logger.info(f"Break threshold: {break_threshold}")
+    logger.info(f"BEAST parameters: {beast_kwargs}")
+    logger.info(f"Using {n_jobs} parallel jobs")
+
+    try:
+        # 1. Setup paths
+        dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+        if not dynamic_world_data_dir:
+            logger.error("❌ dynamic_world_data not set in environment")
+            return {'success': False, 'error': 'dynamic_world_data not set in environment'}
+
+        # Find the historical NetCDF file
+        nc_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+        if not nc_files:
+            logger.error("❌ No NetCDF files found in dynamic_world_data directory")
+            return {'success': False, 'error': 'No NetCDF files found'}
+
+        historical_file = max(nc_files, key=os.path.getmtime)
+        vector_lake_file = os.environ.get('vector_lake_file')
+
+        logger.info(f"📁 Historical file: {historical_file}")
+        logger.info(f"📁 Vector file: {vector_lake_file}")
+
+        # 2. Get region boundaries
+        from utils.region_boundaries import get_region_boundaries
+        region_boundaries = get_region_boundaries()
+
+        if region not in region_boundaries:
+            logger.error(f"❌ Region {region} not found in boundaries!")
+            return {'success': False, 'error': f'Region {region} not found in boundaries'}
+
+        bounds = region_boundaries[region]
+        logger.info(f"📍 Region boundaries for {region}:")
+        logger.info(f"   X_MIN_START: {bounds['X_MIN_START']}")
+        logger.info(f"   X_MIN_END: {bounds['X_MIN_END']}")
+        logger.info(f"   Y_MIN_START: {bounds['Y_MIN_START']}")
+        logger.info(f"   Y_MIN_END: {bounds['Y_MIN_END']}")
+
+        # 3. Load vector file and filter by region boundaries
+        logger.info(f"Loading vector file and filtering for region {region}...")
+
+        if not vector_lake_file or not Path(vector_lake_file).exists():
+            logger.error(f"❌ Vector file not found: {vector_lake_file}")
+            return {'success': False, 'error': 'Vector file not found'}
+
+        gdf = gpd.read_parquet(vector_lake_file)
+
+        # Handle Polygon geometries - convert to centroids for filtering
+        if gdf.geometry.geom_type.iloc[0] in ['Polygon', 'MultiPolygon']:
+            logger.info("Converting Polygon geometries to centroids for spatial filtering")
+            gdf['centroid'] = gdf.geometry.centroid
+            gdf = gdf.set_geometry('centroid')
+
+        # Filter by region boundaries
+        region_ids = gdf[
+            (gdf.geometry.x >= bounds['X_MIN_START']) &
+            (gdf.geometry.x <= bounds['X_MIN_END']) &
+            (gdf.geometry.y >= bounds['Y_MIN_START']) &
+            (gdf.geometry.y <= bounds['Y_MIN_END'])
+            ]['id_geohash'].values
+
+        region_ids_list = list(region_ids)
+        logger.info(f"📍 {region} has {len(region_ids_list):,} IDs in vector file")
+
+        if len(region_ids_list) == 0:
+            logger.error(f"❌ No IDs found for region {region} in vector file!")
+            return {'success': False, 'error': f'No IDs found for region {region}'}
+
+        # 4. Load historical data for the region IDs
+        logger.info(f"Loading historical data (only {len(region_ids_list):,} IDs)...")
+
+        if not Path(historical_file).exists():
+            logger.error(f"❌ Historical file not found: {historical_file}")
+            return {'success': False, 'error': 'Historical file not found'}
+
+        ds_historical_full = xr.open_dataset(str(historical_file))
+
+        # Select only the region IDs (only those that exist in historical data)
+        try:
+            hist_ids = set(ds_historical_full.id_geohash.values)
+            valid_region_ids = [id_val for id_val in region_ids_list if id_val in hist_ids]
+
+            if len(valid_region_ids) != len(region_ids_list):
+                logger.warning(
+                    f"Filtered {len(region_ids_list) - len(valid_region_ids)} IDs not found in historical data"
+                )
+                region_ids_list = valid_region_ids
+
+            if len(region_ids_list) == 0:
+                logger.error("❌ No valid region IDs found in historical data!")
+                ds_historical_full.close()
+                return {'success': False, 'error': 'No valid region IDs found in historical data'}
+
+            ds_historical = ds_historical_full.sel(id_geohash=region_ids_list)
+            logger.info(f"Loaded historical data for {len(ds_historical.id_geohash)} IDs")
+        except Exception as e:
+            logger.error(f"Error selecting region IDs from historical file: {e}")
+            ds_historical_full.close()
+            return {'success': False, 'error': f'Error loading historical data: {e}'}
+
+        ds_historical_full.close()
+        del ds_historical_full
+        gc.collect()
+
+        # 5. Filter data to the analysis date
+        analysis_timestamp = pd.Timestamp(f"{analysis_date}-01")
+
+        # For BEAST historical analysis, we use ALL data up to and including the analysis date
+        # This allows BEAST to detect breakpoints anywhere in the time series
+        ds_historical_train = ds_historical.where(ds_historical.date <= analysis_timestamp, drop=True)
+
+        if len(ds_historical_train.date) == 0:
+            logger.warning(f"No data up to {analysis_date}, using all historical data")
+            ds_historical_train = ds_historical
+
+        logger.info(f"Training data has {len(ds_historical_train.date)} dates")
+        logger.info(f"Training data has {len(ds_historical_train.id_geohash)} IDs")
+
+        # 6. Setup output directories
+        output_dir = os.environ.get('output_dir')
+        if not output_dir:
+            logger.error("❌ output_dir not set in environment")
+            return {'success': False, 'error': 'output_dir not set in environment'}
+
+        output_dir = Path(output_dir) / region
+        zarr_output_dir = output_dir / 'breakpoint_zarr'
+        zarr_output_dir.mkdir(exist_ok=True, parents=True)
+        zarr_path = zarr_output_dir / f'beast_breakpoints_{analysis_date}.zarr'
+
+        current_breakpoint_dir = output_dir / f'beast_breakpoint_{analysis_date}'
+        current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
+
+        # File for accumulating results incrementally
+        incremental_file = current_breakpoint_dir / f'incremental_beast_results_{analysis_date}.parquet'
+
+        # 7. Process in chunks
+        bp = BeastBreakpoint(
+            kwargs_break=beast_kwargs,
+            break_threshold=break_threshold
+        )
+
+        total_processed = 0
+        total_breakpoints = 0
+        total_ids = len(region_ids_list)
+
+        logger.info(f"Starting processing of {total_ids:,} IDs in chunks of {id_chunk_size}")
+        logger.info(f"Results will be saved incrementally after EACH chunk")
+
+        # Check for existing incremental file (resume capability)
+        if incremental_file.exists():
+            try:
+                saved_results = pd.read_parquet(incremental_file)
+                saved_ids = set(saved_results['id_geohash'].values) if 'id_geohash' in saved_results.columns else set()
+                region_ids_list = [id_val for id_val in region_ids_list if id_val not in saved_ids]
+                total_breakpoints = len(saved_results)
+                logger.info(f"🔄 Resuming from incremental file: {len(saved_ids)} IDs already processed")
+                logger.info(f"   Remaining IDs: {len(region_ids_list)}")
+                logger.info(f"   Existing breakpoints: {total_breakpoints:,}")
+            except Exception as e:
+                logger.warning(f"Error reading incremental file, starting fresh: {e}")
+                if incremental_file.exists():
+                    incremental_file.unlink()
+
+        start_time = time.time()
+
+        all_ids = list(region_ids_list)
+        total_chunks = (len(all_ids) + id_chunk_size - 1) // id_chunk_size if all_ids else 0
+        processed_chunks = 0
+
+        if total_chunks == 0:
+            logger.warning("No chunks to process")
+            # Check if we have existing data to create Zarr
+            if incremental_file.exists():
+                logger.info("Using existing incremental data to create Zarr")
+                return create_final_zarr_from_incremental(
+                    incremental_file, zarr_path, region, analysis_date,
+                    'historical_beast', total_ids
+                )
+            return {
+                'success': True,
+                'total_ids': total_ids,
+                'processed': 0,
+                'breakpoints_found': 0,
+                'zarr_path': str(zarr_path)
+            }
+
+        for chunk_idx in range(total_chunks):
+            start_idx = chunk_idx * id_chunk_size
+            end_idx = min(start_idx + id_chunk_size, len(all_ids))
+            chunk_ids = all_ids[start_idx:end_idx]
+            chunk_start_time = time.time()
+            progress_pct = (float(total_processed) / float(total_ids)) * 100 if total_ids > 0 else 0
+            logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs ({progress_pct:.1f}%)")
+
+            try:
+                # Get data for this chunk
+                ds_historical_chunk = ds_historical_train.sel(id_geohash=chunk_ids)
+                dwds = DWDataset(ds_historical_chunk)
+
+                # Pass the ENTIRE LIST of IDs to calculate_breaks_batch
+                breaks_df = bp.calculate_breaks_batch(
+                    dataset=dwds,
+                    progress_bar=False
+                )
+
+                if breaks_df is not None and not breaks_df.empty:
+                    # Ensure id_geohash is a column
+                    if 'id_geohash' not in breaks_df.columns:
+                        breaks_df = breaks_df.reset_index()
+
+                    # SAVE INCREMENTALLY IMMEDIATELY
+                    if incremental_file.exists():
+                        # Append to existing file
+                        existing = pd.read_parquet(incremental_file)
+                        combined = pd.concat([existing, breaks_df], ignore_index=True)
+                        combined.to_parquet(incremental_file)
+                    else:
+                        # First save
+                        breaks_df.to_parquet(incremental_file)
+
+                    total_breakpoints += len(breaks_df)
+
+                    logger.info(
+                        f"  ✅ Chunk {chunk_idx + 1} complete: {len(breaks_df)} breakpoints found (saved incrementally)"
+                    )
+                else:
+                    logger.info(f"  ✅ Chunk {chunk_idx + 1} complete: 0 breakpoints found")
+
+                total_processed += len(chunk_ids)
+                processed_chunks += 1
+
+                # Log chunk timing
+                chunk_time = time.time() - chunk_start_time
+                ids_per_second = len(chunk_ids) / chunk_time if chunk_time > 0 else 0
+                logger.info(f"  ⏱️ Chunk {chunk_idx + 1} took {chunk_time:.1f}s ({ids_per_second:.1f} IDs/sec)")
+
+                # Memory cleanup after each chunk
+                del ds_historical_chunk, dwds
+                if breaks_df is not None:
+                    del breaks_df
+                gc.collect()
+
+            except Exception as e:
+                logger.error(f"Error processing chunk {chunk_idx + 1}: {e}")
+                import traceback
+                traceback.print_exc()
+                # Continue to next chunk instead of failing completely
+                continue
+
+        # 8. Create final Zarr file from incremental data
+        final_result = create_final_zarr_from_incremental(
+            incremental_file,
+            zarr_path,
+            region,
+            analysis_date,
+            'historical_beast',
+            total_ids
+        )
+
+        # Clean up
+        ds_historical.close()
+        gc.collect()
+
+        total_time = time.time() - start_time
+        minutes, seconds = divmod(total_time, 60)
+
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"📊 FINAL SUMMARY for {region} {analysis_date}")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"   Total IDs processed: {total_processed:,}")
+        logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
+        logger.info(f"   Total chunks: {total_chunks}")
+        logger.info(f"   Total time: {int(minutes)}m {int(seconds)}s")
+        if total_processed > 0:
+            logger.info(f"   Average time per ID: {total_time / total_processed:.2f}s")
+        logger.info(f"{'=' * 60}")
+
+        return final_result
+
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in process_region_date_beast_historical: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': str(e),
+            'region': region,
+            'analysis_date': analysis_date
+        }
+
 def process_region_date_new_fast_historical(
         region: str,
         analysis_date: str,
