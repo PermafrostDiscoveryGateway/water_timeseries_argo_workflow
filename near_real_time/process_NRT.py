@@ -268,8 +268,12 @@ def main():
     ]
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
-    # TODO replace with  most recent file
-    original_most_recent_dynamic_world_file = os.path.join(dynamic_world_data_dir, 'lakes_dw_V2d_compressed.nc')
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    if not all_dynamic_world_files:
+        logger.error(f"No .nc files found in {dynamic_world_data_dir}")
+        return {'success': False, 'error': 'No .nc files found'}
+
+    original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
     logger.debug(f"Dates in the historical file")
     debug_historical_dates(historical_file_path=original_most_recent_dynamic_world_file)
 
@@ -295,32 +299,28 @@ def main():
 
     # ONLY process June 2026
     target_date = "2026-06"
-    logger.info(f"🎯 Target date: {target_date}")
+    logger.info(f"🎯 Default target date: {target_date}")
 
     # Check if we should run based on date
     SHOULD_RUN = False
     summer_months = [6, 7, 8, 9]
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
+    TODAY_YEAR = TODAY.year
 
-    # Always run if we're processing all regions or if it's summer
-    if region_name == "ALL":
-        SHOULD_RUN = True
-        logger.info("Running for all regions (forced)")
-    elif TODAY_MONTH - 1 in summer_months:
+    if (TODAY_MONTH -1) in summer_months:
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 3:
             SHOULD_RUN = True
+            target_date = f"{TODAY_YEAR}-{TODAY_MONTH-1}"
             logger.debug(f"TODAY_DAY: {TODAY_DAY} - Should run: {SHOULD_RUN}")
-    else:
-        # Still run for testing historical data
-        if region_name != "ALL":
-            SHOULD_RUN = True
-            logger.info("Running for single region (testing mode)")
 
     if not SHOULD_RUN:
         logger.info("Skipping processing - conditions not met")
         return
+
+    # Always run if we're processing all regions or if it's summer
+
 
     # Process each region for June 2026
     all_results = {}
@@ -384,7 +384,7 @@ def main():
         logger.info(f"  {status} {region}: {breakpoints:,} breakpoints from {total_ids:,} IDs")
 
     logger.info("=" * 80)
-    logger.info("PROCESS_REGION.PY COMPLETED")
+    logger.info("PROCESS_NRT.py COMPLETED")
     logger.info("=" * 80)
 
 
