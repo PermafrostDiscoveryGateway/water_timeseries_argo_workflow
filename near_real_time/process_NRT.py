@@ -1,4 +1,4 @@
-from utils.helper_functions import process_region_date_new_fast, debug_historical_dates
+from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates
 import sys
 from typing import List, Dict, Any, Optional
 import gc
@@ -40,71 +40,87 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
         return {'available': False, 'error': 'dynamic_world_data not set'}
 
     # 1. Check if merged file exists in merge directory
-    data_file = Path(dynamic_world_data_dir) / 'merge' / f'dw_{region}_{date_str}.nc'
-    logger.debug(f"Checking if file {data_file} exists: {os.path.exists(data_file)}")
-    if data_file.exists():
-        try:
-            ds = xr.open_dataset(str(data_file))
+    # Try both the original date_str and the zero-padded version
+    date_variations = [date_str]
 
-            # Check for id_geohash in dims OR coordinates
-            has_ids = False
-            id_count = 0
+    # If the date string has a single-digit month, also try zero-padded version
+    if '-' in date_str:
+        year, month = date_str.split('-')
+        if len(month) == 1:
+            # Add zero-padded version
+            date_variations.append(f"{year}-{month.zfill(2)}")
+        elif len(month) == 2 and month.startswith('0'):
+            # If it's zero-padded, also try without leading zero
+            date_variations.append(f"{year}-{month.lstrip('0')}")
 
-            if 'id_geohash' in ds.dims:
-                id_count = len(ds.id_geohash)
-                has_ids = id_count > 0
-            elif 'id_geohash' in ds.coords:
-                id_count = len(ds.id_geohash)
-                has_ids = id_count > 0
-            elif 'id' in ds.dims:  # Alternative dimension name
-                id_count = len(ds.id)
-                has_ids = id_count > 0
-            else:
-                # Try to find any dimension that might be IDs
-                for dim in ds.dims:
-                    if 'id' in dim.lower():
-                        id_count = len(ds[dim])
-                        has_ids = True
-                        break
+    # Check each date variation
+    for date_variant in date_variations:
+        data_file = Path(dynamic_world_data_dir) / 'merge' / f'dw_{region}_{date_variant}.nc'
+        logger.debug(f"Checking if file {data_file} exists: {os.path.exists(data_file)}")
 
-            # Check if this file has the date we want
-            has_date = False
-            if 'date' in ds.coords:
-                dates_in_file = pd.to_datetime(ds.date.values)
-                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
-                has_date = date_str in date_strings
-            elif 'time' in ds.coords:  # Alternative coordinate name
-                dates_in_file = pd.to_datetime(ds.time.values)
-                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
-                has_date = date_str in date_strings
-            else:
-                # If there's only one date, assume it's the right one
-                # This is likely a single-date file
-                has_date = True
+        if data_file.exists():
+            try:
+                ds = xr.open_dataset(str(data_file))
 
-            ds.close()
+                # Check for id_geohash in dims OR coordinates
+                has_ids = False
+                id_count = 0
 
-            if has_ids and has_date:
-                return {
-                    'available': True,
-                    'file_exists': True,
-                    'id_count': id_count,
-                    'date_count': 1,
-                    'has_date': has_date,
-                    'date_str': date_str,
-                    'region': region,
-                    'file_path': str(data_file),
-                    'source': 'merge_directory'
-                }
-            else:
-                # Debug info
-                logger.info(f"File exists but failed checks: has_ids={has_ids}, has_date={has_date}")
+                if 'id_geohash' in ds.dims:
+                    id_count = len(ds.id_geohash)
+                    has_ids = id_count > 0
+                elif 'id_geohash' in ds.coords:
+                    id_count = len(ds.id_geohash)
+                    has_ids = id_count > 0
+                elif 'id' in ds.dims:  # Alternative dimension name
+                    id_count = len(ds.id)
+                    has_ids = id_count > 0
+                else:
+                    # Try to find any dimension that might be IDs
+                    for dim in ds.dims:
+                        if 'id' in dim.lower():
+                            id_count = len(ds[dim])
+                            has_ids = True
+                            break
 
-        except Exception as e:
-            logger.debug(f"Error checking merge file: {e}")
-            logger.debug(f"Full error: {traceback.format_exc()}")
+                # Check if this file has the date we want
+                has_date = False
+                if 'date' in ds.coords:
+                    dates_in_file = pd.to_datetime(ds.date.values)
+                    date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                    has_date = date_str in date_strings or date_variant in date_strings
+                elif 'time' in ds.coords:  # Alternative coordinate name
+                    dates_in_file = pd.to_datetime(ds.time.values)
+                    date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                    has_date = date_str in date_strings or date_variant in date_strings
+                else:
+                    # If there's only one date, assume it's the right one
+                    # This is likely a single-date file
+                    has_date = True
 
-    # 2. Check historical file
+                ds.close()
+
+                if has_ids and has_date:
+                    return {
+                        'available': True,
+                        'file_exists': True,
+                        'id_count': id_count,
+                        'date_count': 1,
+                        'has_date': has_date,
+                        'date_str': date_str,
+                        'region': region,
+                        'file_path': str(data_file),
+                        'source': 'merge_directory'
+                    }
+                else:
+                    # Debug info
+                    logger.info(f"File exists but failed checks: has_ids={has_ids}, has_date={has_date}")
+
+            except Exception as e:
+                logger.debug(f"Error checking merge file: {e}")
+                logger.debug(f"Full error: {traceback.format_exc()}")
+
+    # 2. Check historical file (this part remains unchanged)
     historical_file = Path(dynamic_world_data_dir) / 'lakes_dw_V2d_compressed.nc'
     if historical_file.exists():
         try:
@@ -209,7 +225,7 @@ def process_single_date_for_region(
         logger.info(f"   Each chunk: {id_chunk_size} IDs")
         logger.info(f"   Save interval: every {save_interval} chunks ({save_interval * id_chunk_size} IDs)")
 
-        process_result = process_region_date_new_fast(
+        process_result = process_region_date_new_fast_NRT(
             region=region,
             analysis_date=date_str,
             env_path=env_path,
@@ -312,8 +328,10 @@ def main():
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 3:
             SHOULD_RUN = True
-            target_date = f"{TODAY_YEAR}-{TODAY_MONTH-1}"
+            target_month = TODAY_MONTH - 1
+            target_date = f"{TODAY_YEAR}-{target_month:02d}"
             logger.debug(f"TODAY_DAY: {TODAY_DAY} - Should run: {SHOULD_RUN}")
+            logger.debug(f"Target date: {target_date}")
 
     if not SHOULD_RUN:
         logger.info("Skipping processing - conditions not met")
