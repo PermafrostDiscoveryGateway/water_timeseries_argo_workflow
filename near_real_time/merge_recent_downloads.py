@@ -758,7 +758,6 @@ def main():
     failure_count = 0
     skipped_count = 0
     region_files = []
-    all_regions = ['TEST']
     for region in all_regions:
         try:
             logger.info(f"\n{'#' * 80}")
@@ -829,7 +828,7 @@ def main():
         else:
             # Create combined file name
             combined_file_name = f"dynamic_world_combined_{date_to_run}.nc"
-            combined_file_path = os.path.join(dynamic_world_data_dir, combined_file_name)
+            combined_file_path = os.path.join(dynamic_world_data_dir, 'merge', combined_file_name)
 
             logger.info(f"Combining into: {combined_file_path}")
 
