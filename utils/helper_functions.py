@@ -1546,9 +1546,9 @@ def process_region_date_new_fast_NRT(
         region: str,
         analysis_date: str,
         env_path: str = None,
-        id_chunk_size: int = 500,  # Reduced from 2000 for memory
-        n_jobs: int = 8,  # Reduced from 12 for memory
-        save_interval: int = 1,  # Save every chunk
+        id_chunk_size: int = 500,
+        n_jobs: int = 8,
+        save_interval: int = 1,
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using batch processing for speed.
@@ -1624,7 +1624,8 @@ def process_region_date_new_fast_NRT(
             ]['id_geohash'].values
 
         region_ids_list = list(region_ids)
-        logger.info(f"📍 {region} has {len(region_ids_list):,} IDs in vector file")
+        original_total_ids = len(region_ids_list)  # Store original total
+        logger.info(f"📍 {region} has {original_total_ids:,} IDs in vector file")
 
         if len(region_ids_list) == 0:
             logger.error(f"❌ No IDs found for region {region} in vector file!")
@@ -1758,6 +1759,7 @@ def process_region_date_new_fast_NRT(
 
         # 8. Filter datasets to matching IDs
         matching_ids_list = list(matching_ids)
+        original_total_ids = len(matching_ids_list)  # Store original total
         ds_historical_train = ds_historical_train.sel(id_geohash=matching_ids_list)
         ds_analysis = ds_analysis.sel(id_geohash=matching_ids_list)
 
@@ -1790,25 +1792,49 @@ def process_region_date_new_fast_NRT(
         analysis_date_str = analysis_timestamp.strftime("%Y-%m-%d")
 
         logger.info(f"Using analysis date: {analysis_date_str}")
-        logger.info(f"Starting processing of {total_ids:,} IDs in chunks of {id_chunk_size}")
+        logger.info(f"Starting processing of {original_total_ids:,} total IDs in chunks of {id_chunk_size}")
         logger.info(f"NOTE: Each chunk will be passed to NRTBreakpoint.calculate_break as a LIST")
         logger.info(f"       This enables internal parallelization with {n_jobs} workers")
         logger.info(f"Results will be saved incrementally after EACH chunk (memory-optimized)")
+
+        # Track how many IDs have been processed before resuming
+        already_processed_count = 0
 
         # Check for existing incremental file (resume capability)
         if incremental_file.exists():
             try:
                 saved_results = pd.read_parquet(incremental_file)
                 saved_ids = set(saved_results['id_geohash'].values)
+                already_processed_count = len(saved_ids)
+
+                # Log CLEARLY that we're skipping already processed IDs
+                logger.info(f"\n{'=' * 60}")
+                logger.info(f"🔄 RESUME MODE DETECTED")
+                logger.info(f"{'=' * 60}")
+                logger.info(f"📁 Found existing incremental file with {already_processed_count:,} IDs already processed")
+                logger.info(f"⏭️  These IDs will be SKIPPED (not reprocessed)")
+
+                # Filter out already processed IDs
+                original_length = len(matching_ids_list)
                 matching_ids_list = [id_val for id_val in matching_ids_list if id_val not in saved_ids]
+                skipped_count = original_length - len(matching_ids_list)
+
+                logger.info(f"✅ SKIPPING {skipped_count:,} already processed IDs")
+                logger.info(f"📊 Remaining IDs to process: {len(matching_ids_list):,}")
+                logger.info(
+                    f"📊 Overall progress: {already_processed_count:,}/{original_total_ids:,} ({already_processed_count / original_total_ids * 100:.1f}% complete)")
+
                 total_breakpoints = len(saved_results)
-                logger.info(f"🔄 Resuming from incremental file: {len(saved_ids)} IDs already processed")
-                logger.info(f"   Remaining IDs: {len(matching_ids_list)}")
-                logger.info(f"   Existing breakpoints: {total_breakpoints:,}")
+                logger.info(f"📊 Existing breakpoints: {total_breakpoints:,}")
+                logger.info(f"{'=' * 60}\n")
             except Exception as e:
                 logger.warning(f"Error reading incremental file, starting fresh: {e}")
                 if incremental_file.exists():
                     incremental_file.unlink()
+                already_processed_count = 0
+
+        # Update total_ids to reflect remaining IDs to process
+        total_ids = len(matching_ids_list)
 
         start_time = time.time()
         processed_since_last_save = 0
@@ -1817,23 +1843,33 @@ def process_region_date_new_fast_NRT(
         total_chunks = (len(all_ids) + id_chunk_size - 1) // id_chunk_size if all_ids else 0
 
         if total_chunks == 0:
-            logger.warning("No chunks to process")
+            logger.info("✅ No chunks to process - all IDs already done!")
             # Check if we have existing data to create Zarr
             if incremental_file.exists():
                 logger.info("Using existing incremental data to create Zarr")
                 return create_final_zarr_from_incremental(
-                    incremental_file, zarr_path, region, analysis_date, analysis_source, total_ids
+                    incremental_file, zarr_path, region, analysis_date, analysis_source, original_total_ids
                 )
-            return {'success': True, 'total_ids': total_ids, 'processed': 0, 'breakpoints_found': 0,
+            return {'success': True, 'total_ids': original_total_ids, 'processed': 0, 'breakpoints_found': 0,
                     'zarr_path': str(zarr_path)}
+
+        logger.info(f"\n📊 Processing {len(all_ids):,} remaining IDs in {total_chunks} chunks")
+        logger.info(
+            f"📊 Overall progress will continue from {already_processed_count:,}/{original_total_ids:,} ({already_processed_count / original_total_ids * 100:.1f}% complete)\n")
 
         for chunk_idx in range(total_chunks):
             start_idx = chunk_idx * id_chunk_size
             end_idx = min(start_idx + id_chunk_size, len(all_ids))
             chunk_ids = all_ids[start_idx:end_idx]
             chunk_start_time = time.time()
-            progress_pct = (float(total_processed) / float(total_ids))
-            logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs ({progress_pct:.1f}%)")
+
+            # Calculate progress based on ORIGINAL total
+            processed_so_far = already_processed_count + end_idx
+            progress_pct = (float(processed_so_far) / float(original_total_ids)) * 100
+
+            # Log chunk start with clear progress information
+            logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs")
+            logger.info(f"  Progress: {progress_pct:.1f}% complete ({processed_so_far:,}/{original_total_ids:,} IDs)")
 
             try:
                 # Get data for this chunk
@@ -1882,7 +1918,7 @@ def process_region_date_new_fast_NRT(
                 # Log chunk timing
                 chunk_time = time.time() - chunk_start_time
                 ids_per_second = len(chunk_ids) / chunk_time if chunk_time > 0 else 0
-                logger.info(f"  ⏱️ Chunk {chunk_idx + 1} took {chunk_time:.1f}s ({ids_per_second:.1f} IDs/sec)")
+                logger.info(f"  ⏱️ Chunk took {chunk_time:.1f}s ({ids_per_second:.1f} IDs/sec)")
 
                 # Memory cleanup after each chunk
                 del ds_historical_chunk, ds_analysis_chunk, ds_combined, dwds
@@ -1896,8 +1932,13 @@ def process_region_date_new_fast_NRT(
                 continue
 
         # 11. Create final Zarr file from incremental data
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"📦 ALL {len(all_ids):,} remaining IDs processed successfully!")
+        logger.info(f"📦 Creating final Zarr from incremental data...")
+        logger.info(f"{'=' * 60}")
+
         final_result = create_final_zarr_from_incremental(
-            incremental_file, zarr_path, region, analysis_date, analysis_source, total_ids
+            incremental_file, zarr_path, region, analysis_date, analysis_source, original_total_ids
         )
 
         # Clean up
@@ -1911,9 +1952,12 @@ def process_region_date_new_fast_NRT(
         logger.info(f"\n{'=' * 60}")
         logger.info(f"📊 FINAL SUMMARY for {region} {analysis_date}")
         logger.info(f"{'=' * 60}")
-        logger.info(f"   Total IDs processed: {total_processed:,}")
+        logger.info(f"   Total IDs originally: {original_total_ids:,}")
+        logger.info(f"   IDs already processed (skipped): {already_processed_count:,}")
+        logger.info(f"   IDs processed in this run: {total_processed:,}")
+        logger.info(f"   Total IDs processed: {already_processed_count + total_processed:,}")
         logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
-        logger.info(f"   Total chunks: {total_chunks}")
+        logger.info(f"   Total chunks in this run: {total_chunks}")
         logger.info(f"   Total time: {int(minutes)}m {int(seconds)}s")
         if total_processed > 0:
             logger.info(f"   Average time per ID: {total_time / total_processed:.2f}s")
@@ -2221,7 +2265,8 @@ def process_region_date_beast_historical(
             chunk_start_time = time.time()
             progress_pct = (float(total_processed) / float(total_ids)) * 100 if total_ids > 0 else 0
             logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs ({progress_pct:.1f}%)")
-
+            if progress_pct > 20:
+                logger.debug(f"We got 20% done! time to retest")
             try:
                 # Get data for this chunk
                 ds_historical_chunk = ds_historical_train.sel(id_geohash=chunk_ids)
