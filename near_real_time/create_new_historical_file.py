@@ -476,7 +476,169 @@ def merge_historical_file(
     Memory-optimized merge of historical and combined files.
     Uses chunked processing to avoid loading entire files into memory.
     """
-    # ... (keep your existing merge function)
+    logger.info(f"\n{'=' * 80}")
+    logger.info("MERGING HISTORICAL AND COMBINED FILES")
+    logger.info(f"{'=' * 80}")
+
+    if id_chunk is None:
+        id_chunk = _get_id_chunk_size()
+
+    # Use smaller chunks for merging
+    merge_chunk = min(id_chunk, 500)
+
+    try:
+        # Open files with dask and chunking
+        logger.info(f"Opening historical file with chunk size {merge_chunk}...")
+        hist_ds = xr.open_dataset(
+            historical_file,
+            chunks={'id_geohash': merge_chunk, 'date': -1}
+        )
+
+        logger.info(f"Opening combined file with chunk size {merge_chunk}...")
+        comb_ds = xr.open_dataset(
+            combined_file,
+            chunks={'id_geohash': merge_chunk, 'date': -1}
+        )
+
+        # Get dates without loading all data
+        hist_dates = pd.to_datetime(hist_ds['date'].values)
+        hist_date_strings = {d.strftime("%Y-%m") for d in hist_dates}
+
+        comb_dates = pd.to_datetime(comb_ds['date'].values)
+        comb_date_strings = {d.strftime("%Y-%m") for d in comb_dates}
+
+        # Find new dates
+        dates_to_add = sorted(comb_date_strings - hist_date_strings)
+        logger.info(f"Dates to add: {dates_to_add}")
+
+        if not dates_to_add:
+            logger.info("No new dates to add. All dates already in historical file.")
+            hist_ds.close()
+            comb_ds.close()
+            return {'success': True, 'dates_added': [], 'message': 'No new dates'}
+
+        # Filter combined to only new dates
+        new_date_objects = [pd.Timestamp(f"{d}-01") for d in dates_to_add]
+        comb_ds_filtered = comb_ds.sel(date=new_date_objects)
+
+        # Close the original combined dataset to free memory
+        comb_ds.close()
+        gc.collect()
+
+        # Get historical IDs without loading all data
+        hist_ids = hist_ds['id_geohash'].values
+
+        # OPTIMIZATION: Instead of reindexing the entire combined dataset,
+        # we'll align during the concat operation
+        logger.info(f"Historical has {len(hist_ids):,} IDs")
+        logger.info(f"Combined filtered has {len(comb_ds_filtered['id_geohash']):,} IDs")
+
+        # Ensure both datasets have the same IDs
+        # Use align with join='inner' to keep only common IDs for the combined data
+        # This is more memory efficient than reindex
+        logger.info("Aligning datasets...")
+
+        # First, align the combined data to historical IDs
+        # This creates a new dataset with the same ID dimension as historical
+        # Missing IDs will be NaN
+        comb_ds_aligned = comb_ds_filtered.reindex(
+            id_geohash=hist_ids,
+            method=None
+        )
+
+        # Close filtered dataset
+        comb_ds_filtered.close()
+        gc.collect()
+
+        # Verify IDs match (lazy check - only checks the first few)
+        hist_ids_sample = hist_ids[:5]
+        comb_ids_sample = comb_ds_aligned['id_geohash'].values[:5]
+
+        if not np.array_equal(hist_ids_sample, comb_ids_sample):
+            logger.error("ID mismatch after alignment!")
+            hist_ds.close()
+            comb_ds_aligned.close()
+            return {'success': False, 'error': 'ID mismatch'}
+
+        # Now concatenate along date dimension
+        logger.info("Concatenating datasets...")
+        merged_ds = xr.concat([hist_ds, comb_ds_aligned], dim='date')
+        merged_ds = merged_ds.sortby('date')
+
+        # Remove duplicate dates if any (lazy operation)
+        dates = merged_ds['date'].values
+        _, unique_idx = np.unique(dates, return_index=True)
+        if len(unique_idx) < len(dates):
+            removed = len(dates) - len(unique_idx)
+            logger.info(f"Removed {removed} duplicate dates")
+            merged_ds = merged_ds.isel(date=np.sort(unique_idx))
+
+        # Close the component datasets
+        hist_ds.close()
+        comb_ds_aligned.close()
+        gc.collect()
+
+        # Write the merged file in chunks to avoid OOM
+        logger.info(f"Writing merged file to {output_file}...")
+
+        # Chunk sizes must not exceed the actual dimension sizes (netCDF4 rejects that)
+        n_ids = merged_ds.sizes['id_geohash']
+        n_dates = merged_ds.sizes['date']
+        encoding = {}
+        for var in merged_ds.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True,
+                'chunksizes': (min(id_chunk, 500, n_ids), n_dates)  # Chunk by IDs
+            }
+
+        # Write with chunked output
+        merged_ds.to_netcdf(
+            output_file,
+            encoding=encoding,
+            unlimited_dims=['date']  # Allow date dimension to grow
+        )
+
+        # Get final size
+        final_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
+
+        # Clean up
+        merged_ds.close()
+        gc.collect()
+
+        result = {
+            'success': True,
+            'file_path': output_file,
+            'id_count': len(hist_ids),
+            'date_count': len(merged_ds['date']),
+            'file_size_gb': round(final_size_gb, 4),
+            'dates_added': dates_to_add
+        }
+
+        logger.info(f"✅ Merged file created successfully!")
+        logger.info(f"  File: {output_file}")
+        logger.info(f"  IDs: {result['id_count']:,}")
+        logger.info(f"  Dates: {result['date_count']}")
+        logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
+        logger.info(f"  Added dates: {dates_to_add}")
+
+        return result
+
+    except MemoryError as e:
+        logger.error(f"Memory error while merging files: {e}")
+        if Path(output_file).exists():
+            Path(output_file).unlink()
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+    except Exception as e:
+        logger.error(f"Error merging files: {e}")
+        if Path(output_file).exists():
+            Path(output_file).unlink()
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
 
 
 def main():
