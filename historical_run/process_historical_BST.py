@@ -30,6 +30,57 @@ def is_file_ready(filepath, wait_seconds=0.5, checks=20):
     return len(set(sizes)) == 1
 
 
+def generate_date_range_from_env(
+        start_year: int,
+        start_month: int,
+        end_year: int,
+        end_month: int,
+        months: List[int] = [6, 7, 8, 9]  # Summer months by default
+) -> List[str]:
+    """
+    Generate a list of dates in "YYYY-MM" format for specified months
+    between start and end dates (inclusive).
+
+    Args:
+        start_year: Starting year (e.g., 2015)
+        start_month: Starting month (e.g., 6 for June)
+        end_year: Ending year (e.g., 2026)
+        end_month: Ending month (e.g., 9 for September)
+        months: List of months to include (default: [6, 7, 8, 9])
+
+    Returns:
+        List of date strings in "YYYY-MM" format
+
+    Example:
+        >>> generate_date_range_from_env(2015, 6, 2026, 9)
+        ['2015-06', '2015-07', '2015-08', '2015-09', '2016-06', ...]
+    """
+    dates = []
+
+    # Validate inputs
+    if start_year > end_year:
+        raise ValueError(f"start_year ({start_year}) cannot be greater than end_year ({end_year})")
+
+    if start_year == end_year and start_month > end_month:
+        raise ValueError(
+            f"start_month ({start_month}) cannot be greater than end_month ({end_month}) when years are equal")
+
+    for year in range(start_year, end_year + 1):
+        for month in months:
+            # Skip if month is before start_month in the start year
+            if year == start_year and month < start_month:
+                continue
+
+            # Skip if month is after end_month in the end year
+            if year == end_year and month > end_month:
+                continue
+
+            # Format as "YYYY-MM" with zero-padded month
+            dates.append(f"{year}-{month:02d}")
+
+    return dates
+
+
 def check_data_availability_for_date(region: str, date_str: str, env_path: str = None) -> Dict[str, Any]:
     """
     Check if data exists for a specific region and date.
@@ -260,13 +311,36 @@ def main():
         value = os.environ.get(var, 'NOT SET')
         logger.debug(f"{var} = {value}")
 
+    # Get date range from environment
+    start_year = int(os.environ.get("start_year", 2015))
+    start_month = int(os.environ.get("start_month", 6))
+    end_year = int(os.environ.get("end_year", 2026))
+    end_month = int(os.environ.get("end_month", 9))
+
+    # Optional: Allow custom months via environment
+    months_str = os.environ.get("months_to_process", "6,7,8,9")
+    months = [int(m.strip()) for m in months_str.split(",")]
+
+    # Generate dates
+    dates_to_process = generate_date_range_from_env(
+        start_year=start_year,
+        start_month=start_month,
+        end_year=end_year,
+        end_month=end_month,
+        months=months
+    )
+
+    logger.info(f"Generated {len(dates_to_process)} dates to process")
+    logger.info(f"Date range: {dates_to_process[0]} to {dates_to_process[-1]}")
+    logger.info(f"Months included: {months}")
+
     # Get region from environment or use specific regions
-    region_name = os.environ.get("region_name", "ALL")
+    region_name = os.environ.get("region_name", "TEST")
 
     # Configuration for BEAST processing
-    id_chunk_size = int(os.environ.get("id_chunk_size", 500))  # Larger chunks for BEAST
+    id_chunk_size = int(os.environ.get("id_chunk_size", 500))
     save_interval = int(os.environ.get("save_interval", 1))
-    n_jobs = int(os.environ.get("n_jobs", 8))  # Can use parallelization now
+    n_jobs = int(os.environ.get("n_jobs", 8))
 
     # RBEAST parameters
     break_threshold = float(os.environ.get("break_threshold", 0.5))
@@ -288,77 +362,107 @@ def main():
         regions_to_process = [region_name]
         logger.info(f"Processing single region: {region_name}")
 
-    # Target date (can be modified)
-    # TODO use this for now, change for later
-    target_date = "2025-06"
-
-    # Process each region
+    # Process each region for each date
     all_results = {}
     success_count = 0
     failure_count = 0
+    total_breakpoints_all = 0
+    total_ids_all = 0
 
     for region in regions_to_process:
         logger.info(f"\n{'=' * 80}")
         logger.info(f"📌 PROCESSING REGION: {region}")
         logger.info(f"{'=' * 80}")
-        logger.debug(f"Using id chunk: {id_chunk_size}")
-        logger.debug(f"With save interval {save_interval}")
-        logger.debug(f"Using {n_jobs} parallel jobs")
 
-        # Process the single date with BEAST method
-        result = process_single_date_for_region(
-            region=region,
-            date_str=target_date,
-            env_path=env_path,
-            n_jobs=n_jobs,
-            id_chunk_size=id_chunk_size,
-            save_interval=save_interval,
-            beast_kwargs=beast_kwargs,
-            break_threshold=break_threshold
-        )
+        # Process all dates for this region
+        region_results = {}
 
-        all_results[region] = result
+        for date_idx, target_date in enumerate(dates_to_process):
+            logger.info(f"\n{'─' * 60}")
+            logger.info(f"📅 Processing date {date_idx + 1}/{len(dates_to_process)}: {target_date}")
+            logger.info(f"{'─' * 60}")
+            logger.debug(f"Using id chunk: {id_chunk_size}")
+            logger.debug(f"With save interval {save_interval}")
+            logger.debug(f"Using {n_jobs} parallel jobs")
 
-        if result.get('success', False):
-            success_count += 1
-            logger.info(f"✅ Region {region} completed successfully")
-            logger.info(f"   Breakpoints found: {result.get('breakpoints_found', 0):,}")
-        else:
-            failure_count += 1
-            logger.warning(f"❌ Region {region} failed")
-            if 'reason' in result:
-                logger.warning(f"   Reason: {result['reason']}")
-            if 'error' in result:
-                logger.warning(f"   Error: {result['error']}")
+            # Process the date with BEAST method
+            result = process_single_date_for_region(
+                region=region,
+                date_str=target_date,
+                env_path=env_path,
+                n_jobs=n_jobs,
+                id_chunk_size=id_chunk_size,
+                save_interval=save_interval,
+                beast_kwargs=beast_kwargs,
+                break_threshold=break_threshold
+            )
+
+            key = f"{region}_{target_date}"
+            region_results[target_date] = result
+            all_results[key] = result
+
+            if result.get('success', False):
+                success_count += 1
+                breakpoints = result.get('breakpoints_found', 0)
+                total_ids = result.get('total_ids', 0)
+                total_breakpoints_all += breakpoints
+                total_ids_all += total_ids
+                logger.info(f"✅ {region} {target_date} completed successfully")
+                logger.info(f"   Breakpoints found: {breakpoints:,}")
+                logger.info(f"   Total IDs: {total_ids:,}")
+            else:
+                failure_count += 1
+                logger.warning(f"❌ {region} {target_date} failed")
+                if 'reason' in result:
+                    logger.warning(f"   Reason: {result['reason']}")
+                if 'error' in result:
+                    logger.warning(f"   Error: {result['error']}")
+
+            # Small delay between dates to avoid overwhelming resources
+            if date_idx < len(dates_to_process) - 1:
+                time.sleep(2)
 
         # Small delay between regions
-        time.sleep(3)
+        if regions_to_process.index(region) < len(regions_to_process) - 1:
+            time.sleep(3)
 
     # Final summary
     logger.info(f"\n{'=' * 80}")
     logger.info("📊 FINAL SUMMARY")
     logger.info(f"{'=' * 80}")
-    logger.info(f"Target date: {target_date}")
+    logger.info(f"Date range: {dates_to_process[0]} to {dates_to_process[-1]}")
+    logger.info(f"Total dates processed: {len(dates_to_process)}")
     logger.info(f"Total regions processed: {len(regions_to_process)}")
+    logger.info(f"Total region-date combinations: {len(all_results)}")
     logger.info(f"✅ Successful: {success_count}")
     logger.info(f"❌ Failed: {failure_count}")
+    logger.info(f"Total breakpoints found across all regions and dates: {total_breakpoints_all:,}")
+    logger.info(f"Total IDs processed across all regions and dates: {total_ids_all:,}")
 
-    total_breakpoints_all = sum(
-        r.get('breakpoints_found', 0)
-        for r in all_results.values()
-        if r.get('success', False)
-    )
-    logger.info(f"Total breakpoints found across all regions: {total_breakpoints_all:,}")
+    # List results by region and date
+    logger.info(f"\n📋 Detailed results by region and date:")
+    for region in regions_to_process:
+        logger.info(f"\n  Region: {region}")
+        region_success = 0
+        region_fail = 0
+        for target_date in dates_to_process:
+            key = f"{region}_{target_date}"
+            result = all_results.get(key, {})
+            status = "✅" if result.get('success', False) else "❌"
+            breakpoints = result.get('breakpoints_found', 0)
+            total_ids = result.get('total_ids', 0)
+            zarr_path = result.get('zarr_path', 'N/A')
 
-    # List results by region
-    logger.info(f"\n📋 Results by region:")
-    for region, result in all_results.items():
-        status = "✅" if result.get('success', False) else "❌"
-        breakpoints = result.get('breakpoints_found', 0)
-        total_ids = result.get('total_ids', 0)
-        zarr_path = result.get('zarr_path', 'N/A')
-        logger.info(f"  {status} {region}: {breakpoints:,} breakpoints from {total_ids:,} IDs")
-        logger.info(f"     Zarr: {zarr_path}")
+            if result.get('success', False):
+                region_success += 1
+                logger.info(f"    {status} {target_date}: {breakpoints:,} breakpoints from {total_ids:,} IDs")
+                logger.info(f"       Zarr: {zarr_path}")
+            else:
+                region_fail += 1
+                reason = result.get('reason', result.get('error', 'Unknown error'))
+                logger.info(f"    {status} {target_date}: {reason}")
+
+        logger.info(f"    Summary: {region_success} successful, {region_fail} failed")
 
     logger.info("=" * 80)
     logger.info("PROCESS_HISTORICAL_RBEAST.PY COMPLETED")
