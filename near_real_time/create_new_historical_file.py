@@ -51,7 +51,93 @@ def _configure_dask_for_low_memory():
 
 def debug_id_mismatch(historical_file: str, combined_file: str):
     """Debug why IDs don't match between files."""
-    # ... (keep your existing debug function)
+
+    logger.info("=" * 80)
+    logger.info("DEBUGGING ID MISMATCH")
+    logger.info("=" * 80)
+
+    # Open both files
+    hist_ds = xr.open_dataset(historical_file)
+    comb_ds = xr.open_dataset(combined_file)
+
+    # Get IDs
+    hist_ids = hist_ds['id_geohash'].values
+    comb_ids = comb_ds['id_geohash'].values
+
+    # Get first few IDs from each
+    logger.info(f"Historical file first 10 IDs: {hist_ids[:10]}")
+    logger.info(f"Combined file first 10 IDs: {comb_ids[:10]}")
+
+    # Check data types
+    logger.info(f"Historical IDs type: {hist_ids.dtype}")
+    logger.info(f"Combined IDs type: {comb_ids.dtype}")
+
+    # Check for string/bytes issues
+    if hist_ids.dtype.kind in ['U', 'S']:
+        logger.info(f"Historical IDs sample (as strings): {[str(id) for id in hist_ids[:5]]}")
+    if comb_ids.dtype.kind in ['U', 'S']:
+        logger.info(f"Combined IDs sample (as strings): {[str(id) for id in comb_ids[:5]]}")
+
+    # Check if IDs are numeric
+    if hist_ids.dtype.kind in ['i', 'f']:
+        logger.info(f"Historical IDs are numeric, range: {hist_ids.min()} to {hist_ids.max()}")
+    if comb_ids.dtype.kind in ['i', 'f']:
+        logger.info(f"Combined IDs are numeric, range: {comb_ids.min()} to {comb_ids.max()}")
+
+    # Check if there's any match at all
+    hist_set = set(hist_ids)
+    comb_set = set(comb_ids)
+    intersection = hist_set & comb_set
+
+    logger.info(f"Intersection size: {len(intersection)}")
+
+    if len(intersection) == 0:
+        logger.info("No exact matches found. Checking for partial matches...")
+
+        # Convert to strings for comparison
+        hist_str = [str(id) for id in hist_ids[:1000]]
+        comb_str = [str(id) for id in comb_ids[:1000]]
+
+        # Check if any IDs from one file appear as substrings in the other
+        for i, h_id in enumerate(hist_str[:10]):
+            for j, c_id in enumerate(comb_str[:10]):
+                if h_id in c_id or c_id in h_id:
+                    logger.info(f"Partial match: '{h_id}' and '{c_id}'")
+
+        logger.info("Checking if IDs are encoded differently...")
+
+        # Try to decode if they're bytes
+        if hist_ids.dtype == 'S' and comb_ids.dtype == 'S':
+            hist_decoded = [id.decode('utf-8') for id in hist_ids[:10]]
+            comb_decoded = [id.decode('utf-8') for id in comb_ids[:10]]
+            logger.info(f"Historical decoded: {hist_decoded}")
+            logger.info(f"Combined decoded: {comb_decoded}")
+
+        # Check dimension names
+        logger.info(f"Historical dims: {list(hist_ds.dims)}")
+        logger.info(f"Combined dims: {list(comb_ds.dims)}")
+
+        # Check if there's another dimension that could be the ID
+        for var in hist_ds.data_vars:
+            logger.info(f"Historical variable: {var}, shape: {hist_ds[var].shape}")
+        for var in comb_ds.data_vars:
+            logger.info(f"Combined variable: {var}, shape: {comb_ds[var].shape}")
+
+    # Check metadata
+    logger.info(f"Historical attributes: {hist_ds.attrs}")
+    logger.info(f"Combined attributes: {comb_ds.attrs}")
+
+    # Close datasets
+    hist_ds.close()
+    comb_ds.close()
+
+    return {
+        'hist_ids_sample': list(hist_ids[:10]),
+        'comb_ids_sample': list(comb_ids[:10]),
+        'intersection_size': len(intersection),
+        'hist_dtype': str(hist_ids.dtype),
+        'comb_dtype': str(comb_ids.dtype)
+    }
 
 
 def check_region_merges_completed(dynamic_world_data_dir: str, date_to_run: str, regions: list,
