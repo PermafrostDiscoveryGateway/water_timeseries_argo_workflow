@@ -14,6 +14,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 from dotenv import load_dotenv
 import time
+from tqdm import tqdm
 from loguru import logger
 import geemap
 import ee
