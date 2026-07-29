@@ -1859,11 +1859,11 @@ def process_region_date_new_fast_NRT(
 
                     total_breakpoints += len(breaks_df)
 
-                    # Clear breaks_df from memory
-                    del breaks_df
-
                     logger.info(
                         f"  ✅ Chunk {chunk_idx + 1} complete: {len(breaks_df)} breakpoints found (saved incrementally)")
+
+                    # Clear breaks_df from memory
+                    del breaks_df
                 else:
                     logger.info(f"  ✅ Chunk {chunk_idx + 1} complete: 0 breakpoints found")
 
