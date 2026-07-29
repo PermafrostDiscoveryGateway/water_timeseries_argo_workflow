@@ -36,6 +36,16 @@ import tracemalloc
 
 
 
+def is_file_ready(filepath, wait_seconds=0.5, checks=10):
+    """Check if a file is ready (not being written to) by watching its size stabilize."""
+    sizes = []
+    for _ in range(checks):
+        size = os.path.getsize(filepath)
+        sizes.append(size)
+        time.sleep(wait_seconds)
+    return len(set(sizes)) == 1
+
+
 # Enable memory tracking
 def enable_memory_tracking():
     try:
