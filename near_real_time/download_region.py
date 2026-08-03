@@ -115,7 +115,7 @@ def main():
         logger.debug(f"TODAY MONTH: {TODAY_MONTH}")
         logger.debug(f"Last month: {TODAY.month - 1} checking to see if we should run")
         TODAY_DAY = TODAY.day
-        if TODAY_DAY > 3:
+        if TODAY_DAY > 2:
             SHOULD_RUN = True
             logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
 
