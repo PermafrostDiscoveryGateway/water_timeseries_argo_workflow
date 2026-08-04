@@ -51,7 +51,93 @@ def _configure_dask_for_low_memory():
 
 def debug_id_mismatch(historical_file: str, combined_file: str):
     """Debug why IDs don't match between files."""
-    # ... (keep your existing debug function)
+
+    logger.info("=" * 80)
+    logger.info("DEBUGGING ID MISMATCH")
+    logger.info("=" * 80)
+
+    # Open both files
+    hist_ds = xr.open_dataset(historical_file)
+    comb_ds = xr.open_dataset(combined_file)
+
+    # Get IDs
+    hist_ids = hist_ds['id_geohash'].values
+    comb_ids = comb_ds['id_geohash'].values
+
+    # Get first few IDs from each
+    logger.info(f"Historical file first 10 IDs: {hist_ids[:10]}")
+    logger.info(f"Combined file first 10 IDs: {comb_ids[:10]}")
+
+    # Check data types
+    logger.info(f"Historical IDs type: {hist_ids.dtype}")
+    logger.info(f"Combined IDs type: {comb_ids.dtype}")
+
+    # Check for string/bytes issues
+    if hist_ids.dtype.kind in ['U', 'S']:
+        logger.info(f"Historical IDs sample (as strings): {[str(id) for id in hist_ids[:5]]}")
+    if comb_ids.dtype.kind in ['U', 'S']:
+        logger.info(f"Combined IDs sample (as strings): {[str(id) for id in comb_ids[:5]]}")
+
+    # Check if IDs are numeric
+    if hist_ids.dtype.kind in ['i', 'f']:
+        logger.info(f"Historical IDs are numeric, range: {hist_ids.min()} to {hist_ids.max()}")
+    if comb_ids.dtype.kind in ['i', 'f']:
+        logger.info(f"Combined IDs are numeric, range: {comb_ids.min()} to {comb_ids.max()}")
+
+    # Check if there's any match at all
+    hist_set = set(hist_ids)
+    comb_set = set(comb_ids)
+    intersection = hist_set & comb_set
+
+    logger.info(f"Intersection size: {len(intersection)}")
+
+    if len(intersection) == 0:
+        logger.info("No exact matches found. Checking for partial matches...")
+
+        # Convert to strings for comparison
+        hist_str = [str(id) for id in hist_ids[:1000]]
+        comb_str = [str(id) for id in comb_ids[:1000]]
+
+        # Check if any IDs from one file appear as substrings in the other
+        for i, h_id in enumerate(hist_str[:10]):
+            for j, c_id in enumerate(comb_str[:10]):
+                if h_id in c_id or c_id in h_id:
+                    logger.info(f"Partial match: '{h_id}' and '{c_id}'")
+
+        logger.info("Checking if IDs are encoded differently...")
+
+        # Try to decode if they're bytes
+        if hist_ids.dtype == 'S' and comb_ids.dtype == 'S':
+            hist_decoded = [id.decode('utf-8') for id in hist_ids[:10]]
+            comb_decoded = [id.decode('utf-8') for id in comb_ids[:10]]
+            logger.info(f"Historical decoded: {hist_decoded}")
+            logger.info(f"Combined decoded: {comb_decoded}")
+
+        # Check dimension names
+        logger.info(f"Historical dims: {list(hist_ds.dims)}")
+        logger.info(f"Combined dims: {list(comb_ds.dims)}")
+
+        # Check if there's another dimension that could be the ID
+        for var in hist_ds.data_vars:
+            logger.info(f"Historical variable: {var}, shape: {hist_ds[var].shape}")
+        for var in comb_ds.data_vars:
+            logger.info(f"Combined variable: {var}, shape: {comb_ds[var].shape}")
+
+    # Check metadata
+    logger.info(f"Historical attributes: {hist_ds.attrs}")
+    logger.info(f"Combined attributes: {comb_ds.attrs}")
+
+    # Close datasets
+    hist_ds.close()
+    comb_ds.close()
+
+    return {
+        'hist_ids_sample': list(hist_ids[:10]),
+        'comb_ids_sample': list(comb_ids[:10]),
+        'intersection_size': len(intersection),
+        'hist_dtype': str(hist_ids.dtype),
+        'comb_dtype': str(comb_ids.dtype)
+    }
 
 
 def check_region_merges_completed(dynamic_world_data_dir: str, date_to_run: str, regions: list,
@@ -222,7 +308,162 @@ def combine_region_files(
     Combine multiple region NetCDF files into a single combined file.
     Memory-optimized version.
     """
-    # ... (keep your existing combine function)
+    logger.info(f"\n{'=' * 80}")
+    logger.info("COMBINING REGION FILES")
+    logger.info(f"{'=' * 80}")
+    logger.info(f"Number of files to combine: {len(region_files)}")
+    logger.info(f"Output file: {output_file}")
+
+    if not region_files:
+        logger.error("No region files to combine")
+        return {'success': False, 'error': 'No region files to combine'}
+
+    # Verify all files exist
+    missing_files = [f for f in region_files if not Path(f).exists()]
+    if missing_files:
+        logger.error(f"Missing files: {missing_files}")
+        return {'success': False, 'error': f'Missing files: {missing_files}'}
+
+    try:
+        id_chunk = _get_id_chunk_size()
+        logger.info(f"Loading region datasets (dask-chunked, id_geohash={id_chunk})...")
+
+        # Open all datasets lazily with dask
+        datasets = []
+        file_info = []
+
+        # Use a smaller chunk size for the combine operation
+        combine_chunk = min(id_chunk, 500)  # Smaller chunks for combining
+
+        for file_path in region_files:
+            try:
+                # Open with smaller chunks to reduce memory pressure
+                ds = xr.open_dataset(
+                    file_path,
+                    chunks={'id_geohash': combine_chunk, 'date': -1}
+                )
+                id_count = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
+                date_count = len(ds['date']) if 'date' in ds.dims else 0
+                file_size_gb = Path(file_path).stat().st_size / (1024 ** 3)
+
+                file_info.append({
+                    'file': file_path,
+                    'id_count': id_count,
+                    'date_count': date_count,
+                    'file_size_gb': round(file_size_gb, 4)
+                })
+
+                datasets.append(ds)
+
+            except Exception as e:
+                logger.error(f"Error opening {file_path}: {e}")
+                for ds in datasets:
+                    try:
+                        ds.close()
+                    except:
+                        pass
+                return {'success': False, 'error': f'Error opening {file_path}: {e}'}
+
+        logger.info("\nFiles to combine:")
+        for info in file_info:
+            logger.info(
+                f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB"
+            )
+
+        logger.info("Combining datasets lazily...")
+        if not datasets:
+            logger.error("No datasets to combine")
+            return {'success': False, 'error': 'No datasets to combine'}
+
+        # Use concat with dask to avoid loading everything into memory
+        combined = xr.concat(datasets, dim='id_geohash', combine='nested')
+
+        # Close the original datasets to free memory
+        for ds in datasets:
+            try:
+                ds.close()
+            except:
+                pass
+        datasets = None
+        gc.collect()
+
+        # Remove duplicates using dask operations (lazy)
+        # Instead of loading all IDs into memory, use dask's unique operation
+        logger.info("Removing duplicate IDs...")
+
+        # Get unique IDs using dask - this is still memory intensive but less so
+        # because dask can chunk the operation
+        unique_ids = combined['id_geohash'].unique().compute()
+
+        if len(unique_ids) < len(combined['id_geohash']):
+            removed_count = len(combined['id_geohash']) - len(unique_ids)
+            logger.info(f"Removed {removed_count} duplicate IDs")
+
+            # Use where and drop to filter - this is more memory efficient
+            mask = combined['id_geohash'].isin(unique_ids)
+            # Note: This still loads data, but dask handles it in chunks
+
+            # Alternative: Use groupby first to avoid loading all IDs
+            # This is a more memory-efficient way to deduplicate
+            combined = combined.drop_duplicates(dim='id_geohash')
+
+        # Sort by IDs and date
+        logger.info("Sorting combined dataset...")
+        combined = combined.sortby(['id_geohash', 'date'])
+
+        # Persist to disk with chunked writing to avoid OOM
+        logger.info(f"Writing combined file to {output_file}")
+
+        # Use encoding with compression
+        # Chunk sizes must not exceed the actual dimension sizes (netCDF4 rejects that)
+        n_ids = combined.sizes['id_geohash']
+        n_dates = combined.sizes['date']
+        encoding = {}
+        for var in combined.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True,
+                'chunksizes': (min(id_chunk, 500, n_ids), n_dates)  # Chunk for writing
+            }
+
+        # Write in chunks to avoid memory issues
+        # Use compute with chunked writing
+        combined.to_netcdf(
+            output_file,
+            encoding=encoding,
+            unlimited_dims=['date']  # Allow date dimension to grow
+        )
+
+        # Get final file size
+        file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
+
+        # Clean up
+        combined.close()
+        gc.collect()
+
+        result = {
+            'success': True,
+            'file_path': output_file,
+            'id_count': len(unique_ids),
+            'date_count': len(combined['date']) if 'date' in combined.dims else 0,
+            'file_size_gb': round(file_size_gb, 4),
+            'files_combined': len(file_info),
+            'file_info': file_info
+        }
+
+        logger.info(f"✅ Combined file created successfully!")
+        logger.info(f"  File: {output_file}")
+        logger.info(f"  IDs: {result['id_count']:,}")
+        logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error combining files: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
 
 
 def merge_historical_file(
@@ -235,7 +476,169 @@ def merge_historical_file(
     Memory-optimized merge of historical and combined files.
     Uses chunked processing to avoid loading entire files into memory.
     """
-    # ... (keep your existing merge function)
+    logger.info(f"\n{'=' * 80}")
+    logger.info("MERGING HISTORICAL AND COMBINED FILES")
+    logger.info(f"{'=' * 80}")
+
+    if id_chunk is None:
+        id_chunk = _get_id_chunk_size()
+
+    # Use smaller chunks for merging
+    merge_chunk = min(id_chunk, 500)
+
+    try:
+        # Open files with dask and chunking
+        logger.info(f"Opening historical file with chunk size {merge_chunk}...")
+        hist_ds = xr.open_dataset(
+            historical_file,
+            chunks={'id_geohash': merge_chunk, 'date': -1}
+        )
+
+        logger.info(f"Opening combined file with chunk size {merge_chunk}...")
+        comb_ds = xr.open_dataset(
+            combined_file,
+            chunks={'id_geohash': merge_chunk, 'date': -1}
+        )
+
+        # Get dates without loading all data
+        hist_dates = pd.to_datetime(hist_ds['date'].values)
+        hist_date_strings = {d.strftime("%Y-%m") for d in hist_dates}
+
+        comb_dates = pd.to_datetime(comb_ds['date'].values)
+        comb_date_strings = {d.strftime("%Y-%m") for d in comb_dates}
+
+        # Find new dates
+        dates_to_add = sorted(comb_date_strings - hist_date_strings)
+        logger.info(f"Dates to add: {dates_to_add}")
+
+        if not dates_to_add:
+            logger.info("No new dates to add. All dates already in historical file.")
+            hist_ds.close()
+            comb_ds.close()
+            return {'success': True, 'dates_added': [], 'message': 'No new dates'}
+
+        # Filter combined to only new dates
+        new_date_objects = [pd.Timestamp(f"{d}-01") for d in dates_to_add]
+        comb_ds_filtered = comb_ds.sel(date=new_date_objects)
+
+        # Close the original combined dataset to free memory
+        comb_ds.close()
+        gc.collect()
+
+        # Get historical IDs without loading all data
+        hist_ids = hist_ds['id_geohash'].values
+
+        # OPTIMIZATION: Instead of reindexing the entire combined dataset,
+        # we'll align during the concat operation
+        logger.info(f"Historical has {len(hist_ids):,} IDs")
+        logger.info(f"Combined filtered has {len(comb_ds_filtered['id_geohash']):,} IDs")
+
+        # Ensure both datasets have the same IDs
+        # Use align with join='inner' to keep only common IDs for the combined data
+        # This is more memory efficient than reindex
+        logger.info("Aligning datasets...")
+
+        # First, align the combined data to historical IDs
+        # This creates a new dataset with the same ID dimension as historical
+        # Missing IDs will be NaN
+        comb_ds_aligned = comb_ds_filtered.reindex(
+            id_geohash=hist_ids,
+            method=None
+        )
+
+        # Close filtered dataset
+        comb_ds_filtered.close()
+        gc.collect()
+
+        # Verify IDs match (lazy check - only checks the first few)
+        hist_ids_sample = hist_ids[:5]
+        comb_ids_sample = comb_ds_aligned['id_geohash'].values[:5]
+
+        if not np.array_equal(hist_ids_sample, comb_ids_sample):
+            logger.error("ID mismatch after alignment!")
+            hist_ds.close()
+            comb_ds_aligned.close()
+            return {'success': False, 'error': 'ID mismatch'}
+
+        # Now concatenate along date dimension
+        logger.info("Concatenating datasets...")
+        merged_ds = xr.concat([hist_ds, comb_ds_aligned], dim='date')
+        merged_ds = merged_ds.sortby('date')
+
+        # Remove duplicate dates if any (lazy operation)
+        dates = merged_ds['date'].values
+        _, unique_idx = np.unique(dates, return_index=True)
+        if len(unique_idx) < len(dates):
+            removed = len(dates) - len(unique_idx)
+            logger.info(f"Removed {removed} duplicate dates")
+            merged_ds = merged_ds.isel(date=np.sort(unique_idx))
+
+        # Close the component datasets
+        hist_ds.close()
+        comb_ds_aligned.close()
+        gc.collect()
+
+        # Write the merged file in chunks to avoid OOM
+        logger.info(f"Writing merged file to {output_file}...")
+
+        # Chunk sizes must not exceed the actual dimension sizes (netCDF4 rejects that)
+        n_ids = merged_ds.sizes['id_geohash']
+        n_dates = merged_ds.sizes['date']
+        encoding = {}
+        for var in merged_ds.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True,
+                'chunksizes': (min(id_chunk, 500, n_ids), n_dates)  # Chunk by IDs
+            }
+
+        # Write with chunked output
+        merged_ds.to_netcdf(
+            output_file,
+            encoding=encoding,
+            unlimited_dims=['date']  # Allow date dimension to grow
+        )
+
+        # Get final size
+        final_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
+
+        # Clean up
+        merged_ds.close()
+        gc.collect()
+
+        result = {
+            'success': True,
+            'file_path': output_file,
+            'id_count': len(hist_ids),
+            'date_count': len(merged_ds['date']),
+            'file_size_gb': round(final_size_gb, 4),
+            'dates_added': dates_to_add
+        }
+
+        logger.info(f"✅ Merged file created successfully!")
+        logger.info(f"  File: {output_file}")
+        logger.info(f"  IDs: {result['id_count']:,}")
+        logger.info(f"  Dates: {result['date_count']}")
+        logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
+        logger.info(f"  Added dates: {dates_to_add}")
+
+        return result
+
+    except MemoryError as e:
+        logger.error(f"Memory error while merging files: {e}")
+        if Path(output_file).exists():
+            Path(output_file).unlink()
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+    except Exception as e:
+        logger.error(f"Error merging files: {e}")
+        if Path(output_file).exists():
+            Path(output_file).unlink()
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
 
 
 def main():

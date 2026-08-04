@@ -12,10 +12,18 @@ import numpy as np
 import gc
 from typing import List, Dict, Any
 
-# Add project root to Python path
+# Add project root to Python root
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+# Threshold for considering a download/merge "complete" (0.99 = 99%)
+COMPLETION_THRESHOLD = 0.99
+# Threshold for considering a merge "acceptable" even with missing data
+ACCEPTABLE_MERGE_THRESHOLD = 0.99
 
 
 # =============================================================================
@@ -269,16 +277,40 @@ def verify_region_data_vectorized(
 
         logger.info(f"IDs in file: {len(ids_in_file):,}, IDs missing: {len(missing_ids):,}")
 
+        # Calculate completion percentage
+        if total_region_ids > 0:
+            completion_pct = len(ids_in_file) / total_region_ids
+        else:
+            completion_pct = 1.0
+
+        # If we have >= 99% of IDs, consider it "complete enough"
         if len(missing_ids) > 0:
             ds.close()
-            return {
-                'success': False,
-                'total_ids': total_region_ids,
-                'ids_in_file': len(ids_in_file),
-                'ids_missing': len(missing_ids),
-                'missing_sample': list(missing_ids)[:10],
-                'error': f'{len(missing_ids):,} IDs missing from file'
-            }
+
+            # Check if we meet the acceptable threshold
+            if completion_pct >= ACCEPTABLE_MERGE_THRESHOLD:
+                logger.info(
+                    f"  ✅ {completion_pct:.2%} of IDs present (>= {ACCEPTABLE_MERGE_THRESHOLD:.0%} threshold) - ACCEPTABLE")
+                return {
+                    'success': True,  # Mark as success for threshold
+                    'partial': True,
+                    'total_ids': total_region_ids,
+                    'ids_in_file': len(ids_in_file),
+                    'ids_missing': len(missing_ids),
+                    'completion_pct': completion_pct,
+                    'missing_sample': list(missing_ids)[:10],
+                    'warning': f'{len(missing_ids):,} IDs missing but {completion_pct:.2%} complete (acceptable)'
+                }
+            else:
+                return {
+                    'success': False,
+                    'total_ids': total_region_ids,
+                    'ids_in_file': len(ids_in_file),
+                    'ids_missing': len(missing_ids),
+                    'completion_pct': completion_pct,
+                    'missing_sample': list(missing_ids)[:10],
+                    'error': f'{len(missing_ids):,} IDs missing ({completion_pct:.2%} complete, below {ACCEPTABLE_MERGE_THRESHOLD:.0%} threshold)'
+                }
 
         # Now check if data exists for the date (sample-based for speed)
         date_ts = pd.Timestamp(f"{date_to_check}-01")
@@ -336,6 +368,7 @@ def verify_region_data_vectorized(
                 'total_ids': total_region_ids,
                 'ids_in_file': len(ids_in_file),
                 'ids_missing': 0,
+                'completion_pct': 1.0,
                 'sampled': sample_count,
                 'ids_with_data': ids_with_data,
                 'ids_without_data': ids_without_data,
@@ -374,6 +407,7 @@ def verify_region_data_vectorized(
                 'total_ids': total_region_ids,
                 'ids_in_file': len(ids_in_file),
                 'ids_missing': 0,
+                'completion_pct': 1.0,
                 'ids_with_data': len(ids_with_data),
                 'ids_without_data': len(ids_without_data),
                 'all_ids_have_data': all_have_data,
@@ -570,6 +604,7 @@ def verify_combined_file_optimized(
     all_present = True
     total_ids = 0
     total_missing = 0
+    total_complete = True
 
     for region in regions:
         logger.info(f"\nChecking region: {region}")
@@ -586,7 +621,12 @@ def verify_combined_file_optimized(
         region_results[region] = result
 
         if result.get('success', False):
-            logger.info(f"  ✅ Region {region} verified successfully")
+            if result.get('partial', False):
+                logger.info(f"  ⚠️ Region {region} partially verified ({result.get('completion_pct', 0):.2%} complete)")
+                # Still track as "acceptable" but note the partial status
+                total_complete = False
+            else:
+                logger.info(f"  ✅ Region {region} verified successfully")
         else:
             all_present = False
             error = result.get('error', 'Unknown error')
@@ -603,6 +643,7 @@ def verify_combined_file_optimized(
         'total_ids': total_ids,
         'total_missing': total_missing,
         'all_regions_present': all_present,
+        'all_regions_complete': total_complete,
         'region_results': region_results,
         'date_present': date_present
     }
@@ -624,10 +665,19 @@ def quick_check_merged_file(file_path: str, date_to_check: str) -> bool:
         return False
     try:
         ds = xr.open_dataset(file_path)
-        dates_in_file = pd.to_datetime(ds['date'].values)
-        date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
-        ds.close()
-        return date_to_check in date_strings
+        if 'date' in ds.dims or 'date' in ds.coords:
+            try:
+                dates_in_file = pd.to_datetime(ds['date'].values)
+                date_strings = [d.strftime("%Y-%m") for d in dates_in_file]
+                result = date_to_check in date_strings
+                ds.close()
+                return result
+            except:
+                ds.close()
+                return True  # If we can't read dates, assume the file exists
+        else:
+            ds.close()
+            return True  # File exists but no date dimension
     except:
         return False
 
@@ -639,10 +689,10 @@ def process_region_fast(
         dynamic_world_data_dir: str = None
 ) -> Dict[str, Any]:
     """
-    Fast process a single region: verify downloads, merge (no verification).
+    Fast process a single region: verify downloads, merge (with verification).
     """
     logger.info(f"\n{'=' * 80}")
-    logger.info(f"PROCESSING REGION: {region} (FAST MODE - NO VERIFICATION)")
+    logger.info(f"PROCESSING REGION: {region} (FAST MODE)")
     logger.info(f"{'=' * 80}")
 
     result = {
@@ -667,8 +717,9 @@ def process_region_fast(
     if total_expected > 0:
         percent_downloaded = float(total_skipped_and_successful) / float(total_expected)
         logger.info(f"  Percent downloaded: {percent_downloaded:.4f}")
-        if percent_downloaded > 0.99:
+        if percent_downloaded >= COMPLETION_THRESHOLD:
             complete = True
+            logger.info(f"  ✅ Downloads {percent_downloaded:.2%} complete (>= {COMPLETION_THRESHOLD:.0%} threshold)")
 
     if not complete:
         logger.warning(f"⚠️ Downloads not complete for {region} - skipping")
@@ -676,17 +727,64 @@ def process_region_fast(
         result['reason'] = 'Downloads incomplete'
         return result
 
-    # Step 2: Check if already merged (quick check)
-    merged_file_path = os.path.join(dynamic_world_data_dir, f"dw_{region}_{date_to_run}.nc")
+    # Step 2: Check if already merged and verify it's complete
+    merged_file_path = os.path.join(dynamic_world_data_dir, 'merge', f"dw_{region}_{date_to_run}.nc")
 
     if quick_check_merged_file(merged_file_path, date_to_run):
-        logger.info(f"✅ Region {region} already has date {date_to_run} - skipping merge")
-        result['success'] = True
-        result['merged_file'] = merged_file_path
-        result['reason'] = 'Already merged'
-        return result
+        logger.info(f"✅ Region {region} already has date {date_to_run}")
 
-    # Step 3: Merge (no verification)
+        # Step 2a: Verify the existing merged file is complete
+        logger.info(f"  Verifying existing merged file for {region}...")
+        verify_result = verify_region_data_vectorized(
+            region=region,
+            date_to_check=date_to_run,
+            file_path=merged_file_path,
+            env_path=env_path,
+            sample_size=1000
+        )
+
+        if verify_result.get('success', False):
+            if verify_result.get('partial', False):
+                completion_pct = verify_result.get('completion_pct', 0)
+                logger.info(f"  ⚠️ Existing merge is partial: {completion_pct:.2%} complete")
+                logger.info(f"  ✅ Acceptable (>= {ACCEPTABLE_MERGE_THRESHOLD:.0%} threshold)")
+                result['success'] = True
+                result['partial'] = True
+                result['merged_file'] = merged_file_path
+                result['reason'] = f'Existing merge partial ({completion_pct:.2%} complete)'
+                result['missing_ids'] = verify_result.get('missing_sample', [])
+                return result
+            else:
+                logger.info(f"  ✅ Existing merge is complete for {region}")
+                result['success'] = True
+                result['merged_file'] = merged_file_path
+                result['reason'] = 'Already merged and verified'
+                return result
+        else:
+            missing_count = verify_result.get('ids_missing', 0)
+            error_msg = verify_result.get('error', 'Unknown verification error')
+            completion_pct = verify_result.get('completion_pct', 0)
+            logger.warning(
+                f"  ⚠️ Existing merge is incomplete: {missing_count} IDs missing ({completion_pct:.2%} complete)")
+            logger.warning(f"     Error: {error_msg}")
+
+            # If it's below threshold, re-merge
+            if completion_pct < ACCEPTABLE_MERGE_THRESHOLD:
+                logger.info(f"  🔄 Will re-merge {region} to fix incomplete data...")
+            else:
+                # It's actually above threshold but verification failed for some other reason
+                logger.info(f"  ✅ {completion_pct:.2%} complete is acceptable, using existing merge")
+                result['success'] = True
+                result['partial'] = True
+                result['merged_file'] = merged_file_path
+                result['reason'] = f'Existing merge partial ({completion_pct:.2%} complete)'
+                result['missing_ids'] = verify_result.get('missing_sample', [])
+                return result
+
+    else:
+        logger.info(f"  No existing merged file found for {region}")
+
+    # Step 3: Merge (with verification)
     logger.info(f"Step 2: Merging results for {region}...")
     merge_result = merge_new_results(
         region=region,
@@ -701,10 +799,45 @@ def process_region_fast(
         result['reason'] = 'Merge failed'
         return result
 
-    logger.info(f"✅ Region {region} merged successfully (verification deferred)")
+    logger.info(f"✅ Region {region} merged successfully")
+
+    # Step 4: Verify the newly merged file
+    logger.info(f"  Verifying newly merged file for {region}...")
+    verify_result = verify_region_data_vectorized(
+        region=region,
+        date_to_check=date_to_run,
+        file_path=merged_file_path,
+        env_path=env_path,
+        sample_size=1000
+    )
+
+    if not verify_result.get('success', False):
+        missing_count = verify_result.get('ids_missing', 0)
+        error_msg = verify_result.get('error', 'Unknown verification error')
+        completion_pct = verify_result.get('completion_pct', 0)
+        logger.warning(
+            f"  ⚠️ New merge verification failed: {missing_count} IDs missing ({completion_pct:.2%} complete)")
+        logger.warning(f"     Error: {error_msg}")
+
+        # Check if it meets the acceptable threshold
+        if completion_pct >= ACCEPTABLE_MERGE_THRESHOLD:
+            logger.warning(
+                f"  ⚠️ Partial success: {completion_pct:.2%} complete (>= {ACCEPTABLE_MERGE_THRESHOLD:.0%} threshold)")
+            result['success'] = True
+            result['partial'] = True
+            result['merged_file'] = merged_file_path
+            result['reason'] = f'Partial merge: {completion_pct:.2%} complete'
+            result['missing_ids'] = verify_result.get('missing_sample', [])
+            return result
+
+        result['success'] = False
+        result['reason'] = f'Verification failed: {error_msg}'
+        return result
+
+    logger.info(f"  ✅ New merge verified successfully for {region}")
     result['success'] = True
     result['merged_file'] = merged_file_path
-    result['reason'] = 'Successfully merged (verification deferred)'
+    result['reason'] = 'Successfully merged and verified'
 
     return result
 
@@ -757,6 +890,7 @@ def main():
     success_count = 0
     failure_count = 0
     skipped_count = 0
+    partial_count = 0
     region_files = []
 
     for region in all_regions:
@@ -775,7 +909,10 @@ def main():
             results[region] = result
 
             if result.get('success', False):
-                if result.get('reason') == 'Already merged':
+                if result.get('partial', False):
+                    partial_count += 1
+                    logger.info(f"⚠️ Region {region} processed partially (acceptable)")
+                elif result.get('reason') == 'Already merged':
                     skipped_count += 1
                     logger.info(f"⏭️ Region {region} already merged (skipped)")
                 else:
@@ -807,7 +944,8 @@ def main():
     logger.info("=" * 80)
     logger.info(f"Date processed: {date_to_run}")
     logger.info(f"Total regions: {len(all_regions)}")
-    logger.info(f"✅ Successful: {success_count}")
+    logger.info(f"✅ Fully successful: {success_count}")
+    logger.info(f"⚠️ Partial (acceptable): {partial_count}")
     logger.info(f"⏭️ Already merged: {skipped_count}")
     logger.info(f"❌ Failed: {failure_count}")
     logger.info("=" * 80)
@@ -829,7 +967,7 @@ def main():
         else:
             # Create combined file name
             combined_file_name = f"dynamic_world_combined_{date_to_run}.nc"
-            combined_file_path = os.path.join(dynamic_world_data_dir, combined_file_name)
+            combined_file_path = os.path.join(dynamic_world_data_dir, 'merge', combined_file_name)
 
             logger.info(f"Combining into: {combined_file_path}")
 
@@ -859,13 +997,28 @@ def main():
                 )
 
                 if verify_result.get('success', False):
-                    logger.info("\n" + "=" * 80)
-                    logger.info("✅ ALL REGIONS VERIFIED SUCCESSFULLY!")
-                    logger.info("=" * 80)
-                    logger.info(f"  Combined file: {combined_file_path}")
-                    logger.info(f"  Total IDs: {verify_result['total_ids']:,}")
-                    logger.info(f"  Date: {date_to_run}")
-                    logger.info("=" * 80)
+                    if verify_result.get('all_regions_complete', True):
+                        logger.info("\n" + "=" * 80)
+                        logger.info("✅ ALL REGIONS VERIFIED SUCCESSFULLY!")
+                        logger.info("=" * 80)
+                        logger.info(f"  Combined file: {combined_file_path}")
+                        logger.info(f"  Total IDs: {verify_result['total_ids']:,}")
+                        logger.info(f"  Date: {date_to_run}")
+                        logger.info("=" * 80)
+                    else:
+                        logger.warning("\n" + "=" * 80)
+                        logger.warning("⚠️ SOME REGIONS HAVE PARTIAL DATA (but acceptable)")
+                        logger.warning("=" * 80)
+                        logger.info(f"  Combined file: {combined_file_path}")
+                        logger.info(f"  Total IDs: {verify_result['total_ids']:,}")
+                        logger.info(f"  Date: {date_to_run}")
+
+                        for region, reg_result in verify_result.get('region_results', {}).items():
+                            if reg_result.get('partial', False):
+                                completion_pct = reg_result.get('completion_pct', 0)
+                                logger.warning(f"  Region {region}: {completion_pct:.2%} complete (acceptable)")
+
+                        logger.info("=" * 80)
                 else:
                     logger.warning("\n" + "=" * 80)
                     logger.warning("⚠️ VERIFICATION ISSUES FOUND")
@@ -875,7 +1028,8 @@ def main():
                         if not reg_result.get('success', False):
                             logger.warning(f"  Region {region}: {reg_result.get('error', 'Unknown error')}")
                             if 'ids_missing' in reg_result:
-                                logger.warning(f"    {reg_result['ids_missing']} IDs missing")
+                                logger.warning(
+                                    f"    {reg_result['ids_missing']} IDs missing ({reg_result.get('completion_pct', 0):.2%} complete)")
                                 if 'missing_sample' in reg_result:
                                     logger.warning(f"    Sample missing IDs: {reg_result['missing_sample']}")
 

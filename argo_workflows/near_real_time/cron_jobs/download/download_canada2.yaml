@@ -96,7 +96,7 @@ spec:
           archive:
             none: {}
       container:
-        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:27-create-near-real-time-cron-jobs
+        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
         imagePullPolicy: Always
         # In your container resources section:
         resources:

@@ -14,6 +14,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 from dotenv import load_dotenv
 import time
+from tqdm import tqdm
 from loguru import logger
 import geemap
 import ee
@@ -33,6 +34,16 @@ import gc
 import resource
 import tracemalloc
 
+
+
+def is_file_ready(filepath, wait_seconds=0.5, checks=10):
+    """Check if a file is ready (not being written to) by watching its size stabilize."""
+    sizes = []
+    for _ in range(checks):
+        size = os.path.getsize(filepath)
+        sizes.append(size)
+        time.sleep(wait_seconds)
+    return len(set(sizes)) == 1
 
 
 # Enable memory tracking
@@ -1535,9 +1546,9 @@ def process_region_date_new_fast_NRT(
         region: str,
         analysis_date: str,
         env_path: str = None,
-        id_chunk_size: int = 500,  # Reduced from 2000 for memory
-        n_jobs: int = 8,  # Reduced from 12 for memory
-        save_interval: int = 1,  # Save every chunk
+        id_chunk_size: int = 500,
+        n_jobs: int = 8,
+        save_interval: int = 1,
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using batch processing for speed.
@@ -1613,7 +1624,8 @@ def process_region_date_new_fast_NRT(
             ]['id_geohash'].values
 
         region_ids_list = list(region_ids)
-        logger.info(f"📍 {region} has {len(region_ids_list):,} IDs in vector file")
+        original_total_ids = len(region_ids_list)  # Store original total
+        logger.info(f"📍 {region} has {original_total_ids:,} IDs in vector file")
 
         if len(region_ids_list) == 0:
             logger.error(f"❌ No IDs found for region {region} in vector file!")
@@ -1622,7 +1634,7 @@ def process_region_date_new_fast_NRT(
         # 4. Load historical data - ONLY for the region IDs
         logger.info(f"Loading historical data for training (only {len(region_ids_list):,} IDs)...")
 
-        if not historical_file.exists():
+        if not Path(historical_file).exists():
             logger.error(f"❌ Historical file not found: {historical_file}")
             return {'success': False, 'error': 'Historical file not found'}
 
@@ -1747,6 +1759,7 @@ def process_region_date_new_fast_NRT(
 
         # 8. Filter datasets to matching IDs
         matching_ids_list = list(matching_ids)
+        original_total_ids = len(matching_ids_list)  # Store original total
         ds_historical_train = ds_historical_train.sel(id_geohash=matching_ids_list)
         ds_analysis = ds_analysis.sel(id_geohash=matching_ids_list)
 
@@ -1779,25 +1792,49 @@ def process_region_date_new_fast_NRT(
         analysis_date_str = analysis_timestamp.strftime("%Y-%m-%d")
 
         logger.info(f"Using analysis date: {analysis_date_str}")
-        logger.info(f"Starting processing of {total_ids:,} IDs in chunks of {id_chunk_size}")
+        logger.info(f"Starting processing of {original_total_ids:,} total IDs in chunks of {id_chunk_size}")
         logger.info(f"NOTE: Each chunk will be passed to NRTBreakpoint.calculate_break as a LIST")
         logger.info(f"       This enables internal parallelization with {n_jobs} workers")
         logger.info(f"Results will be saved incrementally after EACH chunk (memory-optimized)")
+
+        # Track how many IDs have been processed before resuming
+        already_processed_count = 0
 
         # Check for existing incremental file (resume capability)
         if incremental_file.exists():
             try:
                 saved_results = pd.read_parquet(incremental_file)
                 saved_ids = set(saved_results['id_geohash'].values)
+                already_processed_count = len(saved_ids)
+
+                # Log CLEARLY that we're skipping already processed IDs
+                logger.info(f"\n{'=' * 60}")
+                logger.info(f"🔄 RESUME MODE DETECTED")
+                logger.info(f"{'=' * 60}")
+                logger.info(f"📁 Found existing incremental file with {already_processed_count:,} IDs already processed")
+                logger.info(f"⏭️  These IDs will be SKIPPED (not reprocessed)")
+
+                # Filter out already processed IDs
+                original_length = len(matching_ids_list)
                 matching_ids_list = [id_val for id_val in matching_ids_list if id_val not in saved_ids]
+                skipped_count = original_length - len(matching_ids_list)
+
+                logger.info(f"✅ SKIPPING {skipped_count:,} already processed IDs")
+                logger.info(f"📊 Remaining IDs to process: {len(matching_ids_list):,}")
+                logger.info(
+                    f"📊 Overall progress: {already_processed_count:,}/{original_total_ids:,} ({already_processed_count / original_total_ids * 100:.1f}% complete)")
+
                 total_breakpoints = len(saved_results)
-                logger.info(f"🔄 Resuming from incremental file: {len(saved_ids)} IDs already processed")
-                logger.info(f"   Remaining IDs: {len(matching_ids_list)}")
-                logger.info(f"   Existing breakpoints: {total_breakpoints:,}")
+                logger.info(f"📊 Existing breakpoints: {total_breakpoints:,}")
+                logger.info(f"{'=' * 60}\n")
             except Exception as e:
                 logger.warning(f"Error reading incremental file, starting fresh: {e}")
                 if incremental_file.exists():
                     incremental_file.unlink()
+                already_processed_count = 0
+
+        # Update total_ids to reflect remaining IDs to process
+        total_ids = len(matching_ids_list)
 
         start_time = time.time()
         processed_since_last_save = 0
@@ -1806,23 +1843,33 @@ def process_region_date_new_fast_NRT(
         total_chunks = (len(all_ids) + id_chunk_size - 1) // id_chunk_size if all_ids else 0
 
         if total_chunks == 0:
-            logger.warning("No chunks to process")
+            logger.info("✅ No chunks to process - all IDs already done!")
             # Check if we have existing data to create Zarr
             if incremental_file.exists():
                 logger.info("Using existing incremental data to create Zarr")
                 return create_final_zarr_from_incremental(
-                    incremental_file, zarr_path, region, analysis_date, analysis_source, total_ids
+                    incremental_file, zarr_path, region, analysis_date, analysis_source, original_total_ids
                 )
-            return {'success': True, 'total_ids': total_ids, 'processed': 0, 'breakpoints_found': 0,
+            return {'success': True, 'total_ids': original_total_ids, 'processed': 0, 'breakpoints_found': 0,
                     'zarr_path': str(zarr_path)}
+
+        logger.info(f"\n📊 Processing {len(all_ids):,} remaining IDs in {total_chunks} chunks")
+        logger.info(
+            f"📊 Overall progress will continue from {already_processed_count:,}/{original_total_ids:,} ({already_processed_count / original_total_ids * 100:.1f}% complete)\n")
 
         for chunk_idx in range(total_chunks):
             start_idx = chunk_idx * id_chunk_size
             end_idx = min(start_idx + id_chunk_size, len(all_ids))
             chunk_ids = all_ids[start_idx:end_idx]
             chunk_start_time = time.time()
-            progress_pct = (float(total_processed) / float(total_ids))
-            logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs ({progress_pct:.1f}%)")
+
+            # Calculate progress based on ORIGINAL total
+            processed_so_far = already_processed_count + end_idx
+            progress_pct = (float(processed_so_far) / float(original_total_ids)) * 100
+
+            # Log chunk start with clear progress information
+            logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs")
+            logger.info(f"  Progress: {progress_pct:.1f}% complete ({processed_so_far:,}/{original_total_ids:,} IDs)")
 
             try:
                 # Get data for this chunk
@@ -1858,11 +1905,11 @@ def process_region_date_new_fast_NRT(
 
                     total_breakpoints += len(breaks_df)
 
-                    # Clear breaks_df from memory
-                    del breaks_df
-
                     logger.info(
                         f"  ✅ Chunk {chunk_idx + 1} complete: {len(breaks_df)} breakpoints found (saved incrementally)")
+
+                    # Clear breaks_df from memory
+                    del breaks_df
                 else:
                     logger.info(f"  ✅ Chunk {chunk_idx + 1} complete: 0 breakpoints found")
 
@@ -1871,7 +1918,7 @@ def process_region_date_new_fast_NRT(
                 # Log chunk timing
                 chunk_time = time.time() - chunk_start_time
                 ids_per_second = len(chunk_ids) / chunk_time if chunk_time > 0 else 0
-                logger.info(f"  ⏱️ Chunk {chunk_idx + 1} took {chunk_time:.1f}s ({ids_per_second:.1f} IDs/sec)")
+                logger.info(f"  ⏱️ Chunk took {chunk_time:.1f}s ({ids_per_second:.1f} IDs/sec)")
 
                 # Memory cleanup after each chunk
                 del ds_historical_chunk, ds_analysis_chunk, ds_combined, dwds
@@ -1885,8 +1932,13 @@ def process_region_date_new_fast_NRT(
                 continue
 
         # 11. Create final Zarr file from incremental data
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"📦 ALL {len(all_ids):,} remaining IDs processed successfully!")
+        logger.info(f"📦 Creating final Zarr from incremental data...")
+        logger.info(f"{'=' * 60}")
+
         final_result = create_final_zarr_from_incremental(
-            incremental_file, zarr_path, region, analysis_date, analysis_source, total_ids
+            incremental_file, zarr_path, region, analysis_date, analysis_source, original_total_ids
         )
 
         # Clean up
@@ -1900,9 +1952,12 @@ def process_region_date_new_fast_NRT(
         logger.info(f"\n{'=' * 60}")
         logger.info(f"📊 FINAL SUMMARY for {region} {analysis_date}")
         logger.info(f"{'=' * 60}")
-        logger.info(f"   Total IDs processed: {total_processed:,}")
+        logger.info(f"   Total IDs originally: {original_total_ids:,}")
+        logger.info(f"   IDs already processed (skipped): {already_processed_count:,}")
+        logger.info(f"   IDs processed in this run: {total_processed:,}")
+        logger.info(f"   Total IDs processed: {already_processed_count + total_processed:,}")
         logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
-        logger.info(f"   Total chunks: {total_chunks}")
+        logger.info(f"   Total chunks in this run: {total_chunks}")
         logger.info(f"   Total time: {int(minutes)}m {int(seconds)}s")
         if total_processed > 0:
             logger.info(f"   Average time per ID: {total_time / total_processed:.2f}s")
@@ -2059,8 +2114,7 @@ def process_region_date_beast_historical(
             ]['id_geohash'].values
 
         region_ids_list = list(region_ids)
-        original_total_ids = len(region_ids_list)  # Store original total
-        logger.info(f"📍 {region} has {original_total_ids:,} IDs in vector file")
+        logger.info(f"📍 {region} has {len(region_ids_list):,} IDs in vector file")
 
         if len(region_ids_list) == 0:
             logger.error(f"❌ No IDs found for region {region} in vector file!")
@@ -2141,9 +2195,9 @@ def process_region_date_beast_historical(
 
         total_processed = 0
         total_breakpoints = 0
-        already_processed_count = 0  # Track how many were already processed
+        total_ids = len(region_ids_list)
 
-        logger.info(f"Starting processing of {original_total_ids:,} IDs in chunks of {id_chunk_size}")
+        logger.info(f"Starting processing of {total_ids:,} IDs in chunks of {id_chunk_size}")
         logger.info(f"Results will be saved incrementally after EACH chunk")
 
         # Check for existing incremental file (resume capability)
@@ -2171,76 +2225,48 @@ def process_region_date_beast_historical(
                         else:
                             saved_ids = set(saved_results.index.values)
 
-                already_processed_count = len(saved_ids)
-
-                # Log CLEARLY that we're skipping already processed IDs
-                logger.info(f"\n{'=' * 60}")
-                logger.info(f"🔄 RESUME MODE DETECTED")
-                logger.info(f"{'=' * 60}")
-                logger.info(f"📁 Found existing incremental file with {already_processed_count:,} IDs already processed")
-                logger.info(f"⏭️  These IDs will be SKIPPED (not reprocessed)")
-
-                # Filter out already processed IDs
-                original_length = len(region_ids_list)
                 region_ids_list = [id_val for id_val in region_ids_list if id_val not in saved_ids]
-                skipped_count = original_length - len(region_ids_list)
-
-                logger.info(f"✅ SKIPPING {skipped_count:,} already processed IDs")
-                logger.info(f"📊 Remaining IDs to process: {len(region_ids_list):,}")
-                logger.info(
-                    f"📊 Overall progress: {already_processed_count:,}/{original_total_ids:,} ({already_processed_count / original_total_ids * 100:.1f}% complete)")
-
                 total_breakpoints = len(saved_results)
-                logger.info(f"📊 Existing breakpoints: {total_breakpoints:,}")
-                logger.info(f"{'=' * 60}\n")
+                logger.info(f"🔄 Resuming from incremental file: {len(saved_ids)} IDs already processed")
+                logger.info(f"   Remaining IDs: {len(region_ids_list)}")
+                logger.info(f"   Existing breakpoints: {total_breakpoints:,}")
             except Exception as e:
                 logger.warning(f"Error reading incremental file, starting fresh: {e}")
                 if incremental_file.exists():
                     incremental_file.unlink()
-                already_processed_count = 0
 
         start_time = time.time()
 
         all_ids = list(region_ids_list)
-        remaining_total = len(all_ids)
-        total_chunks = (remaining_total + id_chunk_size - 1) // id_chunk_size if remaining_total else 0
+        total_chunks = (len(all_ids) + id_chunk_size - 1) // id_chunk_size if all_ids else 0
         processed_chunks = 0
 
         if total_chunks == 0:
-            logger.info("✅ No chunks to process - all IDs already done!")
+            logger.warning("No chunks to process")
             # Check if we have existing data to create Zarr
             if incremental_file.exists():
                 logger.info("Using existing incremental data to create Zarr")
                 return create_final_zarr_from_incremental(
                     incremental_file, zarr_path, region, analysis_date,
-                    'historical_beast', original_total_ids
+                    'historical_beast', total_ids
                 )
             return {
                 'success': True,
-                'total_ids': original_total_ids,
+                'total_ids': total_ids,
                 'processed': 0,
                 'breakpoints_found': 0,
                 'zarr_path': str(zarr_path)
             }
-
-        logger.info(f"\n📊 Processing {remaining_total:,} remaining IDs in {total_chunks} chunks")
-        logger.info(
-            f"📊 Overall progress will continue from {already_processed_count:,}/{original_total_ids:,} ({already_processed_count / original_total_ids * 100:.1f}% complete)\n")
 
         for chunk_idx in range(total_chunks):
             start_idx = chunk_idx * id_chunk_size
             end_idx = min(start_idx + id_chunk_size, len(all_ids))
             chunk_ids = all_ids[start_idx:end_idx]
             chunk_start_time = time.time()
-
-            # Calculate progress based on ORIGINAL total
-            processed_so_far = already_processed_count + end_idx
-            progress_pct = (float(processed_so_far) / float(original_total_ids)) * 100
-
-            # Log chunk start with clear progress information
-            logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs")
-            logger.info(f"  Progress: {progress_pct:.1f}% complete ({processed_so_far:,}/{original_total_ids:,} IDs)")
-
+            progress_pct = (float(total_processed) / float(total_ids)) * 100 if total_ids > 0 else 0
+            logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs ({progress_pct:.1f}%)")
+            if progress_pct > 20:
+                logger.debug(f"We got 20% done! time to retest")
             try:
                 # Get data for this chunk
                 ds_historical_chunk = ds_historical_train.sel(id_geohash=chunk_ids)
@@ -2306,7 +2332,7 @@ def process_region_date_beast_historical(
                 # Log chunk timing
                 chunk_time = time.time() - chunk_start_time
                 ids_per_second = len(chunk_ids) / chunk_time if chunk_time > 0 else 0
-                logger.info(f"  ⏱️ Chunk took {chunk_time:.1f}s ({ids_per_second:.1f} IDs/sec)")
+                logger.info(f"  ⏱️ Chunk {chunk_idx + 1} took {chunk_time:.1f}s ({ids_per_second:.1f} IDs/sec)")
 
                 # Memory cleanup after each chunk
                 del ds_historical_chunk, dwds
@@ -2322,18 +2348,13 @@ def process_region_date_beast_historical(
                 continue
 
         # 8. Create final Zarr file from incremental data
-        logger.info(f"\n{'=' * 60}")
-        logger.info(f"📦 ALL {remaining_total:,} remaining IDs processed successfully!")
-        logger.info(f"📦 Creating final Zarr from incremental data...")
-        logger.info(f"{'=' * 60}")
-
         final_result = create_final_zarr_from_incremental(
             incremental_file,
             zarr_path,
             region,
             analysis_date,
             'historical_beast',
-            original_total_ids  # Use ORIGINAL total, not the filtered one
+            total_ids
         )
 
         # Clean up
@@ -2346,12 +2367,9 @@ def process_region_date_beast_historical(
         logger.info(f"\n{'=' * 60}")
         logger.info(f"📊 FINAL SUMMARY for {region} {analysis_date}")
         logger.info(f"{'=' * 60}")
-        logger.info(f"   Total IDs originally: {original_total_ids:,}")
-        logger.info(f"   IDs already processed (skipped): {already_processed_count:,}")
-        logger.info(f"   IDs processed in this run: {total_processed:,}")
-        logger.info(f"   Total IDs processed: {already_processed_count + total_processed:,}")
+        logger.info(f"   Total IDs processed: {total_processed:,}")
         logger.info(f"   Total breakpoints found: {total_breakpoints:,}")
-        logger.info(f"   Total chunks in this run: {total_chunks}")
+        logger.info(f"   Total chunks: {total_chunks}")
         logger.info(f"   Total time: {int(minutes)}m {int(seconds)}s")
         if total_processed > 0:
             logger.info(f"   Average time per ID: {total_time / total_processed:.2f}s")
@@ -3270,208 +3288,6 @@ def process_region_date_new_fast_historical_safe(
 
 
 def create_final_zarr_from_incremental(
-        incremental_file: Path,
-        zarr_path: Path,
-        region: str,
-        analysis_date: str,
-        analysis_source: str,
-        total_ids: int
-) -> Dict[str, Any]:
-    """
-    Create the final Zarr file from incremental results.
-
-    Handles DataFrames where id_geohash might be the index or a column named 'index'.
-
-    Args:
-        incremental_file: Path to incremental Parquet file
-        zarr_path: Path where Zarr file should be saved
-        region: Region name
-        analysis_date: Date in "YYYY-MM" format
-        analysis_source: Source of the data ("historical" or "downloaded")
-        total_ids: Total number of IDs processed
-
-    Returns:
-        dict: Result with status and metadata
-    """
-    import datetime
-
-    logger.info(f"\n{'=' * 60}")
-    logger.info(f"📦 CREATING FINAL ZARR FROM INCREMENTAL DATA")
-    logger.info(f"{'=' * 60}")
-
-    if not incremental_file.exists():
-        logger.warning(f"No incremental file found at {incremental_file}")
-        # Create empty Zarr with proper structure
-        empty_result = pd.DataFrame(columns=[
-            'id_geohash', 'date_break', 'date_before_break', 'date_after_break',
-            'break_method', 'break_number', 'proba_rbeast',
-            'water_area_before', 'water_area_after',
-            'water_area_before_normalized', 'water_area_after_normalized'
-        ])
-        empty_ds = empty_result.set_index('id_geohash').to_xarray()
-        empty_ds.attrs.update({
-            'region': region,
-            'analysis_date': analysis_date,
-            'created_at': datetime.datetime.now().isoformat(),
-            'complete': True,
-            'empty': True,
-            'analysis_source': analysis_source,
-            'total_ids': total_ids
-        })
-        empty_ds.to_zarr(zarr_path, mode='w')
-        empty_ds.close()
-        return {
-            'success': True,
-            'total_ids': total_ids,
-            'processed': 0,
-            'breakpoints_found': 0,
-            'zarr_path': str(zarr_path)
-        }
-
-    try:
-        # Load all incremental results
-        logger.info(f"Loading incremental results from {incremental_file}")
-        breaks_merged = pd.read_parquet(incremental_file)
-
-        logger.debug(f"Initial DataFrame columns: {breaks_merged.columns.tolist()}")
-        logger.debug(f"Initial DataFrame index: {breaks_merged.index.name}")
-        logger.debug(f"DataFrame shape: {breaks_merged.shape}")
-
-        if breaks_merged.empty:
-            logger.warning("Incremental file is empty")
-            # Create empty Zarr
-            empty_result = pd.DataFrame(columns=[
-                'id_geohash', 'date_break', 'date_before_break', 'date_after_break',
-                'break_method', 'break_number', 'proba_rbeast',
-                'water_area_before', 'water_area_after',
-                'water_area_before_normalized', 'water_area_after_normalized'
-            ])
-            empty_ds = empty_result.set_index('id_geohash').to_xarray()
-            empty_ds.attrs.update({
-                'region': region,
-                'analysis_date': analysis_date,
-                'created_at': datetime.datetime.now().isoformat(),
-                'complete': True,
-                'empty': True,
-                'analysis_source': analysis_source,
-                'total_ids': total_ids
-            })
-            empty_ds.to_zarr(zarr_path, mode='w')
-            empty_ds.close()
-            return {
-                'success': True,
-                'total_ids': total_ids,
-                'processed': 0,
-                'breakpoints_found': 0,
-                'zarr_path': str(zarr_path)
-            }
-
-        # ========== FIX: Handle id_geohash properly ==========
-        # Check if 'id_geohash' exists as a column
-        if 'id_geohash' in breaks_merged.columns:
-            logger.info("✅ Found 'id_geohash' as a column")
-            # Set it as index
-            breaks_merged = breaks_merged.set_index('id_geohash')
-        elif 'index' in breaks_merged.columns:
-            # The 'index' column contains the id_geohash values
-            logger.info("🔄 Found 'index' column - renaming to 'id_geohash' and setting as index")
-            breaks_merged = breaks_merged.rename(columns={'index': 'id_geohash'})
-            breaks_merged = breaks_merged.set_index('id_geohash')
-        elif breaks_merged.index.name == 'id_geohash' or breaks_merged.index.name is None:
-            # Check if the index itself is the id_geohash
-            # For the first chunk, the index might be the default RangeIndex
-            # We need to check if the index values look like geohash strings
-            if breaks_merged.index.name is None:
-                # Try to infer if index contains geohash-like strings
-                sample_val = breaks_merged.index[0] if len(breaks_merged) > 0 else None
-                if sample_val is not None and isinstance(sample_val, str) and len(sample_val) >= 10:
-                    # Looks like a geohash - set the index name
-                    logger.info("🔄 Index appears to contain geohash strings - naming it 'id_geohash'")
-                    breaks_merged.index.name = 'id_geohash'
-                else:
-                    # The index might be the geohash but we need to verify
-                    # Try to find a column that looks like it contains IDs
-                    id_col = None
-                    for col in breaks_merged.columns:
-                        if 'id' in col.lower() or 'geohash' in col.lower():
-                            id_col = col
-                            break
-
-                    if id_col:
-                        logger.info(f"🔄 Found ID-like column '{id_col}' - using as id_geohash")
-                        breaks_merged = breaks_merged.set_index(id_col)
-                    else:
-                        # Last resort: use the index as-is but rename it
-                        logger.warning("⚠️ Could not find id_geohash column - using index as id_geohash")
-                        breaks_merged.index.name = 'id_geohash'
-        else:
-            # The index has a different name - try to rename it
-            logger.warning(f"⚠️ Index name is '{breaks_merged.index.name}' - renaming to 'id_geohash'")
-            breaks_merged.index.name = 'id_geohash'
-
-        # Verify we have a proper index
-        logger.info(f"Final index name: {breaks_merged.index.name}")
-        logger.info(f"Number of unique IDs: {len(breaks_merged.index.unique())}")
-        logger.debug(f"Sample IDs: {list(breaks_merged.index[:5])}")
-
-        # Save to Zarr
-        logger.info(f"💾 Saving {len(breaks_merged):,} records to Zarr: {zarr_path}")
-
-        # Convert to xarray dataset
-        ds_breaks = breaks_merged.to_xarray()
-
-        # Add attributes
-        ds_breaks.attrs.update({
-            'region': region,
-            'analysis_date': analysis_date,
-            'created_at': datetime.datetime.now().isoformat(),
-            'complete': True,
-            'analysis_source': analysis_source,
-            'total_ids': total_ids,
-            'breakpoints_found': len(breaks_merged)
-        })
-
-        # Write to Zarr
-        ds_breaks.to_zarr(zarr_path, mode='w', consolidated=True)
-        logger.info(f"   ✅ Zarr saved successfully")
-
-        # Optional: Save Parquet backup
-        current_breakpoint_dir = incremental_file.parent
-        path_to_joined_file = current_breakpoint_dir / f'drain_{analysis_date}.parquet'
-        breaks_merged.to_parquet(path_to_joined_file)
-        logger.info(f"   ✅ Parquet backup saved to {path_to_joined_file}")
-
-        # Check Zarr file size
-        if zarr_path.exists():
-            zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
-            logger.info(f"   📦 Zarr file size: {zarr_size_gb:.2f} GB")
-
-        ds_breaks.close()
-
-        return {
-            'success': True,
-            'region': region,
-            'analysis_date': analysis_date,
-            'analysis_source': analysis_source,
-            'total_ids': total_ids,
-            'processed': len(breaks_merged),
-            'breakpoints_found': len(breaks_merged),
-            'zarr_path': str(zarr_path)
-        }
-
-    except Exception as e:
-        logger.error(f"Error creating Zarr from incremental data: {e}")
-        import traceback
-        traceback.print_exc()
-        return {
-            'success': False,
-            'error': str(e),
-            'region': region,
-            'analysis_date': analysis_date
-        }
-
-
-def create_final_zarr_from_incremental_2(
         incremental_file: Path,
         zarr_path: Path,
         region: str,
