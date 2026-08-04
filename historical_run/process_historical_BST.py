@@ -249,7 +249,6 @@ def process_single_date_for_region(
 
     except Exception as e:
         logger.error(f"❌ Error processing {region} {date_str}: {e}")
-        import traceback
         traceback.print_exc()
         return {
             'success': False,
