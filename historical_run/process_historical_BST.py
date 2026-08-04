@@ -1,7 +1,6 @@
 from utils.helper_functions import debug_historical_dates, process_region_date_beast_historical
 import sys
 from typing import List, Dict, Any, Optional
-import gc
 import traceback
 from loguru import logger
 from datetime import datetime
