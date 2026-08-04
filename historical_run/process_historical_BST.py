@@ -99,7 +99,7 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         return {'success': False, 'error': 'No .nc files found'}
 
-    historical_file = max(all_dynamic_world_files, key=os.path.getctime)
+    historical_file = max(all_dynamic_world_files, key=os.path.getmtime)
     if Path(historical_file).exists():
         try:
             ds = xr.open_dataset(str(historical_file))
