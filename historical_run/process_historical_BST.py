@@ -18,15 +18,6 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 
-def is_file_ready(filepath, wait_seconds=0.5, checks=20):
-    """Check if a file is ready (not being written to)."""
-    sizes = []
-    for _ in range(checks):
-        size = os.path.getsize(filepath)
-        sizes.append(size)
-        time.sleep(wait_seconds)
-    # If size hasn't changed, assume writing is done
-    return len(set(sizes)) == 1
 
 
 def generate_date_range_from_env(
