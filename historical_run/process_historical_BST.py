@@ -262,7 +262,7 @@ def main():
     """Main function to process historical dates with RBEAST using the new method."""
 
     logger.debug("=" * 80)
-    logger.debug("PROCESS_HISTORICAL_RBEAST.PY STARTED (NEW BEAST METHOD)")
+    logger.debug("PROCESS_HISTORICAL_BST.PY STARTED (NEW BEAST METHOD)")
     logger.debug("=" * 80)
 
     # Load environment
