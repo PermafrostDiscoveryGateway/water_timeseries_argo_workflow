@@ -285,7 +285,10 @@ def main():
         'region_name'
     ]
 
-    dynamic_world_data_dir = os.environ['dynamic_world_data']
+    dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+    if not dynamic_world_data_dir:
+        logger.error("dynamic_world_data not set in environment")
+        return {'success': False, 'error': 'dynamic_world_data not set'}
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     if not all_dynamic_world_files:
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
