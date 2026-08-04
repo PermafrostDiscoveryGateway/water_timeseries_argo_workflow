@@ -2265,8 +2265,6 @@ def process_region_date_beast_historical(
             chunk_start_time = time.time()
             progress_pct = (float(total_processed) / float(total_ids)) * 100 if total_ids > 0 else 0
             logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs ({progress_pct:.1f}%)")
-            if progress_pct > 20:
-                logger.debug(f"We got 20% done! time to retest")
             try:
                 # Get data for this chunk
                 ds_historical_chunk = ds_historical_train.sel(id_geohash=chunk_ids)
@@ -2305,7 +2303,6 @@ def process_region_date_beast_historical(
                         cols = ['id_geohash'] + [c for c in breaks_df.columns if c != 'id_geohash']
                         breaks_df = breaks_df[cols]
 
-                    logger.debug(f"Chunk {chunk_idx + 1} DataFrame columns: {breaks_df.columns.tolist()}")
                     logger.debug(f"Chunk {chunk_idx + 1} has {len(breaks_df)} rows")
 
                     # SAVE INCREMENTALLY IMMEDIATELY
