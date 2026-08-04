@@ -97,7 +97,7 @@ def check_data_availability_for_date(region: str, date_str: str, env_path: str =
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     if not all_dynamic_world_files:
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
-        return {'success': False, 'error': 'No .nc files found'}
+        return {'available': False, 'error': 'No .nc files found'}
 
     historical_file = max(all_dynamic_world_files, key=os.path.getmtime)
     if Path(historical_file).exists():
