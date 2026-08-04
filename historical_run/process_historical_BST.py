@@ -454,7 +454,7 @@ def main():
         logger.info(f"    Summary: {region_success} successful, {region_fail} failed")
 
     logger.info("=" * 80)
-    logger.info("PROCESS_HISTORICAL_RBEAST.PY COMPLETED")
+    logger.info("PROCESS_HISTORICAL_BST.PY COMPLETED")
     logger.info("=" * 80)
 
 
