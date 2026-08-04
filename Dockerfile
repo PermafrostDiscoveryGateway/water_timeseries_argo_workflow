@@ -1,7 +1,9 @@
-FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:main
+FROM tcnichol/water-timeseries-v2:latest
+
+# Install the latest water-timeseries from GitHub
+# RUN uv pip install git+https://github.com/permafrostdiscoverygateway/water-timeseries-v2.git@main
 
 # Install additional Python dependencies using uv
-# Pin geemap to prevent it from upgrading
 RUN uv pip install \
     python-dotenv \
     google-cloud-storage \
@@ -11,15 +13,12 @@ RUN uv pip install \
     pyarrow \
     geemap==0.37.2
 
-# Alternatively, prevent upgrading any packages that are already installed:
-# RUN uv pip install --no-deps \  # This would skip dependencies but might break things
-#     python-dotenv \
-#     google-cloud-storage \
-#     ...
-
 # Copy your application code
 COPY google_cloud_utils/ /app/google_cloud_utils/
 COPY near_real_time /app/near_real_time
+COPY utils /app/utils
+COPY upload_utils /app/upload_utils
+COPY historical_run /app/historical_run
 
 # Add /app to Python path
 ENV PYTHONPATH="/app:${PYTHONPATH}"
@@ -32,6 +31,5 @@ RUN python -c "import geemap; print(f'✅ geemap version: {geemap.__version__}')
 # Set working directory
 WORKDIR /app
 
-# No verification step - just run
 ENTRYPOINT ["python"]
 CMD ["-c", "print('Usage: docker run <script.py> [args...]')"]

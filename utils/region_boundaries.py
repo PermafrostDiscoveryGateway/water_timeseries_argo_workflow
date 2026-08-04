@@ -1,0 +1,39 @@
+
+# contains the region boundaries
+
+regions = {
+    'TEST': {'Y_MIN_START': 62, 'Y_MIN_END': 64, 'X_MIN_START': 153, 'X_MIN_END': 156},
+    'ALASKA': {'Y_MIN_START': 55, 'Y_MIN_END': 72, 'X_MIN_START': -168, 'X_MIN_END': -138},
+    # 'CANADA': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -141, 'X_MIN_END': -54},
+    'CANADA1': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -141,'X_MIN_END': -119 },
+    # 'CANADA1_1': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -141, 'X_MIN_END': -119},
+    'CANADA2': {'Y_MIN_START': 50, 'Y_MIN_END': 80,   'X_MIN_START': -119,'X_MIN_END': -97 },
+    'CANADA3': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -97,'X_MIN_END': -75},
+    'CANADA4': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -75,'X_MIN_END': -54},
+    'EURASIA1': {'Y_MIN_START': 55, 'Y_MIN_END': 71, 'X_MIN_START': 18, 'X_MIN_END': 63},
+    'EURASIA2': {'Y_MIN_START': 55, 'Y_MIN_END': 80, 'X_MIN_START': 66, 'X_MIN_END': 177},
+    'EURASIA3': {'Y_MIN_START': 55, 'Y_MIN_END': 80, 'X_MIN_START': -180, 'X_MIN_END': -169},
+}
+
+small_regions = {
+    'TEST': {'Y_MIN_START': 62, 'Y_MIN_END': 64, 'X_MIN_START': 153, 'X_MIN_END': 156},
+    'EURASIA3': {'Y_MIN_START': 55, 'Y_MIN_END': 80, 'X_MIN_START': -180, 'X_MIN_END': -169},
+
+}
+
+regions_canada = {
+    'CANADA1': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -141,'X_MIN_END': -119 },
+    # 'CANADA1_1': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -141, 'X_MIN_END': -119},
+    'CANADA2': {'Y_MIN_START': 50, 'Y_MIN_END': 80,   'X_MIN_START': -119,'X_MIN_END': -97 },
+    'CANADA3': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -97,'X_MIN_END': -75},
+    'CANADA4': {'Y_MIN_START': 50, 'Y_MIN_END': 80, 'X_MIN_START': -75,'X_MIN_END': -54},
+}
+
+def get_region_boundaries():
+    return regions
+
+def get_regions_canada():
+    return regions_canada
+
+def get_small_regions():
+    return small_regions

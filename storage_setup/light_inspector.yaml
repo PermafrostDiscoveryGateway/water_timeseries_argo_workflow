@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pvc-inspector-light
+  namespace: argo
+spec:
+  containers:
+  - name: inspector
+    # Use alpine - much smaller than ubuntu
+    image: alpine:latest
+    command: ["sh", "-c"]
+    args:
+    - |
+      # Install ONLY what you need, with minimal footprint
+      apk add --no-cache file tree bash
+      
+      # Install ncdump from alpine packages (much smaller)
+      apk add --no-cache netcdf
+      
+      echo ""
+      echo "=== NetCDF Tools Installed ==="
+      echo "ncdump version: $(ncdump --version 2>&1 | head -1 || echo 'not found')"
+      echo ""
+      echo "Available commands:"
+      echo "  ls -la /data/water_timeseries/dynamic_world_data/"
+      echo "  find /data -name '*.nc' | head -20"
+      echo "  ncdump -h /data/path/to/file.nc  # View file header"
+      echo "  du -sh /data/water_timeseries/*  # Check directory sizes"
+      echo ""
+      echo "Press Ctrl+C to exit, or use 'kubectl exec -it pvc-inspector-light -- sh'"
+      
+      # Keep running but with minimal resource usage
+      tail -f /dev/null
+    volumeMounts:
+    - name: argo-workflow-volume
+      mountPath: /data
+    resources:
+      requests:
+        memory: "128Mi"  # Minimal
+        cpu: "100m"
+      limits:
+        memory: "256Mi"  # Still small
+        cpu: "200m"
+  volumes:
+  - name: argo-workflow-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+  restartPolicy: Never

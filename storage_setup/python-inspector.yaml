@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pvc-inspector-python
+  namespace: argo
+spec:
+  containers:
+  - name: inspector
+    image: python:3.12-slim
+    command: ["sh", "-c"]
+    args:
+    - |
+      # Install ONLY netcdf4 (Python package) - much lighter than system tools
+      pip install --no-cache-dir netcdf4
+      
+      # Create a helper script
+      cat > /tmp/inspect.py << 'EOF'
+      import os
+      import glob
+      from netCDF4 import Dataset
+      
+      # Check directory structure
+      base = '/data/water_timeseries/dynamic_world_data'
+      print(f"\n=== Checking {base} ===")
+      
+      if os.path.exists(base):
+          print(f"Directory exists. Contents:")
+          for item in os.listdir(base):
+              full_path = os.path.join(base, item)
+              if os.path.isdir(full_path):
+                  print(f"  📁 {item}/")
+                  # Check for .nc files in subdirs
+                  nc_files = glob.glob(os.path.join(full_path, "*.nc"))
+                  if nc_files:
+                      print(f"     Found {len(nc_files)} .nc files")
+                      for nc in nc_files[:3]:
+                          print(f"       - {os.path.basename(nc)}")
+              elif item.endswith('.nc'):
+                  print(f"  📄 {item}")
+      else:
+          print(f"Directory does NOT exist: {base}")
+      
+      # Find all .nc files
+      print("\n=== All .nc files ===")
+      all_nc = glob.glob(os.path.join(base, "**", "*.nc"), recursive=True)
+      print(f"Total .nc files found: {len(all_nc)}")
+      for nc in all_nc[:10]:
+          print(f"  {nc}")
+          # Try to read header
+          try:
+              with Dataset(nc, 'r') as ds:
+                  print(f"    Dimensions: {list(ds.dimensions.keys())}")
+                  print(f"    Variables: {list(ds.variables.keys())[:5]}")
+          except Exception as e:
+              print(f"    Error reading: {e}")
+      EOF
+      
+      python /tmp/inspect.py
+      
+      echo ""
+      echo "To run inspection again:"
+      echo "  kubectl exec -it pvc-inspector-python -- python /tmp/inspect.py"
+      echo ""
+      echo "Or open a shell:"
+      echo "  kubectl exec -it pvc-inspector-python -- sh"
+      
+      tail -f /dev/null
+    volumeMounts:
+    - name: argo-workflow-volume
+      mountPath: /data
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+  volumes:
+  - name: argo-workflow-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+  restartPolicy: Never

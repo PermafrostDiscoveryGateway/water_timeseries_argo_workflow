@@ -13,16 +13,12 @@ import ee
 import glob
 import os
 import gc
-import shutil
 import psutil
-from water_timeseries.downloader import EarthEngineDownloader
 from water_timeseries.utils.spatial import create_longitude_latitude_grid, filter_gdf_by_bbox
-from water_timeseries.utils import io
 from water_timeseries.dataset import DWDataset
 from water_timeseries.breakpoint import NRTBreakpoint
 import datetime
-from region_boundaries import get_region_boundaries
-import download_new_dynamic_world_data
+from utils.region_boundaries import get_region_boundaries
 import json
 import resource
 
@@ -59,10 +55,47 @@ def close_and_clean(ds, name: str):
         gc.collect()
 
 
-def merge_zarr_chunked(ds_historical, combined_ds, output_path, chunk_size=250):
+def check_analysis_date_in_netcdf(netcdf_path: str, analysis_date: str) -> bool:
+    """
+    Check if the analysis date exists in the NetCDF file.
+
+    Args:
+        netcdf_path: Path to the NetCDF file
+        analysis_date: Date in YYYY-MM format
+
+    Returns:
+        True if the date exists, False otherwise
+    """
+    try:
+        with xr.open_dataset(netcdf_path) as ds:
+            if 'date' in ds.dims or 'date' in ds.coords:
+                # Get all dates in the dataset
+                dates = ds['date'].values
+                # Convert to string if they're datetime objects
+                if np.issubdtype(dates.dtype, np.datetime64):
+                    date_strings = pd.to_datetime(dates).strftime('%Y-%m')
+                else:
+                    date_strings = pd.to_datetime(dates).strftime('%Y-%m')
+
+                if analysis_date in date_strings:
+                    logger.info(f"Analysis date {analysis_date} found in NetCDF file")
+                    return True
+                else:
+                    logger.error(f"Analysis date {analysis_date} NOT found in NetCDF file")
+                    logger.info(f"Available dates in file: {sorted(set(date_strings))[:10]}...")
+                    return False
+            else:
+                logger.error("No 'date' dimension or coordinate found in NetCDF file")
+                return False
+    except Exception as e:
+        logger.error(f"Error checking NetCDF file: {e}")
+        return False
+
+
+def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250):
     """
     Merge historical and combined datasets in chunks.
-    Collects all chunks first then concatenates and writes to zarr file.
+    Collects all chunks first then concatenates and writes to file.
     """
     logger.info(f"Merging in chunks of {chunk_size} ids")
     log_memory_usage("Before chunked merge")
@@ -95,9 +128,11 @@ def merge_zarr_chunked(ds_historical, combined_ds, output_path, chunk_size=250):
     if merged_chunks:
         final_merged = xr.concat(merged_chunks, dim='id_geohash')
 
-        temp_output = output_path.with_suffix('.tmp.zarr')
+        encoding = {var: {'zlib': True, 'complevel': 5} for var in final_merged.data_vars}
 
-        io.save_xarray_dataset(final_merged, temp_output)
+        temp_output = output_path.with_suffix('.tmp.nc')
+
+        final_merged.to_netcdf(temp_output, encoding=encoding, mode='w')
 
         close_and_clean(final_merged, "final_merged")
         for chunk in merged_chunks:
@@ -105,18 +140,24 @@ def merge_zarr_chunked(ds_historical, combined_ds, output_path, chunk_size=250):
 
         if temp_output.exists():
             if output_path.exists():
-                shutil.rmtree(output_path)
+                output_path.unlink()
             temp_output.rename(output_path)
             logger.info(f"Successfully wrote merged file to {output_path}")
-            size_gb = sum(f.stat().st_size for f in output_path.rglob('*') if f.is_file()) / (1024 ** 3)
-            logger.info(f"File size: {size_gb:.2f} GB")
+            logger.info(f"File size: {output_path.stat().st_size / (1024 ** 3):.2f} GB")
     else:
         logger.error("No chunks were created, cannot merge")
 
     return output_path
 
 
-def main():
+def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
+    """
+    Run the water timeseries analysis for a specific region and analysis date.
+
+    Args:
+        REGION: Region name (e.g., "TEST")
+        ANALYSIS_DATE: Analysis date in YYYY-MM format (e.g., "2026-05")
+    """
     # Set thread limits
     # os.environ['OMP_NUM_THREADS'] = '1'
     # os.environ['MKL_NUM_THREADS'] = '1'
@@ -130,18 +171,15 @@ def main():
     start = datetime.datetime.now()
     logger.debug(f"Current time: {datetime.datetime.now()}")
 
-    if len(sys.argv) > 1:
-        env_path = sys.argv[1]
-        load_dotenv(dotenv_path=env_path)
-        logger.info(f"Loading environment from: {env_path}")
-    else:
-        load_dotenv()
-        logger.info("Loading environment from default .env file")
 
-    REGION_NAME = os.getenv("region_name", "TEST")
+    # Environment variables should already be loaded from .env file
+    REGION_NAME = REGION
+    start_year = str(int(os.getenv("START_YEAR", 2016)))
+    end_year = str(int(os.getenv("END_YEAR", 2025)))
+    CURRENT_RANGE = f"{start_year}_{end_year}"
 
     output_dir = os.environ['output_dir']
-    output_dir = os.path.join(output_dir, REGION_NAME)
+    output_dir = os.path.join(output_dir, REGION_NAME, CURRENT_RANGE,'historical')
     project = os.environ['project']
     EE_PROJECT_ID = project
     os.environ["EE_PROJECT"] = EE_PROJECT_ID
@@ -159,8 +197,6 @@ def main():
         logger.debug(f"Failed to initialize geemap: {e}")
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
-    dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
-    dynamic_world_download_dir.mkdir(exist_ok=True, parents=True)
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
 
     if not all_dynamic_world_files:
@@ -181,29 +217,17 @@ def main():
 
     most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
 
+    # Check if the analysis date exists in the NetCDF file
+    if not check_analysis_date_in_netcdf(most_recent_dynamic_world_file, ANALYSIS_DATE):
+        logger.error(f"Cannot proceed: Analysis date {ANALYSIS_DATE} not found in {most_recent_dynamic_world_file}")
+        sys.exit(1)
+
     hist_file_size_gb = get_file_size_gb(most_recent_dynamic_world_file)
     logger.info(f"Historical NetCDF file size: {hist_file_size_gb:.2f} GB")
-
-    missing_dates = download_new_dynamic_world_data.check_missing_data_in_netcdf(most_recent_dynamic_world_file)
-
-    # ========== NEW LOGIC: Handle missing dates ==========
-    if missing_dates:
-        logger.warning(f"Found {len(missing_dates)} missing dates in historical data")
-        for date in missing_dates:
-            missing_date_string = date.strftime("%Y-%m")
-            logger.warning(f"Missing date: {missing_date_string}")
-        logger.info("Will download missing data and run breakpoint analysis")
-        DOWNLOAD_REQUIRED = True
-    else:
-        logger.info("No missing dates found in historical data")
-        logger.info("Will run breakpoint analysis using existing data only (no download)")
-        DOWNLOAD_REQUIRED = False
 
     vector_lake_file = os.environ['vector_lake_file']
     path_historical_dw = most_recent_dynamic_world_file
     path_lake_vector = vector_lake_file
-
-    ANALYSIS_DATE = "2026-05"
 
     gdf = gpd.read_parquet(path_lake_vector)
     log_memory_usage("After loading lake vectors")
@@ -217,45 +241,32 @@ def main():
 
     bp = NRTBreakpoint()
 
-    current_breakpoint_dir = Path(output_dir) / REGION_NAME / f'breakpoint_{ANALYSIS_DATE}'
+    current_breakpoint_dir = Path(output_dir) / f'breakpoint_{ANALYSIS_DATE}'
     current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
     logger.debug(f"Current breakpoint directory: {current_breakpoint_dir}")
 
-    current_download_dir = Path(str(dynamic_world_download_dir), REGION_NAME, f'download_{ANALYSIS_DATE}')
-    current_download_dir.mkdir(exist_ok=True, parents=True)
-    logger.debug(f"Current download directory: {current_download_dir}")
-
-    if not hasattr(geemap, 'ee_initialize'):
-        logger.warning("geemap.ee_initialize missing, adding runtime patch")
-
-        def ee_initialize(project=None, **kwargs):
-            if project:
-                ee.Initialize(project=project, **kwargs)
-            else:
-                ee.Initialize(**kwargs)
-
-        geemap.ee_initialize = ee_initialize
-        logger.info("Runtime patch applied to geemap")
-
-    # Only initialize downloader if we need to download
-    if DOWNLOAD_REQUIRED:
-        downloader = EarthEngineDownloader(ee_project=EE_PROJECT_ID)
-    else:
-        downloader = None
-        logger.info("Downloader disabled - using only existing historical data")
-
     breaks_list = []
     total = len(grid[:])
-    partial_saved = False
 
-    # First, load historical dataset once to get valid IDs
-    logger.info("Loading historical dataset to check valid IDs...")
-    ds_historical_check = xr.open_dataset(path_historical_dw)
-    valid_historical_ids = set(ds_historical_check['id_geohash'].values)
-    ds_historical_check.close()
+    # First, load historical dataset once to get valid IDs and also get the data for analysis date
+    logger.info("Loading historical dataset to check valid IDs and extract analysis date data...")
+    ds_historical_full = xr.open_dataset(path_historical_dw)
+    valid_historical_ids = set(ds_historical_full['id_geohash'].values)
+
+    # Extract data for the specific analysis date from the historical dataset
+    # Assuming 'date' is a dimension in the dataset
+    try:
+        # Get the slice for the analysis date
+        ds_analysis_date = ds_historical_full.sel(date=ANALYSIS_DATE)
+        logger.info(f"Successfully extracted data for date {ANALYSIS_DATE}")
+    except (KeyError, ValueError) as e:
+        logger.error(f"Could not extract data for date {ANALYSIS_DATE}: {e}")
+        ds_historical_full.close()
+        sys.exit(1)
+
     logger.info(f"Found {len(valid_historical_ids)} valid IDs in historical dataset")
 
-    # run loop
+    # run loop - now using the pre-extracted analysis date data
     logger.debug(f"There are total {total} grid tiles for {REGION_NAME}")
     time.sleep(15)
     for i, (lon, lat) in enumerate(tqdm(grid[:], total=total, desc="Processing")):
@@ -267,7 +278,6 @@ def main():
 
         print(f"Run processing for bbox: {bbox_west} {bbox_east} {bbox_south} {bbox_north}")
 
-        outfile_download = current_download_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}.nc'
         outfile_breaks = current_breakpoint_dir / f'DW_{ANALYSIS_DATE}_{bbox_west}_{bbox_east}_{bbox_south}_{bbox_north}_breaks.parquet'
 
         if outfile_breaks.exists():
@@ -300,63 +310,46 @@ def main():
             # Also filter the gdf_subset to only keep valid IDs
             gdf_subset = gdf_subset[gdf_subset['id_geohash'].isin(id_list)]
 
-        # ========== NEW LOGIC: Handle download vs no-download cases ==========
-        if DOWNLOAD_REQUIRED:
-            # Download or load existing file
-            if not outfile_download.exists():
-                try:
-                    ds_dl = downloader.download_dw_monthly(gdf=gdf_subset, max_total_requests=2000, n_parallel=2,
-                                                           date_list=[ANALYSIS_DATE], save_to_file=outfile_download)
-                except ValueError as e:
-                    if "No data was extracted" in str(e):
-                        print(f"No data for {bbox_west} {bbox_south}")
-                        continue
-                    else:
-                        raise
+        # Subset the analysis date data for these IDs
+        ds_analysis_subset = ds_analysis_date.sel(id_geohash=id_list)
+
+        # Subset historical data for these IDs (full time series)
+        ds_historical_subset = ds_historical_full.sel(id_geohash=id_list)
+
+        # Merge and process - now using ds_analysis_subset instead of downloaded data
+        # Note: ds_analysis_subset is just the slice for the analysis date
+        # We need to merge it with the historical data properly
+        # Since ds_analysis_subset might have different dimensions, we'll need to align them
+
+        # Option 1: If ds_analysis_subset is just a slice, we can add it as a new variable
+        # or expand it to match dimensions. Here's a simple approach:
+        ds_merged = ds_historical_subset.copy()
+
+        # Add the analysis date data as a new data variable or replace the slice
+        # This depends on your exact data structure. Adjust as needed:
+        for var in ds_analysis_subset.data_vars:
+            if var in ds_merged.data_vars:
+                # If the variable exists, we might want to keep the full time series
+                # and just note that this is the analysis date
+                logger.debug(f"Variable {var} already exists in historical data")
             else:
-                print(f'Loading existing download for {bbox_west} {bbox_south}')
-                ds_dl = xr.open_dataset(outfile_download)
-        else:
-            # No download required - we'll use historical data only
-            # Create a dummy dataset with no new data, or simply use historical only
-            print(f'No download needed for {bbox_west} {bbox_south} - using historical data only')
-            # Create an empty dataset with the same structure but no new dates
-            ds_dl = None
+                # Add new variable from analysis date
+                ds_merged[var] = ds_analysis_subset[var]
 
-        # Load historical data for this tile
-        logger.info(f"Loading historical dataset for tile {i}...")
-        ds_historical = xr.open_dataset(path_historical_dw)
+        # Sort by date if needed
+        if 'date' in ds_merged.dims:
+            ds_merged = ds_merged.sortby('date')
 
-        # Subset historical data
-        ds_historical_subset = ds_historical.sel(id_geohash=id_list)
-
-        # Close historical immediately
-        ds_historical.close()
-        del ds_historical
-        gc.collect()
-
-        # ========== NEW LOGIC: Merge or use historical only ==========
-        if DOWNLOAD_REQUIRED and ds_dl is not None:
-            # Merge historical and new data
-            ds_merged = xr.merge([ds_historical_subset, ds_dl]).sortby('date')
-            # Clean up download dataset
-            ds_dl.close()
-            del ds_dl
-        else:
-            # Use only historical data
-            logger.info(f"No new data to merge for grid {bbox_west} {bbox_south} - using historical data only")
-            ds_merged = ds_historical_subset
-
-        # Create dataset and calculate breakpoints
         dwds = DWDataset(ds_merged)
+
         breaks = bp.calculate_break(dataset=dwds, analysis_date=ANALYSIS_DATE)
         breaks.to_parquet(outfile_breaks)
         breaks_list.append(breaks)
 
         # Clean up
-        ds_historical_subset.close()
-        ds_merged.close()
-        del ds_historical_subset, ds_merged
+        close_and_clean(ds_historical_subset, f"historical_subset_{i}")
+        close_and_clean(ds_analysis_subset, f"analysis_subset_{i}")
+        close_and_clean(ds_merged, f"merged_{i}")
         gc.collect()
 
         # Periodic save
@@ -377,50 +370,33 @@ def main():
         joined.to_parquet(path_to_joined_file)
         logger.info(f"Final combined file saved to {path_to_joined_file}")
 
+    # Close the full historical dataset
+    close_and_clean(ds_historical_full, "ds_historical_full")
+
+    # Clean up ds_analysis_date reference (already closed via ds_historical_full)
+
     end = datetime.datetime.now()
     logger.debug(f"Finished processing in {end - start}")
 
-    logger.info("Combining into Zarr file...")
+    logger.info("Analysis completed successfully")
 
-    downloaded_files = sorted(glob.glob(str(current_download_dir / f'DW_{ANALYSIS_DATE}_*.nc')))
-    output_zarr = Path(output_dir) / f'lakes_dw_Vd2_{ANALYSIS_DATE}.zarr'
-    logger.debug(f"Output zarr file being saved to {output_zarr}")
 
-    combined = None
-    ds_historical = None
-    if downloaded_files:
-        ds_historical = xr.open_dataset(most_recent_dynamic_world_file)
+def main():
+    """Main function that loads .env and calls the analysis function"""
+    # Load environment variables
+    if len(sys.argv) > 1:
+        env_path = sys.argv[1]
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
 
-        BATCH_SIZE = 2
+    # Call the analysis function with sample parameters
+    REGION = "TEST"
+    ANALYSIS_DATE = "2024-06-01"
 
-        for batch_idx in tqdm(range(0, len(downloaded_files), BATCH_SIZE), desc="Processing batches"):
-            batch_files = downloaded_files[batch_idx:batch_idx + BATCH_SIZE]
-            batch_datasets = []
-
-            for nc_file in batch_files:
-                ds = xr.open_dataset(nc_file)
-                batch_datasets.append(ds)
-
-            batch_combined = xr.concat(batch_datasets, dim='id_geohash')
-            _, unique_idx = np.unique(batch_combined['id_geohash'].values, return_index=True)
-            batch_combined = batch_combined.isel(id_geohash=np.sort(unique_idx))
-
-            if combined is None:
-                combined = batch_combined
-            else:
-                combined = xr.concat([combined, batch_combined], dim='id_geohash')
-                _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
-                combined = combined.isel(id_geohash=np.sort(unique_idx))
-
-            for ds in batch_datasets:
-                ds.close()
-            gc.collect()
-
-    if combined is not None and ds_historical is not None:
-        merge_zarr_chunked(ds_historical, combined, output_zarr, chunk_size=250)
-        ds_historical.close()
-
-    logger.info("Script completed successfully")
+    run_water_timeseries_analysis(REGION, ANALYSIS_DATE)
 
 
 if __name__ == '__main__':

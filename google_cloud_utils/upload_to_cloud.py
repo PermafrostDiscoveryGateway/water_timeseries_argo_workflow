@@ -1,140 +1,186 @@
-#!/usr/bin/env python3
-"""
-Google Cloud Storage Upload Script
-
-Usage:
-    python upload_to_gcs.py <source_bucket> <gcp_project> <local_path> <gcs_destination_path>
-
-Examples:
-    # Upload a single file
-    python upload_to_gcs.py my-bucket my-project /local/file.txt folder/subfolder/file.txt
-
-    # Upload a directory (all contents recursively)
-    python upload_to_gcs.py my-bucket my-project /local/directory/ folder/subfolder/
-"""
-
-import os
 import sys
-import argparse
 from pathlib import Path
+from dotenv import load_dotenv
+import os
+from loguru import logger
 from google.cloud import storage
-from google.api_core.exceptions import GoogleAPIError
+from google.auth import default
+
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 
-def initialize_gcs_client(project_id):
-    """Initialize and return Google Cloud Storage client."""
+def get_storage_client():
+    """Get authenticated storage client using application default credentials"""
     try:
-        # The client will use default credentials from environment
-        # Set GOOGLE_APPLICATION_CREDENTIALS env var or run: gcloud auth application-default login
-        client = storage.Client(project=project_id)
-        return client
+        creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+
+        if creds_path and os.path.exists(creds_path):
+            logger.info(f"Using credentials from: {creds_path}")
+            credentials, project = default()
+            client = storage.Client(
+                credentials=credentials,
+                project=os.environ.get('EE_PROJECT', 'pdg-project-406720')
+            )
+            logger.info("✅ Storage client created successfully")
+            return client
+        else:
+            logger.error(f"Credentials file not found at: {creds_path}")
+            return None
+
     except Exception as e:
-        print(f"Error initializing GCS client: {e}")
-        print("\nMake sure you have authenticated. Run:")
-        print("  gcloud auth application-default login")
-        print("Or set GOOGLE_APPLICATION_CREDENTIALS environment variable.")
-        sys.exit(1)
+        logger.error(f"Failed to create storage client: {e}")
+        return None
 
 
-def upload_file(bucket, source_path, destination_blob_name):
-    """Upload a single file to GCS."""
+def sync_breakpoint_zarr_dirs_to_gcs(base_output_dir: str, bucket_name: str, path_to_cloud_folder: str,
+                                     dry_run: bool = False):
+    """
+    Sync only breakpoint_zarr directories from local to GCS
+
+    Args:
+        base_output_dir: Base output directory (e.g., '/data/water_timeseries/output')
+        bucket_name: GCS bucket name
+        path_to_cloud_folder: Cloud folder path (e.g., 'water-timeseries-v2/data/output')
+        dry_run: If True, show what would happen without actually syncing
+    """
+    client = get_storage_client()
+    if not client:
+        return False
+
     try:
-        blob = bucket.blob(destination_blob_name)
-        blob.upload_from_filename(source_path)
-        print(f"✓ Uploaded file: {source_path} -> gs://{bucket.name}/{destination_blob_name}")
-        return True
+        bucket = client.bucket(bucket_name)
+
+        # Verify bucket exists and is accessible
+        if not bucket.exists():
+            logger.error(f"Bucket {bucket_name} does not exist or is not accessible")
+            return False
+
+        logger.info(f"Connected to bucket: {bucket_name}")
+
+        # Walk through local directory and find breakpoint_zarr directories
+        base_dir = Path(base_output_dir)
+        if not base_dir.exists():
+            logger.error(f"Base output directory {base_output_dir} does not exist")
+            return False
+
+        # Find all breakpoint_zarr directories
+        breakpoint_dirs = []
+        for path in base_dir.rglob('*'):
+            if path.is_dir() and path.name == 'breakpoint_zarr':
+                breakpoint_dirs.append(path)
+
+        if not breakpoint_dirs:
+            logger.warning("No breakpoint_zarr directories found")
+            return True
+
+        logger.info(f"Found {len(breakpoint_dirs)} breakpoint_zarr directories to sync")
+
+        # Process each breakpoint_zarr directory
+        uploaded_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        for local_zarr_dir in breakpoint_dirs:
+            # Get the relative path from base_dir
+            rel_path = local_zarr_dir.relative_to(base_dir)
+            # This will be something like 'ALASKA/breakpoint_zarr' or 'CANADA/breakpoint_zarr'
+            cloud_dir = f"{path_to_cloud_folder}/{rel_path}"
+
+            logger.info(f"Syncing: {local_zarr_dir} -> gs://{bucket_name}/{cloud_dir}")
+
+            # Walk through files in this breakpoint_zarr directory
+            for file_path in local_zarr_dir.rglob('*'):
+                if not file_path.is_file():
+                    continue
+
+                # Get relative path from the breakpoint_zarr directory
+                file_rel_path = file_path.relative_to(local_zarr_dir)
+                blob_path = f"{cloud_dir}/{file_rel_path}"
+
+                if dry_run:
+                    logger.info(f"[DRY RUN] Would upload: {file_rel_path}")
+                    uploaded_count += 1
+                    continue
+
+                blob = bucket.blob(blob_path)
+
+                # Check if file already exists
+                if blob.exists():
+                    # Could check if file size matches or content has changed
+                    skipped_count += 1
+                    continue
+
+                try:
+                    logger.info(f"Uploading: {file_rel_path}")
+                    blob.upload_from_filename(str(file_path))
+                    uploaded_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to upload {file_rel_path}: {e}")
+                    error_count += 1
+
+        logger.info(f"Sync summary: Uploaded {uploaded_count}, Skipped {skipped_count}, Errors {error_count}")
+
+        if dry_run:
+            logger.info(f"[DRY RUN] Would have uploaded {uploaded_count} files")
+
+        return error_count == 0
+
     except Exception as e:
-        print(f"✗ Failed to upload {source_path}: {e}")
+        logger.error(f"Error during sync: {e}")
         return False
-
-
-def upload_directory(bucket, source_dir, destination_prefix):
-    """Upload all contents of a directory recursively to GCS."""
-    source_path = Path(source_dir)
-
-    if not source_path.exists():
-        print(f"Error: Directory does not exist: {source_dir}")
-        return False
-
-    if not source_path.is_dir():
-        print(f"Error: Not a directory: {source_dir}")
-        return False
-
-    uploaded_count = 0
-    failed_count = 0
-
-    # Walk through all files in the directory
-    for root, dirs, files in os.walk(source_dir):
-        for file_name in files:
-            local_file_path = os.path.join(root, file_name)
-
-            # Calculate relative path to preserve directory structure
-            relative_path = os.path.relpath(local_file_path, source_dir)
-
-            # Construct destination path
-            if destination_prefix and not destination_prefix.endswith('/'):
-                destination_prefix += '/'
-            destination_blob = os.path.join(destination_prefix, relative_path).replace('\\', '/')
-
-            # Upload the file
-            if upload_file(bucket, local_file_path, destination_blob):
-                uploaded_count += 1
-            else:
-                failed_count += 1
-
-    print(f"\n📊 Upload summary: {uploaded_count} files uploaded, {failed_count} failed")
-    return failed_count == 0
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Upload a file or directory to Google Cloud Storage',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
+    logger.debug("Checking if we should upload anything to cloud")
+
+    if len(sys.argv) > 1:
+        env_path = sys.argv[1]
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
+
+    # Get environment variables
+    output_dir = os.environ.get('output_dir')
+    project = os.environ.get('project')
+
+    if not output_dir:
+        logger.error("output_dir environment variable not set")
+        return
+
+    if not project:
+        logger.error("project environment variable not set")
+        return
+
+    # Verify output directory exists
+    if not Path(output_dir).exists():
+        logger.error(f"Output directory {output_dir} does not exist")
+        return
+
+    # Set environment variables
+    os.environ["EE_PROJECT"] = project
+    os.environ["CLOUDSDK_CORE_PROJECT"] = project
+
+    bucket_name = 'pdg-storage-default'
+    path_to_cloud_folder = 'water-timeseries-v2/data/output'
+
+    # Sync only breakpoint_zarr directories to cloud
+    logger.info(f"Syncing breakpoint_zarr directories from {output_dir} to gs://{bucket_name}/{path_to_cloud_folder}")
+
+    success = sync_breakpoint_zarr_dirs_to_gcs(
+        base_output_dir=output_dir,
+        bucket_name=bucket_name,
+        path_to_cloud_folder=path_to_cloud_folder,
+        dry_run=False  # Set to True to preview changes
     )
 
-    parser.add_argument('source_bucket', help='Name of the GCS bucket')
-    parser.add_argument('gcp_project', help='Google Cloud Project ID')
-    parser.add_argument('local_path', help='Local path to a file or directory')
-    parser.add_argument('gcs_destination_path', help='Destination path in the bucket (can include folders)')
-
-    args = parser.parse_args()
-
-    # Validate local path exists
-    local_path = Path(args.local_path)
-    if not local_path.exists():
-        print(f"Error: Local path does not exist: {args.local_path}")
-        sys.exit(1)
-
-    # Initialize GCS client
-    print(f"Connecting to Google Cloud project: {args.gcp_project}")
-    client = initialize_gcs_client(args.gcp_project)
-
-    # Get the bucket
-    try:
-        bucket = client.bucket(args.source_bucket)
-        # Check if bucket exists
-        if not bucket.exists():
-            print(f"Error: Bucket '{args.source_bucket}' does not exist or you don't have access")
-            sys.exit(1)
-        print(f"✓ Connected to bucket: {args.source_bucket}")
-    except GoogleAPIError as e:
-        print(f"Error accessing bucket: {e}")
-        sys.exit(1)
-
-    # Determine if local path is a file or directory
-    if local_path.is_file():
-        print(f"Uploading single file: {args.local_path}")
-        success = upload_file(bucket, str(local_path), args.gcs_destination_path)
-    elif local_path.is_dir():
-        print(f"Uploading directory contents: {args.local_path}")
-        print(f"Destination prefix: {args.gcs_destination_path}")
-        success = upload_directory(bucket, str(local_path), args.gcs_destination_path)
+    if success:
+        logger.info("Sync complete!")
     else:
-        print(f"Error: Local path is neither a file nor directory: {args.local_path}")
-        sys.exit(1)
-
-    sys.exit(0 if success else 1)
+        logger.error("Sync failed!")
 
 
 if __name__ == "__main__":
