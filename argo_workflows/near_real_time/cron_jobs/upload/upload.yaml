@@ -89,7 +89,7 @@ spec:
           archive:
             none: {}
       container:
-        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:43-make-sure-results-are-both-in-zarr-and-parquet
         imagePullPolicy: Always
         resources:
           requests:
