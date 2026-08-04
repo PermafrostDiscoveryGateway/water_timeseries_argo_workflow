@@ -319,6 +319,10 @@ def main():
         months=months
     )
 
+    if not dates_to_process:
+        logger.error("No dates generated for the given start/end/months configuration")
+        return {'success': False, 'error': 'No dates to process'}
+
     logger.info(f"Generated {len(dates_to_process)} dates to process")
     logger.info(f"Date range: {dates_to_process[0]} to {dates_to_process[-1]}")
     logger.info(f"Months included: {months}")
