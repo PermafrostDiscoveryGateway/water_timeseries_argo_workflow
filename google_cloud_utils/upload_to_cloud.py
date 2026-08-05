@@ -106,11 +106,13 @@ def sync_breakpoint_zarr_dirs_to_gcs(base_output_dir: str, bucket_name: str, pat
 
                 blob = bucket.blob(blob_path)
 
-                # Check if file already exists
+                # Check if file already exists and is fully uploaded (not larger on disk,
+                # which would indicate a previous upload was interrupted partway through)
                 if blob.exists():
-                    # Could check if file size matches or content has changed
-                    skipped_count += 1
-                    continue
+                    blob.reload()
+                    if file_path.stat().st_size <= blob.size:
+                        skipped_count += 1
+                        continue
 
                 try:
                     logger.info(f"Uploading: {file_rel_path}")
@@ -190,10 +192,13 @@ def sync_breakpoint_parquet_files_to_gcs(base_output_dir: str, bucket_name: str,
 
             blob = bucket.blob(blob_path)
 
-            # Check if file already exists
+            # Check if file already exists and is fully uploaded (not larger on disk,
+            # which would indicate a previous upload was interrupted partway through)
             if blob.exists():
-                skipped_count += 1
-                continue
+                blob.reload()
+                if local_file.stat().st_size <= blob.size:
+                    skipped_count += 1
+                    continue
 
             try:
                 logger.info(f"Uploading: {rel_path}")
