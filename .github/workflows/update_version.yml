@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - 43-make-sure-results-are-both-in-zarr-and-parquet
   workflow_dispatch:
     inputs:
       tag:
