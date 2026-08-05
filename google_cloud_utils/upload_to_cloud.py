@@ -238,6 +238,7 @@ def main():
     # Get environment variables
     output_dir = os.environ.get('output_dir')
     project = os.environ.get('project')
+    dry_run = os.environ.get('dry_run', True)
 
     if not output_dir:
         logger.error("output_dir environment variable not set")
@@ -266,11 +267,11 @@ def main():
         base_output_dir=output_dir,
         bucket_name=bucket_name,
         path_to_cloud_folder=path_to_cloud_folder,
-        dry_run=False  # Set to True to preview changes
+        dry_run=dry_run  # Set to True to preview changes
     )
 
     # Also sync the final parquet backup (drain_<date>.parquet) files
-    logger.info(f"Syncing drain_*.parquet files from {output_dir} to gs://{bucket_name}/{path_to_cloud_folder}")
+    logger.info(f"Syncing final drain_*.parquet files from {output_dir} to gs://{bucket_name}/{path_to_cloud_folder}")
 
     parquet_success = sync_breakpoint_parquet_files_to_gcs(
         base_output_dir=output_dir,
