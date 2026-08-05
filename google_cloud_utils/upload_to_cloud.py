@@ -1,3 +1,4 @@
+import re
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
@@ -166,9 +167,12 @@ def sync_breakpoint_parquet_files_to_gcs(base_output_dir: str, bucket_name: str,
             logger.error(f"Base output directory {base_output_dir} does not exist")
             return False
 
+        drain_monthly_pattern = re.compile(r'^drain_\d{4}-\d{2}\.parquet$')
         parquet_files = [
             path for path in base_dir.rglob('drain_*.parquet')
             if path.is_file()
+            and drain_monthly_pattern.match(path.name)
+            and 'partial' not in path.name
         ]
 
         if not parquet_files:
