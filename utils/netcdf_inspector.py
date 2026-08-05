@@ -275,12 +275,11 @@ def quick_look(file_path: str):
 
 if __name__ == "__main__":
     import sys
-    file_path = '/Users/helium/Desktop/dynamic_world/data/lakes_dw_V2d_compressed.nc'
     # Use command line argument or prompt
-    # if len(sys.argv) > 1:
-    #     file_path = sys.argv[1]
-    # else:
-    #     file_path = input("Enter path to NetCDF file: ")
+    if len(sys.argv) > 1:
+        file_path = sys.argv[1]
+    else:
+        file_path = input("Enter path to NetCDF file: ")
 
     # Full inspection
     inspect_netcdf(file_path, verbose=True)
