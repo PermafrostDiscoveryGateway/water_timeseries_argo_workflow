@@ -29,13 +29,13 @@ logger.add(sys.stderr, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <leve
 RUN_PRODUCTION = True 
 
 dataset_path_large = Path(
-    "/isipd/projects/Response/GIS_RS_projects/Ingmar_other/drainage_analysis2/data/lakes_dw_V2d_2016-2026-06_gapfilled_chunked.zarr"
+    "/Users/helium/Desktop/dynamic_world/lakes_dw_V2d_2016-2026-06_gapfilled_chunked.zarr"
 )
 
-data_dir_newData = Path("/isipd/projects/Response/GIS_RS_projects/Ingmar_other/water-timeseries-v2/output/NRT/NRT_5x2_2026-07_2026-07-31")
+data_dir_newData = Path("/Users/helium/Desktop/dynamic_world/output/NRT/NRT_5x2_2026-07_2026-07-31")
 
 OUTPUT_BASENAME = "lakes_dw_V2d_2016-2026-07"
-OUTPUT_LOCAL_DIR = Path("/isipd/projects/Response/GIS_RS_projects/Ingmar_other/drainage_analysis2/data")
+OUTPUT_LOCAL_DIR = Path("/Users/helium/Desktop/dynamic_world/drainage_analysis2/data")
 OUTPUT_GS_BUCKET = "gs://pdg-storage-default/workflows_optimization/lake_change_detection"
 
 output_path_local_nc = OUTPUT_LOCAL_DIR / f"{OUTPUT_BASENAME}.nc"
