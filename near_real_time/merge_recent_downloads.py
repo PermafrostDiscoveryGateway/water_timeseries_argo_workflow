@@ -181,6 +181,46 @@ def merge_new_results(
 # =============================================================================
 # FAST VECTORIZED VERIFICATION
 # =============================================================================
+_HISTORICAL_VALID_IDS_CACHE = {}
+
+
+def _get_historical_valid_ids(dynamic_world_data_dir: str = None):
+    """
+    Load the id_geohash set from the most recent historical NetCDF file.
+
+    download_near_real_time_region_dates() (utils/helper_functions.py) only
+    downloads lakes that are already present in this historical baseline,
+    even when they fall inside a region's bounding box. Verification must
+    restrict its "expected IDs" to this same set, otherwise it counts lakes
+    that were never eligible for download as "missing".
+    """
+    if dynamic_world_data_dir is None:
+        dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+
+    if not dynamic_world_data_dir:
+        return None
+
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    if not all_dynamic_world_files:
+        return None
+
+    historical_file = max(all_dynamic_world_files, key=os.path.getctime)
+
+    if historical_file in _HISTORICAL_VALID_IDS_CACHE:
+        return _HISTORICAL_VALID_IDS_CACHE[historical_file]
+
+    try:
+        ds_historical = xr.open_dataset(historical_file)
+        valid_ids = set(ds_historical['id_geohash'].values)
+        ds_historical.close()
+    except Exception as e:
+        logger.warning(f"Could not load historical valid IDs from {historical_file}: {e}")
+        return None
+
+    _HISTORICAL_VALID_IDS_CACHE[historical_file] = valid_ids
+    return valid_ids
+
+
 def verify_region_data_vectorized(
         region: str,
         date_to_check: str,
@@ -263,6 +303,26 @@ def verify_region_data_vectorized(
         if not region_ids:
             ds.close()
             return {'success': False, 'error': f'No IDs found for region {region}'}
+
+        # Restrict to IDs that were actually eligible for download (present in
+        # the historical baseline dataset). The download step applies this
+        # same filter, so bounding-box lakes outside the baseline are never
+        # fetched and shouldn't be counted as "missing" here.
+        historical_valid_ids = _get_historical_valid_ids()
+        if historical_valid_ids is not None:
+            original_count = len(region_ids)
+            region_ids = [id_val for id_val in region_ids if id_val in historical_valid_ids]
+            excluded_count = original_count - len(region_ids)
+            if excluded_count > 0:
+                logger.debug(
+                    f"Excluded {excluded_count:,} bounding-box IDs not in historical baseline for {region}")
+        else:
+            logger.warning(
+                "Could not load historical valid IDs; verification may overcount expected IDs")
+
+        if not region_ids:
+            ds.close()
+            return {'success': False, 'error': f'No downloadable IDs found for region {region} (after historical-baseline filter)'}
 
         total_region_ids = len(region_ids)
         logger.info(f"Region {region} has {total_region_ids:,} IDs")
