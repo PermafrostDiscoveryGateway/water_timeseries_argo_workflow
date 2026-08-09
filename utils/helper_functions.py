@@ -575,6 +575,13 @@ def generate_expected_dates(
     return dates
 
 
+# Threshold for accepting a single grid tile's download as "complete" even
+# when a few requested lakes never come back (chronic per-feature GEE
+# errors). Matches COMPLETION_THRESHOLD/ACCEPTABLE_MERGE_THRESHOLD in
+# near_real_time/merge_recent_downloads.py.
+TILE_COMPLETION_THRESHOLD = 0.99
+
+
 def download_near_real_time_region_dates(
         region: str = "TEST",
         run_start_label: str = None,
@@ -856,6 +863,44 @@ def download_near_real_time_region_dates(
                 )
 
                 if ds_dl is not None:
+                    # ========== VERIFY ALL REQUESTED LAKES CAME BACK ==========
+                    # download_dw_monthly can return a non-None dataset that's
+                    # missing some of the requested lakes (e.g. per-feature GEE
+                    # errors/timeouts within the tile). Without this check the
+                    # tile is marked "successful" and, since the output file
+                    # now exists with content, the skip-if-exists check above
+                    # means it is never retried again.
+                    downloaded_ids = set(ds_dl['id_geohash'].values.tolist())
+                    expected_ids = set(id_list)
+                    missing_in_tile = expected_ids - downloaded_ids
+                    tile_completion_pct = len(downloaded_ids) / len(expected_ids) if expected_ids else 1.0
+
+                    # A small residual of chronically-unavailable lakes (GEE
+                    # errors that never clear) should not be retried forever.
+                    # Accept >=99% per tile, matching the region-level
+                    # COMPLETION_THRESHOLD/ACCEPTABLE_MERGE_THRESHOLD used
+                    # downstream in merge_recent_downloads.py.
+                    if missing_in_tile and tile_completion_pct < TILE_COMPLETION_THRESHOLD:
+                        print(
+                            f'WARNING: Grid {bbox_west} {bbox_south} returned {len(downloaded_ids)}/{len(expected_ids)} '
+                            f'requested lakes ({len(missing_in_tile)} missing, {tile_completion_pct:.2%} complete, '
+                            f'below {TILE_COMPLETION_THRESHOLD:.0%} threshold) - treating as failed so it is retried')
+                        ds_dl.close()
+                        del ds_dl
+                        try:
+                            outfile_download.unlink()
+                        except Exception as e:
+                            logger.warning(f"Could not remove incomplete file {outfile_download}: {e}")
+                        date_results['failed_bbox_downloads'] += 1
+                        with open(outfile_downloads_failed_file, 'a') as f:
+                            f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+                        continue
+                    elif missing_in_tile:
+                        print(
+                            f'NOTE: Grid {bbox_west} {bbox_south} returned {len(downloaded_ids)}/{len(expected_ids)} '
+                            f'requested lakes ({tile_completion_pct:.2%} complete, >= {TILE_COMPLETION_THRESHOLD:.0%} '
+                            f'threshold) - accepting as complete')
+
                     download_successful = True
                     if should_overwrite:
                         print(f'Successfully re-downloaded data for {bbox_west} {bbox_south} (overwrote empty file)')
