@@ -128,7 +128,7 @@ def main():
     region_boundaries = get_region_boundaries()
     if REGION not in region_boundaries:
         logger.error(f"Region '{REGION}' not found in boundaries! Available: {list(region_boundaries.keys())}")
-        return
+        return 1
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
@@ -147,7 +147,7 @@ def main():
 
     if not SHOULD_RUN:
         logger.debug("Too early in the month to run - exiting")
-        return
+        return 0
 
     date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
     logger.info(f"Backfilling missing IDs for {REGION} / {date_to_run}")
@@ -156,7 +156,7 @@ def main():
     merged_file_path = os.path.join(dynamic_world_data_dir, 'merge', f"dw_{REGION}_{date_to_run}.nc")
     if not Path(merged_file_path).exists():
         logger.error(f"No merged file found at {merged_file_path} - run the regular merge job first")
-        return
+        return 1
 
     ds_merged = xr.open_dataset(merged_file_path)
     ids_in_merged_file = normalize_id_set(ds_merged['id_geohash'].values.tolist())
@@ -190,7 +190,7 @@ def main():
 
     if not missing_ids:
         logger.info(f"✅ No missing IDs left for {REGION} / {date_to_run} - nothing to backfill")
-        return
+        return 0
 
     logger.info(f"Need to backfill {len(missing_ids):,} missing lake IDs for {REGION} / {date_to_run}")
 
@@ -283,15 +283,24 @@ def main():
             f"({completion_pct:.2%}) - keeping")
         total_recovered += len(downloaded_ids)
 
+    still_missing = len(missing_ids) - total_recovered
+
     logger.info(f"\n{'=' * 80}")
     logger.info(f"BACKFILL SUMMARY for {REGION} / {date_to_run}")
     logger.info(f"{'=' * 80}")
     logger.info(f"Missing before this run: {len(missing_ids):,}")
     logger.info(f"Recovered this run: {total_recovered:,}")
     logger.info(f"Discarded (below threshold, will retry next run): {total_discarded:,}")
-    logger.info(f"Still missing: {len(missing_ids) - total_recovered:,}")
+    logger.info(f"Still missing: {still_missing:,}")
     logger.info("Run the regular merge job again to fold these into the merged file.")
+
+    if still_missing > 0:
+        logger.error(f"❌ {still_missing:,} lakes still missing for {REGION} / {date_to_run} - run again to retry")
+        return 1
+
+    logger.info(f"✅ All missing lakes recovered for {REGION} / {date_to_run}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
