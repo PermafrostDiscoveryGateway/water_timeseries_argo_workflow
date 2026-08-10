@@ -1,6 +1,8 @@
 import download_region
 import merge_recent_downloads
+from google_cloud_utils import upload_to_cloud
 import process_NRT
+import create_new_historical_file
 from loguru import logger
 
 def load_env_file(env_path):
@@ -66,11 +68,11 @@ def run_scripts_with_env():
     logger.debug(process_result)
 
     logger.debug(f"Running upload with dry_run = True")
+    os.environ['dry_run'] = 'True'
+    upload_result = upload_to_cloud.main()
+    logger.debug(upload_result)
 
     logger.debug(f"Creating new historical file with recent data")
-
-
-
 
 
 if  __name__ == "__main__":
