@@ -883,7 +883,7 @@ def main():
 
     if not SHOULD_RUN:
         logger.debug(f"Too early in the month to run downloads - exiting")
-        return
+        return {'success': True, 'skipped': True, 'reason': 'Too early in the month to run'}
 
     # ========== Prepare date to run ==========
     date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
@@ -1050,8 +1050,18 @@ def main():
     logger.info("SCRIPT COMPLETED")
     logger.info("=" * 80)
 
-    sys.exit(0 if failure_count == 0 else 1)
+    return {
+        'success': failure_count == 0,
+        'date': date_to_run,
+        'success_count': success_count,
+        'partial_count': partial_count,
+        'skipped_count': skipped_count,
+        'failure_count': failure_count,
+        'region_files': region_files,
+        'results': results,
+    }
 
 
 if __name__ == "__main__":
-    main()
+    main_result = main()
+    sys.exit(0 if main_result is None or main_result.get('success', True) else 1)

@@ -8,6 +8,7 @@ import os
 import glob
 from typing import List, Optional, Dict, Any
 import zarr
+from zarr.core.sync import cleanup_resources as _cleanup_zarr_sync_resources
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -3336,6 +3337,11 @@ def create_final_zarr_from_incremental(
             'analysis_source': analysis_source,
             'total_ids': total_ids
         })
+        # Reset zarr's cached background event loop before writing: some runners
+        # (e.g. PyCharm's debugger injecting its own asyncio loop into the process)
+        # leave a stale loop reference that causes "attached to a different loop"
+        # RuntimeErrors from zarr's async write path.
+        _cleanup_zarr_sync_resources()
         empty_ds.to_zarr(zarr_path, mode='w')
         empty_ds.close()
         return {
@@ -3374,6 +3380,11 @@ def create_final_zarr_from_incremental(
                 'analysis_source': analysis_source,
                 'total_ids': total_ids
             })
+            # Reset zarr's cached background event loop before writing: some runners
+            # (e.g. PyCharm's debugger injecting its own asyncio loop into the process)
+            # leave a stale loop reference that causes "attached to a different loop"
+            # RuntimeErrors from zarr's async write path.
+            _cleanup_zarr_sync_resources()
             empty_ds.to_zarr(zarr_path, mode='w')
             empty_ds.close()
             return {
@@ -3450,6 +3461,11 @@ def create_final_zarr_from_incremental(
         })
 
         # Write to Zarr
+        # Reset zarr's cached background event loop before writing: some runners
+        # (e.g. PyCharm's debugger injecting its own asyncio loop into the process)
+        # leave a stale loop reference that causes "attached to a different loop"
+        # RuntimeErrors from zarr's async write path.
+        _cleanup_zarr_sync_resources()
         ds_breaks.to_zarr(zarr_path, mode='w', consolidated=True)
         logger.info(f"   ✅ Zarr saved successfully")
 
@@ -3524,6 +3540,11 @@ def create_final_zarr_from_incremental_2(
             'analysis_source': analysis_source,
             'total_ids': total_ids
         })
+        # Reset zarr's cached background event loop before writing: some runners
+        # (e.g. PyCharm's debugger injecting its own asyncio loop into the process)
+        # leave a stale loop reference that causes "attached to a different loop"
+        # RuntimeErrors from zarr's async write path.
+        _cleanup_zarr_sync_resources()
         empty_ds.to_zarr(zarr_path, mode='w')
         empty_ds.close()
         return {
@@ -3559,6 +3580,11 @@ def create_final_zarr_from_incremental_2(
                 'analysis_source': analysis_source,
                 'total_ids': total_ids
             })
+            # Reset zarr's cached background event loop before writing: some runners
+            # (e.g. PyCharm's debugger injecting its own asyncio loop into the process)
+            # leave a stale loop reference that causes "attached to a different loop"
+            # RuntimeErrors from zarr's async write path.
+            _cleanup_zarr_sync_resources()
             empty_ds.to_zarr(zarr_path, mode='w')
             empty_ds.close()
             return {
@@ -3584,6 +3610,11 @@ def create_final_zarr_from_incremental_2(
             'breakpoints_found': len(breaks_merged)
         })
 
+        # Reset zarr's cached background event loop before writing: some runners
+        # (e.g. PyCharm's debugger injecting its own asyncio loop into the process)
+        # leave a stale loop reference that causes "attached to a different loop"
+        # RuntimeErrors from zarr's async write path.
+        _cleanup_zarr_sync_resources()
         ds_breaks.to_zarr(zarr_path, mode='w')
         logger.info(f"   ✅ Zarr saved successfully")
 
