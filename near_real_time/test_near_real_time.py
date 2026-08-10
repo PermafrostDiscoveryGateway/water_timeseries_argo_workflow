@@ -1,8 +1,6 @@
-import subprocess
-import sys
-import os
-import test
 import download_region
+import merge_recent_downloads
+import process_NRT
 from loguru import logger
 
 def load_env_file(env_path):
@@ -44,12 +42,32 @@ def run_scripts_with_env():
     env.update(env_vars)
     logger.info(f"=== ENV VARS: {env_vars} for testing")
 
-    # logger.debug("Running download region for region TEST")
-    # download_region.main()
+    logger.debug("Running download region for region TEST")
+    download_test_result = download_region.main()
+    logger.debug(download_test_result)
 
     logger.debug("Running download region for region EURASIA3")
-    env['region_name'] = 'EURASIA3'
-    download_region.main()
+    os.environ['region_name'] = 'EURASIA3'
+    download_region_result = download_region.main()
+    logger.debug(download_region_result)
+
+    logger.debug(f"Mering the partial downloads files for the test regions")
+    merge_result = merge_recent_downloads.main()
+    logger.debug(merge_result)
+
+    logger.debug(f"Running process_NRT for TEST")
+    os.environ['region_name'] = 'TEST'
+    process_result = process_NRT.main()
+    logger.debug(process_result)
+
+    logger.debug(f"Running process_NRT for EURASIA3")
+    os.environ['region_name'] = 'EURASIA3'
+    process_result = process_NRT.main()
+    logger.debug(process_result)
+
+    logger.debug(f"Running upload with dry_run = True")
+
+    logger.debug(f"Creating new historical file with recent data")
 
 
 
