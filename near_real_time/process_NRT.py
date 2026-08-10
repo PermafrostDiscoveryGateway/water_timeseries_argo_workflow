@@ -290,6 +290,8 @@ def main():
         return {'success': False, 'error': 'No .nc files found'}
 
     original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+    logger.debug(f"Most recent dynamic world file: {original_most_recent_dynamic_world_file}")
+    time.sleep(300)
     logger.debug(f"Dates in the historical file")
     debug_historical_dates(historical_file_path=original_most_recent_dynamic_world_file)
 
