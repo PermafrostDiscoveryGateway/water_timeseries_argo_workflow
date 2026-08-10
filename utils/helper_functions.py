@@ -1627,6 +1627,7 @@ def process_region_date_new_fast_NRT(
         merge_dir = Path(dynamic_world_data_dir) / 'merge'
         nc_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
         historical_file = max(nc_files, key=os.path.getmtime)
+        logger.debug(f"Using historical file {historical_file}")
         new_data_file = merge_dir / f"dw_{region}_{analysis_date}.nc"
         vector_lake_file = os.environ.get('vector_lake_file')
 
