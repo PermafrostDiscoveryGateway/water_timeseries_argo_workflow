@@ -73,6 +73,8 @@ def run_scripts_with_env():
     logger.debug(upload_result)
 
     logger.debug(f"Creating new historical file with recent data")
+    new_historical_file_result = create_new_historical_file.main()
+    logger.debug(new_historical_file_result)
 
 
 if  __name__ == "__main__":
