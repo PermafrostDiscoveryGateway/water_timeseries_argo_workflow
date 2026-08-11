@@ -270,6 +270,51 @@ def _get_historical_valid_ids(dynamic_world_data_dir: str = None):
     return valid_ids
 
 
+_VECTOR_COORDS_CACHE = {}
+
+
+def _get_vector_coords(vector_lake_file: str) -> pd.DataFrame:
+    """Load id_geohash/x/y once per script run instead of re-reading the
+    global vector file (millions of lake polygons) and recomputing centroids
+    for ALL of them on every single region's verification call. This was a
+    major OOM contributor for large regions (e.g. CANADA1-4) verified after
+    several other regions had already run earlier in the same process -- the
+    geometry objects from repeated gpd.read_parquet() calls were never being
+    freed in time. Only lightweight (id, x, y) values are cached; the actual
+    geometry column is dropped right after the one-time centroid computation.
+    """
+    if vector_lake_file in _VECTOR_COORDS_CACHE:
+        return _VECTOR_COORDS_CACHE[vector_lake_file]
+
+    import geopandas as gpd
+    gdf = gpd.read_parquet(vector_lake_file)
+
+    geom_type = gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None
+    if geom_type in ['Polygon', 'MultiPolygon']:
+        centroids = gdf.geometry.centroid
+        x_coords = centroids.x
+        y_coords = centroids.y
+    elif geom_type == 'Point':
+        x_coords = gdf.geometry.x
+        y_coords = gdf.geometry.y
+    else:
+        rep_points = gdf.geometry.representative_point()
+        x_coords = rep_points.x
+        y_coords = rep_points.y
+
+    coords_df = pd.DataFrame({
+        'id_geohash': gdf['id_geohash'].values,
+        'x': x_coords.values,
+        'y': y_coords.values,
+    })
+
+    del gdf, x_coords, y_coords
+    gc.collect()
+
+    _VECTOR_COORDS_CACHE[vector_lake_file] = coords_df
+    return coords_df
+
+
 def verify_region_data_vectorized(
         region: str,
         date_to_check: str,
@@ -294,7 +339,7 @@ def verify_region_data_vectorized(
         return {'success': False, 'error': 'File not found', 'file_exists': False}
 
     try:
-        ds = xr.open_dataset(file_path)
+        ds = xr.open_dataset(file_path, chunks={'id_geohash': _get_id_chunk_size(), 'date': -1})
 
         # Check date presence
         dates_in_file = pd.to_datetime(ds['date'].values)
@@ -318,8 +363,7 @@ def verify_region_data_vectorized(
             ds.close()
             return {'success': False, 'error': 'Vector lake file not found'}
 
-        import geopandas as gpd
-        gdf = gpd.read_parquet(vector_lake_file)
+        coords_df = _get_vector_coords(vector_lake_file)
 
         bounds = region_boundaries[region]
         x_min_start = bounds['X_MIN_START']
@@ -327,27 +371,11 @@ def verify_region_data_vectorized(
         y_min_start = bounds['Y_MIN_START']
         y_min_end = bounds['Y_MIN_END']
 
-        # Handle geometry types
-        geom_type = gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None
-
-        if geom_type in ['Polygon', 'MultiPolygon']:
-            centroids = gdf.geometry.centroid
-            x_coords = centroids.x
-            y_coords = centroids.y
-        elif geom_type == 'Point':
-            x_coords = gdf.geometry.x
-            y_coords = gdf.geometry.y
-        else:
-            rep_points = gdf.geometry.representative_point()
-            x_coords = rep_points.x
-            y_coords = rep_points.y
-
         # Filter by bounding box
-        mask = (x_coords >= x_min_start) & (x_coords <= x_min_end) & \
-               (y_coords >= y_min_start) & (y_coords <= y_min_end)
+        mask = (coords_df['x'] >= x_min_start) & (coords_df['x'] <= x_min_end) & \
+               (coords_df['y'] >= y_min_start) & (coords_df['y'] <= y_min_end)
 
-        gdf_subset = gdf[mask]
-        region_ids = gdf_subset['id_geohash'].values.tolist()
+        region_ids = coords_df.loc[mask, 'id_geohash'].tolist()
 
         if not region_ids:
             ds.close()
