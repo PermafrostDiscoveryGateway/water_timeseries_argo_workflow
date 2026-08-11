@@ -238,7 +238,7 @@ def main():
     # Get environment variables
     output_dir = os.environ.get('output_dir')
     project = os.environ.get('project')
-    dry_run = os.environ.get('dry_run', True)
+    dry_run = os.environ.get('dry_run', 'False').lower() in ('true', '1', 'yes')
 
     if not output_dir:
         logger.error("output_dir environment variable not set")

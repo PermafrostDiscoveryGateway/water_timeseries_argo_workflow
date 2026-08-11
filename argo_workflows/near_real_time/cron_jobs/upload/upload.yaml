@@ -89,7 +89,7 @@ spec:
           archive:
             none: {}
       container:
-        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:43-make-sure-results-are-both-in-zarr-and-parquet
         imagePullPolicy: Always
         resources:
           requests:
@@ -180,6 +180,7 @@ spec:
             dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
             vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
             output_dir=/data/water_timeseries/output
+            dry_run=False
             EOF
             
             # Save environment info to PVC
