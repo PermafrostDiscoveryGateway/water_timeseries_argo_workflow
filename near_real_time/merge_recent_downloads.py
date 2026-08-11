@@ -146,7 +146,7 @@ def merge_new_results(
             return {'success': False, 'error': 'No valid data to merge'}
 
         logger.info(f"Concatenating {len(datasets)} datasets lazily...")
-        combined = xr.concat(datasets, dim='id_geohash', combine='nested')
+        combined = xr.concat(datasets, dim='id_geohash')
 
         for ds in datasets:
             try:
@@ -597,7 +597,7 @@ def combine_region_files(
             return {'success': False, 'error': 'No datasets to combine'}
 
         logger.info("Combining datasets lazily...")
-        combined = xr.concat(datasets, dim='id_geohash', combine='nested')
+        combined = xr.concat(datasets, dim='id_geohash')
 
         for ds in datasets:
             try:
