@@ -21,9 +21,9 @@ if str(project_root) not in sys.path:
 # CONFIGURATION
 # =============================================================================
 # Threshold for considering a download/merge "complete" (0.99 = 99%)
-COMPLETION_THRESHOLD = 0.99
+COMPLETION_THRESHOLD = 0.98
 # Threshold for considering a merge "acceptable" even with missing data
-ACCEPTABLE_MERGE_THRESHOLD = 0.99
+ACCEPTABLE_MERGE_THRESHOLD = 0.98
 
 
 # =============================================================================
