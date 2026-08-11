@@ -942,7 +942,7 @@ def main():
         return
 
     # ========== Prepare date to run ==========
-    date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
+    date_to_run = datetime(TODAY.year, TODAY_MONTH - 2, 1).strftime("%Y-%m")
     logger.info(f"Processing date: {date_to_run}")
 
     # ========== Process ALL regions (FAST - no verification) ==========
