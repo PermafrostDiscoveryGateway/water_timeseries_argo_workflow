@@ -5,6 +5,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import os
 import glob
+import dask
 import pandas as pd
 from pathlib import Path
 import xarray as xr
@@ -16,6 +17,26 @@ from typing import List, Dict, Any
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+
+def _get_id_chunk_size(default: int = 2000) -> int:
+    """Read the lake_chunk_size env var so NetCDFs are opened as dask-backed,
+    id_geohash-chunked datasets instead of fully into memory as numpy arrays."""
+    try:
+        return int(os.environ.get('lake_chunk_size', default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _configure_dask_for_low_memory():
+    """Bound the default in-process dask scheduler so large regions (e.g. the
+    CANADA1-4 split, which has far more per-tile download files than smaller
+    regions) don't materialize every chunk in memory at once and get
+    OOM-killed. See create_new_historical_file.py for the same pattern."""
+    num_workers = int(os.environ.get('dask_num_workers', 2))
+    dask.config.set(scheduler='threads', num_workers=num_workers)
+    dask.config.set({'array.slicing.split_large_chunks': True})
+    logger.info(f"Dask configured: threaded scheduler capped at {num_workers} concurrent workers")
 
 # =============================================================================
 # CONFIGURATION
@@ -93,34 +114,55 @@ def merge_new_results(
     logger.info(f"Found {len(downloaded_files)} downloaded files for {date_to_merge}")
 
     try:
-        # Combine all downloaded files into a single dataset
-        logger.info("Combining downloaded files...")
-        combined = None
+        # Combine all downloaded files into a single dataset.
+        # Memory-optimized: open each file dask-backed (chunks=) instead of
+        # eagerly, collect them into a list, and do ONE final concat + ONE
+        # final dedup pass -- concatenating and deduping inside the loop (the
+        # previous approach) re-materializes the entire accumulated array on
+        # every iteration, which is effectively O(n^2) and OOMs for regions
+        # with many per-tile download files (e.g. CANADA1-4).
+        logger.info("Combining downloaded files (dask-chunked)...")
+        id_chunk = _get_id_chunk_size()
+        combine_chunk = min(id_chunk, 500)
+
+        datasets = []
         failed_files = []
 
         for nc_file in downloaded_files:
             try:
-                ds = xr.open_dataset(nc_file)
+                ds = xr.open_dataset(nc_file, chunks={'id_geohash': combine_chunk, 'date': -1})
                 if len(ds['id_geohash']) > 0:
-                    if combined is None:
-                        combined = ds
-                    else:
-                        # Concatenate along id_geohash dimension
-                        combined = xr.concat([combined, ds], dim='id_geohash')
-                        # Remove duplicate IDs
-                        _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
-                        if len(unique_idx) < len(combined['id_geohash']):
-                            combined = combined.isel(id_geohash=np.sort(unique_idx))
+                    datasets.append(ds)
                 else:
                     logger.warning(f"File {nc_file} has no IDs, skipping")
+                    ds.close()
                     failed_files.append(nc_file)
             except Exception as e:
                 logger.error(f"Error opening {nc_file}: {e}")
                 failed_files.append(nc_file)
 
-        if combined is None:
+        if not datasets:
             logger.error("No valid data to merge")
             return {'success': False, 'error': 'No valid data to merge'}
+
+        logger.info(f"Concatenating {len(datasets)} datasets lazily...")
+        combined = xr.concat(datasets, dim='id_geohash', combine='nested')
+
+        for ds in datasets:
+            try:
+                ds.close()
+            except Exception:
+                pass
+        datasets = None
+        gc.collect()
+
+        # Remove duplicate IDs in a single pass (dask-aware, not per-file)
+        logger.info("Removing duplicate IDs...")
+        unique_ids = combined['id_geohash'].unique().compute()
+        if len(unique_ids) < len(combined['id_geohash']):
+            removed_count = len(combined['id_geohash']) - len(unique_ids)
+            logger.info(f"Removed {removed_count} duplicate IDs")
+            combined = combined.drop_duplicates(dim='id_geohash')
 
         logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
 
@@ -129,19 +171,23 @@ def merge_new_results(
             # Sort by date
             combined = combined.sortby('date')
 
-        # Write to NetCDF with compression
+        # Write to NetCDF with compression, chunked so the writer doesn't
+        # need to materialize the whole array in memory at once
         logger.info(f"Writing merged data to {merged_file_path}")
 
+        n_ids = combined.sizes['id_geohash']
+        n_dates = combined.sizes['date']
         encoding = {}
         for var in combined.data_vars:
             encoding[var] = {
                 'zlib': True,
                 'complevel': 4,
-                'shuffle': True
+                'shuffle': True,
+                'chunksizes': (min(id_chunk, 500, n_ids), n_dates)
             }
 
         # Write to file
-        combined.to_netcdf(merged_file_path, encoding=encoding)
+        combined.to_netcdf(merged_file_path, encoding=encoding, unlimited_dims=['date'])
 
         # Get file size
         file_size_gb = Path(merged_file_path).stat().st_size / (1024 ** 3)
@@ -509,13 +555,16 @@ def combine_region_files(
         return {'success': False, 'error': f'Missing files: {missing_files}'}
 
     try:
-        logger.info("Loading region datasets...")
+        id_chunk = _get_id_chunk_size()
+        combine_chunk = min(id_chunk, 500)
+
+        logger.info(f"Loading region datasets (dask-chunked, id_geohash={combine_chunk})...")
         datasets = []
         file_info = []
 
         for file_path in region_files:
             try:
-                ds = xr.open_dataset(file_path)
+                ds = xr.open_dataset(file_path, chunks={'id_geohash': combine_chunk, 'date': -1})
                 id_count = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
                 date_count = len(ds['date']) if 'date' in ds.dims else 0
                 file_size_gb = Path(file_path).stat().st_size / (1024 ** 3)
@@ -543,23 +592,28 @@ def combine_region_files(
             logger.info(
                 f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB")
 
-        logger.info("Combining datasets...")
-        combined = None
-
-        for ds in datasets:
-            if combined is None:
-                combined = ds
-            else:
-                combined = xr.concat([combined, ds], dim='id_geohash')
-                _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
-                if len(unique_idx) < len(combined['id_geohash']):
-                    removed_count = len(combined['id_geohash']) - len(unique_idx)
-                    logger.info(f"Removed {removed_count} duplicate IDs")
-                    combined = combined.isel(id_geohash=np.sort(unique_idx))
-
-        if combined is None:
+        if not datasets:
             logger.error("No datasets to combine")
             return {'success': False, 'error': 'No datasets to combine'}
+
+        logger.info("Combining datasets lazily...")
+        combined = xr.concat(datasets, dim='id_geohash', combine='nested')
+
+        for ds in datasets:
+            try:
+                ds.close()
+            except Exception:
+                pass
+        datasets = None
+        gc.collect()
+
+        # Remove duplicates in a single pass instead of after every file
+        logger.info("Removing duplicate IDs...")
+        unique_ids = combined['id_geohash'].unique().compute()
+        if len(unique_ids) < len(combined['id_geohash']):
+            removed_count = len(combined['id_geohash']) - len(unique_ids)
+            logger.info(f"Removed {removed_count} duplicate IDs")
+            combined = combined.drop_duplicates(dim='id_geohash')
 
         combined = combined.sortby(['id_geohash', 'date'])
 
@@ -567,23 +621,21 @@ def combine_region_files(
 
         logger.info(f"Writing combined file to {output_file}")
 
+        n_ids = combined.sizes['id_geohash']
+        n_dates = combined.sizes['date']
         encoding = {}
         for var in combined.data_vars:
             encoding[var] = {
                 'zlib': True,
                 'complevel': 4,
-                'shuffle': True
+                'shuffle': True,
+                'chunksizes': (min(id_chunk, 500, n_ids), n_dates)
             }
 
-        combined.to_netcdf(output_file, encoding=encoding)
+        combined.to_netcdf(output_file, encoding=encoding, unlimited_dims=['date'])
 
         file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
 
-        for ds in datasets:
-            try:
-                ds.close()
-            except:
-                pass
         combined.close()
         gc.collect()
 
@@ -907,6 +959,7 @@ def process_region_fast(
 # =============================================================================
 def main():
     logger.debug(f"Beginning historical run for ALL regions (fast mode)")
+    _configure_dask_for_low_memory()
     env_path = None
     if len(sys.argv) > 1:
         env_path = sys.argv[1]
