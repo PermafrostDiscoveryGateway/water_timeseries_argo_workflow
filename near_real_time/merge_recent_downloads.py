@@ -156,13 +156,16 @@ def merge_new_results(
         datasets = None
         gc.collect()
 
-        # Remove duplicate IDs in a single pass (dask-aware, not per-file)
+        # Remove duplicate IDs in a single pass (not per-file). xarray has no
+        # .unique()/.drop_duplicates() dask-aware shortcut here, so use plain
+        # numpy on the (lightweight, 1-D) id_geohash coordinate values.
         logger.info("Removing duplicate IDs...")
-        unique_ids = combined['id_geohash'].unique().compute()
-        if len(unique_ids) < len(combined['id_geohash']):
-            removed_count = len(combined['id_geohash']) - len(unique_ids)
+        id_values = combined['id_geohash'].values
+        _, unique_idx = np.unique(id_values, return_index=True)
+        if len(unique_idx) < len(id_values):
+            removed_count = len(id_values) - len(unique_idx)
             logger.info(f"Removed {removed_count} duplicate IDs")
-            combined = combined.drop_duplicates(dim='id_geohash')
+            combined = combined.isel(id_geohash=np.sort(unique_idx))
 
         logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
 
@@ -607,13 +610,16 @@ def combine_region_files(
         datasets = None
         gc.collect()
 
-        # Remove duplicates in a single pass instead of after every file
+        # Remove duplicates in a single pass instead of after every file.
+        # Plain numpy on the id_geohash coordinate values (see merge_new_results
+        # for why: no .unique()/.drop_duplicates() dask-aware shortcut here).
         logger.info("Removing duplicate IDs...")
-        unique_ids = combined['id_geohash'].unique().compute()
-        if len(unique_ids) < len(combined['id_geohash']):
-            removed_count = len(combined['id_geohash']) - len(unique_ids)
+        id_values = combined['id_geohash'].values
+        _, unique_idx = np.unique(id_values, return_index=True)
+        if len(unique_idx) < len(id_values):
+            removed_count = len(id_values) - len(unique_idx)
             logger.info(f"Removed {removed_count} duplicate IDs")
-            combined = combined.drop_duplicates(dim='id_geohash')
+            combined = combined.isel(id_geohash=np.sort(unique_idx))
 
         combined = combined.sortby(['id_geohash', 'date'])
 

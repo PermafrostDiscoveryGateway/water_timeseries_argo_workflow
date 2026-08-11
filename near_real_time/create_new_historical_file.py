@@ -376,7 +376,7 @@ def combine_region_files(
             return {'success': False, 'error': 'No datasets to combine'}
 
         # Use concat with dask to avoid loading everything into memory
-        combined = xr.concat(datasets, dim='id_geohash', combine='nested')
+        combined = xr.concat(datasets, dim='id_geohash')
 
         # Close the original datasets to free memory
         for ds in datasets:
@@ -387,25 +387,18 @@ def combine_region_files(
         datasets = None
         gc.collect()
 
-        # Remove duplicates using dask operations (lazy)
-        # Instead of loading all IDs into memory, use dask's unique operation
+        # Remove duplicates. xarray's DataArray has no .unique()/.drop_duplicates()
+        # dask-aware shortcut in this environment, so fall back to plain numpy on
+        # the (lightweight, 1-D) id_geohash coordinate values.
         logger.info("Removing duplicate IDs...")
 
-        # Get unique IDs using dask - this is still memory intensive but less so
-        # because dask can chunk the operation
-        unique_ids = combined['id_geohash'].unique().compute()
+        id_values = combined['id_geohash'].values
+        _, unique_idx = np.unique(id_values, return_index=True)
 
-        if len(unique_ids) < len(combined['id_geohash']):
-            removed_count = len(combined['id_geohash']) - len(unique_ids)
+        if len(unique_idx) < len(id_values):
+            removed_count = len(id_values) - len(unique_idx)
             logger.info(f"Removed {removed_count} duplicate IDs")
-
-            # Use where and drop to filter - this is more memory efficient
-            mask = combined['id_geohash'].isin(unique_ids)
-            # Note: This still loads data, but dask handles it in chunks
-
-            # Alternative: Use groupby first to avoid loading all IDs
-            # This is a more memory-efficient way to deduplicate
-            combined = combined.drop_duplicates(dim='id_geohash')
+            combined = combined.isel(id_geohash=np.sort(unique_idx))
 
         # Sort by IDs and date
         logger.info("Sorting combined dataset...")
