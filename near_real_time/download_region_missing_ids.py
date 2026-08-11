@@ -149,7 +149,7 @@ def main():
         logger.debug("Too early in the month to run - exiting")
         return 0
 
-    date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
+    date_to_run = datetime(TODAY.year, TODAY_MONTH - 2, 1).strftime("%Y-%m")
     logger.info(f"Backfilling missing IDs for {REGION} / {date_to_run}")
 
     # ========== FIGURE OUT WHICH IDs ARE ACTUALLY MISSING ==========
