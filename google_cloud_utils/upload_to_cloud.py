@@ -12,6 +12,37 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 
+def _local_matches_remote(file_path: Path, blob) -> bool:
+    """
+    Determine whether the local file is already fully and correctly uploaded.
+
+    Size alone can't detect a content change that happens to produce the same
+    (or a smaller) file size, so we also compare local mtime/size against
+    values recorded in the blob's custom metadata at upload time.
+    """
+    stat = file_path.stat()
+    metadata = blob.metadata or {}
+    stored_mtime = metadata.get('local_mtime')
+    stored_size = metadata.get('local_size')
+
+    if stored_mtime is None or stored_size is None:
+        # No metadata recorded (e.g. blob predates this check) - fall back to
+        # requiring an exact size match, which at least catches interrupted uploads.
+        return stat.st_size == blob.size
+
+    return str(stat.st_size) == stored_size and str(stat.st_mtime) == stored_mtime
+
+
+def _upload_with_metadata(blob, file_path: Path):
+    """Upload a file to GCS, stamping it with local mtime/size for future skip-checks."""
+    stat = file_path.stat()
+    blob.metadata = {
+        'local_mtime': str(stat.st_mtime),
+        'local_size': str(stat.st_size),
+    }
+    blob.upload_from_filename(str(file_path))
+
+
 def get_storage_client():
     """Get authenticated storage client using application default credentials"""
     try:
@@ -107,17 +138,18 @@ def sync_breakpoint_zarr_dirs_to_gcs(base_output_dir: str, bucket_name: str, pat
 
                 blob = bucket.blob(blob_path)
 
-                # Check if file already exists and is fully uploaded (not larger on disk,
-                # which would indicate a previous upload was interrupted partway through)
+                # Check if file already exists and matches the local file's mtime/size
+                # (a size-only check can't tell a content change from an unchanged file
+                # when the new size happens to be <= the old size)
                 if blob.exists():
                     blob.reload()
-                    if file_path.stat().st_size <= blob.size:
+                    if _local_matches_remote(file_path, blob):
                         skipped_count += 1
                         continue
 
                 try:
                     logger.info(f"Uploading: {file_rel_path}")
-                    blob.upload_from_filename(str(file_path))
+                    _upload_with_metadata(blob, file_path)
                     uploaded_count += 1
                 except Exception as e:
                     logger.error(f"Failed to upload {file_rel_path}: {e}")
@@ -196,17 +228,18 @@ def sync_breakpoint_parquet_files_to_gcs(base_output_dir: str, bucket_name: str,
 
             blob = bucket.blob(blob_path)
 
-            # Check if file already exists and is fully uploaded (not larger on disk,
-            # which would indicate a previous upload was interrupted partway through)
+            # Check if file already exists and matches the local file's mtime/size
+            # (a size-only check can't tell a content change from an unchanged file
+            # when the new size happens to be <= the old size)
             if blob.exists():
                 blob.reload()
-                if local_file.stat().st_size <= blob.size:
+                if _local_matches_remote(local_file, blob):
                     skipped_count += 1
                     continue
 
             try:
                 logger.info(f"Uploading: {rel_path}")
-                blob.upload_from_filename(str(local_file))
+                _upload_with_metadata(blob, local_file)
                 uploaded_count += 1
             except Exception as e:
                 logger.error(f"Failed to upload {rel_path}: {e}")
