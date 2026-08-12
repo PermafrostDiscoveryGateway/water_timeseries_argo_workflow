@@ -656,10 +656,14 @@ def main():
         load_dotenv()
         logger.info("Loading environment from default .env file")
 
+    test_run = os.environ.get("test_run", "False")
+
     # ========== Get all regions ==========
     import utils.region_boundaries
     boundaries = utils.region_boundaries.get_region_boundaries()
     all_regions = list(boundaries.keys())
+    if test_run == 'True':
+        all_regions = list(utils.region_boundaries.get_small_regions().keys())
     logger.info(f"Available regions: {all_regions}")
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
