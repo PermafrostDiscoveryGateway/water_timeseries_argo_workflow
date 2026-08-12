@@ -277,7 +277,7 @@ def main():
         base_output_dir=output_dir,
         bucket_name=bucket_name,
         path_to_cloud_folder=path_to_cloud_folder,
-        dry_run=False  # Set to True to preview changes
+        dry_run=dry_run  # Set to True to preview changes
     )
 
     if zarr_success and parquet_success:
