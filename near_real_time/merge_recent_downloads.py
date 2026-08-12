@@ -123,7 +123,10 @@ def merge_new_results(
         # with many per-tile download files (e.g. CANADA1-4).
         logger.info("Combining downloaded files (dask-chunked)...")
         id_chunk = _get_id_chunk_size()
-        combine_chunk = min(id_chunk, 500)
+        # Respect the operator-configured chunk size instead of capping it --
+        # the pod has generous memory headroom (32-48Gi) and small chunks mean
+        # many more individually-compressed writes, which is slow.
+        combine_chunk = id_chunk
 
         datasets = []
         failed_files = []
@@ -253,7 +256,7 @@ def _get_historical_valid_ids(dynamic_world_data_dir: str = None):
     if not all_dynamic_world_files:
         return None
 
-    historical_file = max(all_dynamic_world_files, key=os.path.getctime)
+    historical_file = max(all_dynamic_world_files, key=os.path.getmtime)
 
     if historical_file in _HISTORICAL_VALID_IDS_CACHE:
         return _HISTORICAL_VALID_IDS_CACHE[historical_file]
@@ -587,7 +590,9 @@ def combine_region_files(
 
     try:
         id_chunk = _get_id_chunk_size()
-        combine_chunk = min(id_chunk, 500)
+        # Respect the operator-configured chunk size -- see merge_new_results
+        # for why the previous 500 cap was overriding it unnecessarily.
+        combine_chunk = id_chunk
 
         logger.info(f"Loading region datasets (dask-chunked, id_geohash={combine_chunk})...")
         datasets = []
@@ -679,7 +684,7 @@ def combine_region_files(
             'id_count': len(combined['id_geohash']),
             'date_count': len(combined['date']),
             'file_size_gb': round(file_size_gb, 4),
-            'files_combined': len(datasets),
+            'files_combined': len(file_info),
             'file_info': file_info
         }
 
@@ -1029,7 +1034,7 @@ def main():
         return
 
     # ========== Prepare date to run ==========
-    date_to_run = datetime(TODAY.year, TODAY_MONTH - 2, 1).strftime("%Y-%m")
+    date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
     logger.info(f"Processing date: {date_to_run}")
 
     # ========== Process ALL regions (FAST - no verification) ==========
