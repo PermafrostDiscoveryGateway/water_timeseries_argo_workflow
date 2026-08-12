@@ -1,4 +1,4 @@
-FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:fix-nrt-breakpoint-date-collision
+FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:latest
 
 # Install the latest water-timeseries from GitHub
 # RUN uv pip install git+https://github.com/permafrostdiscoverygateway/water-timeseries-v2.git@main
