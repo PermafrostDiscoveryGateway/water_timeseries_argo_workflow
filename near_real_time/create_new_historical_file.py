@@ -332,8 +332,12 @@ def combine_region_files(
         datasets = []
         file_info = []
 
-        # Use a smaller chunk size for the combine operation
-        combine_chunk = min(id_chunk, 500)  # Smaller chunks for combining
+        # Respect the operator-configured chunk size (lake_chunk_size). This
+        # used to be artificially capped at 500 regardless of that setting,
+        # which for ~4M IDs meant ~8,000 tiny compressed chunks per variable
+        # instead of ~200 -- the dominant cost of these combine/merge writes.
+        # The pod has generous headroom (32-48Gi) for this, so honor it.
+        combine_chunk = id_chunk
 
         for file_path in region_files:
             try:
@@ -476,8 +480,10 @@ def merge_historical_file(
     if id_chunk is None:
         id_chunk = _get_id_chunk_size()
 
-    # Use smaller chunks for merging
-    merge_chunk = min(id_chunk, 500)
+    # Respect the operator-configured chunk size -- see combine_region_files
+    # for why the previous hardcoded 500 cap was overriding it and making
+    # this write far slower than necessary given the pod's memory headroom.
+    merge_chunk = id_chunk
 
     try:
         # Open files with dask and chunking
