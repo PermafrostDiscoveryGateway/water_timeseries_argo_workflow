@@ -689,7 +689,7 @@ def download_near_real_time_region_dates(
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         return {'success': False, 'error': 'No .nc files found'}
 
-    original_historical_file = max(all_dynamic_world_files, key=os.path.getctime)
+    original_historical_file = max(all_dynamic_world_files, key=os.path.getmtime)
     logger.info("Loading original historical dataset to get valid IDs...")
     ds_original = xr.open_dataset(original_historical_file)
     original_valid_ids = set(ds_original['id_geohash'].values)
