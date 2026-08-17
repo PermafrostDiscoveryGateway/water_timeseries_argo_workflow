@@ -34,6 +34,47 @@ def zarr_store_age_seconds(zarr_path):
     return time.time() - last_modified
 
 
+def discover_available_dates(output_dir, regions):
+    """Return every date (e.g. '2026-07') that has at least one region breakpoint zarr in output_dir."""
+    dates = set()
+    for region in regions:
+        breakpoint_dir = os.path.join(output_dir, region, 'breakpoint_zarr')
+        suffix = f"_{region}.zarr"
+        all_files = glob.glob(os.path.join(breakpoint_dir, f"breakpoints_*{suffix}"))
+        for zarr_path in glob.glob(os.path.join(breakpoint_dir, f"breakpoints_*{suffix}")):
+            filename = os.path.basename(zarr_path)
+            date = filename[len("breakpoints_"):-len(suffix)]
+            dates.add(date)
+    return sorted(dates)
+
+
+def merge_regions_for_date(date, output_dir, regions):
+    """Open and merge every region's breakpoint zarr for a single date along id_geohash, skipping missing/stale stores."""
+    results_paths_to_merge = []
+    for region in regions:
+        path = os.path.join(output_dir, region, 'breakpoint_zarr', f"breakpoints_{date}_{region}.zarr")
+        if not os.path.exists(path):
+            logger.warning(f"Breakpoint zarr does not exist, skipping: {path}")
+            continue
+        age_seconds = zarr_store_age_seconds(path)
+        if age_seconds < STALE_THRESHOLD_SECONDS:
+            logger.warning(
+                f"Breakpoint zarr was modified {age_seconds:.0f}s ago (< {STALE_THRESHOLD_SECONDS}s) "
+                f"and may still be writing, skipping: {path}"
+            )
+            continue
+        results_paths_to_merge.append(path)
+
+    if not results_paths_to_merge:
+        logger.error(f"No complete breakpoint zarr datasets available to merge for {date}")
+        return None
+
+    logger.info(f"Opening {len(results_paths_to_merge)} region breakpoint zarr datasets for {date}...")
+    return xr.open_mfdataset(
+        results_paths_to_merge, engine="zarr", combine="nested", concat_dim="id_geohash"
+    )
+
+
 def main():
     logger.debug(f"Combining the exiting zarr dataset with all new")
     env_path = None
@@ -45,8 +86,8 @@ def main():
         load_dotenv()
         logger.info("Loading environment from default .env file")
 
-    combined_zarr_datasets = os.path.join(project_root, "data", "full_datasets")
-
+    combined_zarr_datasets = os.environ.get("combined_zarr_datasets")
+    combine_all = bool(os.environ.get("combine_all"))
     most_recent_full_dataset = get_most_recent_zarr(combined_zarr_datasets)
     if most_recent_full_dataset:
         logger.info(f"Most recent existing full dataset: {most_recent_full_dataset}")
@@ -76,37 +117,34 @@ def main():
 
     regions = list(get_region_boundaries().keys())
 
-    latest_results_paths = []
+    if combine_all:
+        logger.debug("Combining all output dates with existing historical zarr dataset")
+        target_dates = discover_available_dates(output_dir, regions)
+        if not target_dates:
+            logger.error(f"No breakpoint zarr datasets found under {output_dir} - aborting")
+            return
+        logger.debug(f"Found {len(target_dates)} date(s) to combine: {target_dates}")
+    else:
+        logger.debug(f"Adding output for {target_date} to historical zarr dataset")
+        target_dates = [target_date]
 
-    for region in regions:
-        path_to_latest_data = os.path.join(output_dir, region, 'breakpoint_zarr', f"breakpoints_{target_date}_{region}.zarr" )
-        latest_results_paths.append(path_to_latest_data)
+    per_date_datasets = [
+        ds for ds in (merge_regions_for_date(date, output_dir, regions) for date in target_dates)
+        if ds is not None
+    ]
 
-    results_paths_to_merge = []
-    for path in latest_results_paths:
-        if not os.path.exists(path):
-            logger.warning(f"Breakpoint zarr does not exist, skipping: {path}")
-            continue
-        age_seconds = zarr_store_age_seconds(path)
-        if age_seconds < STALE_THRESHOLD_SECONDS:
-            logger.warning(
-                f"Breakpoint zarr was modified {age_seconds:.0f}s ago (< {STALE_THRESHOLD_SECONDS}s) "
-                f"and may still be writing, skipping: {path}"
-            )
-            continue
-        results_paths_to_merge.append(path)
-
-    if not results_paths_to_merge:
+    if not per_date_datasets:
         logger.error("No complete breakpoint zarr datasets available to merge - aborting")
         return
 
-    new_zarr_dataset_name = f'complete_lake_drainage_{target_date}.zarr'
-    new_zarr_dataset_path = os.path.join(combined_zarr_datasets, new_zarr_dataset_name)
+    if len(per_date_datasets) > 1:
+        ds_new_merged = xr.concat(per_date_datasets, dim="date")
+    else:
+        ds_new_merged = per_date_datasets[0]
 
-    logger.info(f"Opening {len(results_paths_to_merge)} region breakpoint zarr datasets...")
-    ds_new_merged = xr.open_mfdataset(
-        results_paths_to_merge, engine="zarr", combine="nested", concat_dim="id_geohash"
-    )
+    new_zarr_dataset_name = f"complete_lake_drainage_{target_dates[0]}_to_{target_dates[-1]}.zarr" \
+        if len(target_dates) > 1 else f'complete_lake_drainage_{target_dates[0]}.zarr'
+    new_zarr_dataset_path = os.path.join(combined_zarr_datasets, new_zarr_dataset_name)
 
     if most_recent_full_dataset:
         logger.info(f"Opening existing full dataset: {most_recent_full_dataset}")
