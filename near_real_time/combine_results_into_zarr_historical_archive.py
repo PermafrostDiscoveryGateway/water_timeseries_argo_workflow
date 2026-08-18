@@ -39,8 +39,7 @@ def discover_available_dates(output_dir, regions):
     dates = set()
     for region in regions:
         breakpoint_dir = os.path.join(output_dir, region, 'breakpoint_zarr')
-        suffix = f"_{region}.zarr"
-        all_files = glob.glob(os.path.join(breakpoint_dir, f"breakpoints_*{suffix}"))
+        suffix = ".zarr"
         for zarr_path in glob.glob(os.path.join(breakpoint_dir, f"breakpoints_*{suffix}")):
             filename = os.path.basename(zarr_path)
             date = filename[len("breakpoints_"):-len(suffix)]
@@ -52,7 +51,7 @@ def merge_regions_for_date(date, output_dir, regions):
     """Open and merge every region's breakpoint zarr for a single date along id_geohash, skipping missing/stale stores."""
     results_paths_to_merge = []
     for region in regions:
-        path = os.path.join(output_dir, region, 'breakpoint_zarr', f"breakpoints_{date}_{region}.zarr")
+        path = os.path.join(output_dir, region, 'breakpoint_zarr', f"breakpoints_{date}.zarr")
         if not os.path.exists(path):
             logger.warning(f"Breakpoint zarr does not exist, skipping: {path}")
             continue
