@@ -1,7 +1,15 @@
+import nest_asyncio
+# Zarr v3's async I/O keeps a per-thread event loop; running under a debugger
+# (e.g. PyCharm's pydevd) can hand a later store-open a Future tied to a stale
+# loop ("Task ... got Future ... attached to a different loop"). Patching
+# asyncio to tolerate re-entrant loops here avoids that crash.
+nest_asyncio.apply()
+
 from dotenv import load_dotenv
 import os
 import glob
 import time
+import numpy as np
 import pandas as pd
 from datetime import datetime
 import sys
@@ -16,12 +24,12 @@ if str(project_root) not in sys.path:
 
 # A breakpoint zarr store that was written to within this window is assumed to
 # still be mid-write, so it's excluded from the merge rather than folded in as a partial.
-STALE_THRESHOLD_SECONDS = 60 * 60
+STALE_THRESHOLD_SECONDS = 60 * 2
 
 
-def get_most_recent_zarr(zarr_dir):
-    """Return the most recently created .zarr store in zarr_dir, or None if there isn't one."""
-    zarr_paths = glob.glob(os.path.join(zarr_dir, "*.zarr"))
+def get_most_recent_combined_zarr(combined_zarr_datasets):
+    """Return the most recently created combined_historical_nrt_*.zarr store, or None if there isn't one."""
+    zarr_paths = glob.glob(os.path.join(combined_zarr_datasets, "combined_historical_nrt_*.zarr"))
     if not zarr_paths:
         return None
     return max(zarr_paths, key=os.path.getctime)
@@ -69,13 +77,29 @@ def merge_regions_for_date(date, output_dir, regions):
         return None
 
     logger.info(f"Opening {len(results_paths_to_merge)} region breakpoint zarr datasets for {date}...")
-    return xr.open_mfdataset(
+    merged = xr.open_mfdataset(
         results_paths_to_merge, engine="zarr", combine="nested", concat_dim="id_geohash"
     )
 
+    # Region boundary boxes can overlap (e.g. ALASKA/CANADA1), so the same lake may be
+    # processed by more than one region and appear more than once here. Keep the first
+    # occurrence (in region order) and drop the rest so id_geohash stays unique for alignment.
+    _, unique_index = np.unique(merged["id_geohash"].values, return_index=True)
+    if len(unique_index) < merged.sizes["id_geohash"]:
+        n_dupes = merged.sizes["id_geohash"] - len(unique_index)
+        logger.warning(
+            f"Dropping {n_dupes} duplicate id_geohash entries (overlapping region boundaries) for {date}"
+        )
+        merged = merged.isel(id_geohash=np.sort(unique_index))
+        # Dropping scattered positions above fragments the dask chunks into ragged,
+        # non-uniform sizes, which zarr refuses to write. Consolidate back to one chunk.
+        merged = merged.chunk({"id_geohash": -1})
+
+    return merged
+
 
 def main():
-    logger.debug(f"Combining the exiting zarr dataset with all new")
+    logger.debug(f"Combining regional breakpoint zarr datasets into a single archive")
     env_path = None
     if len(sys.argv) > 1:
         env_path = sys.argv[1]
@@ -87,11 +111,12 @@ def main():
 
     combined_zarr_datasets = os.environ.get("combined_zarr_datasets")
     combine_all = bool(os.environ.get("combine_all"))
-    most_recent_full_dataset = get_most_recent_zarr(combined_zarr_datasets)
-    if most_recent_full_dataset:
-        logger.info(f"Most recent existing full dataset: {most_recent_full_dataset}")
+
+    existing_combined_path = get_most_recent_combined_zarr(combined_zarr_datasets)
+    if existing_combined_path:
+        logger.info(f"Found existing combined archive: {existing_combined_path}")
     else:
-        logger.warning(f"No existing full dataset found in {combined_zarr_datasets}")
+        logger.info(f"No existing combined archive found in {combined_zarr_datasets} - starting a new one")
 
     SHOULD_RUN = False
     summer_months = [6, 7, 8, 9]
@@ -116,6 +141,13 @@ def main():
 
     regions = list(get_region_boundaries().keys())
 
+    ds_existing = None
+    existing_dates = set()
+    if existing_combined_path:
+        ds_existing = xr.open_zarr(existing_combined_path)
+        ds_existing['id_geohash'] = ds_existing['id_geohash'].astype(str)
+        existing_dates = {pd.Timestamp(d).strftime("%Y-%m") for d in ds_existing.date.values}
+
     if combine_all:
         logger.debug("Combining all output dates with existing historical zarr dataset")
         target_dates = discover_available_dates(output_dir, regions)
@@ -127,37 +159,54 @@ def main():
         logger.debug(f"Adding output for {target_date} to historical zarr dataset")
         target_dates = [target_date]
 
-    per_date_datasets = [
-        ds for ds in (merge_regions_for_date(date, output_dir, regions) for date in target_dates)
+    target_dates = [date for date in target_dates if date not in existing_dates]
+    if not target_dates:
+        logger.info("All available dates are already present in the existing combined archive - nothing to do")
+        return
+
+    per_date_items = [
+        (date, ds) for date, ds in (
+            (date, merge_regions_for_date(date, output_dir, regions)) for date in target_dates
+        )
         if ds is not None
     ]
 
-    if not per_date_datasets:
+    if not per_date_items:
         logger.error("No complete breakpoint zarr datasets available to merge - aborting")
         return
+
+    target_dates = [date for date, _ in per_date_items]
+
+    # Each per-region store already has a per-lake 'date' variable (breakpoint date),
+    # which collides with the 'date' dimension we're about to create to stack months.
+    # Rename it out of the way before adding the real month coordinate.
+    per_date_datasets = [
+        ds.rename({"date": "breakpoint_date"})
+        .assign_coords(date=pd.Timestamp(f"{date}-01"))
+        .expand_dims("date")
+        for date, ds in per_date_items
+    ]
 
     if len(per_date_datasets) > 1:
         ds_new_merged = xr.concat(per_date_datasets, dim="date")
     else:
         ds_new_merged = per_date_datasets[0]
 
-    new_zarr_dataset_name = f"complete_lake_drainage_{target_dates[0]}_to_{target_dates[-1]}.zarr" \
-        if len(target_dates) > 1 else f'complete_lake_drainage_{target_dates[0]}.zarr'
-    new_zarr_dataset_path = os.path.join(combined_zarr_datasets, new_zarr_dataset_name)
-
-    if most_recent_full_dataset:
-        logger.info(f"Opening existing full dataset: {most_recent_full_dataset}")
-        ds_full = xr.open_zarr(most_recent_full_dataset)
-        ds_full['id_geohash'] = ds_full['id_geohash'].astype(str)
-
-        logger.info("Aligning new data coordinates to the master lake list...")
-        ds_new_aligned = ds_new_merged.reindex(id_geohash=ds_full.id_geohash)
-
-        logger.info("Concatenating existing history with the new month...")
-        ds_combined = xr.concat([ds_full, ds_new_aligned], dim="date")
+    if ds_existing is not None:
+        logger.info(f"Appending {len(target_dates)} new month(s) to existing combined archive...")
+        ds_combined = xr.concat([ds_existing, ds_new_merged], dim="date", join="outer")
+        latest_date = pd.Timestamp(ds_combined.date.values[-1]).strftime("%Y-%m")
     else:
-        logger.info("No existing full dataset found - new archive will start from this month")
         ds_combined = ds_new_merged
+        latest_date = target_dates[-1]
+
+    # Concatenation/alignment can leave ragged dask chunks (especially with join="outer"
+    # padding mismatched id_geohash coordinates), which zarr refuses to write. Consolidate
+    # to a single chunk per dimension before saving.
+    ds_combined = ds_combined.chunk({"id_geohash": -1, "date": -1})
+
+    new_zarr_dataset_name = f"combined_historical_nrt_{latest_date}.zarr"
+    new_zarr_dataset_path = os.path.join(combined_zarr_datasets, new_zarr_dataset_name)
 
     logger.info(f"Saving combined result to {new_zarr_dataset_path}")
     ds_combined.to_zarr(new_zarr_dataset_path, mode='w', align_chunks=True)
