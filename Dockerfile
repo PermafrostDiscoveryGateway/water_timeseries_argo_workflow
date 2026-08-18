@@ -11,6 +11,7 @@ RUN uv pip install \
     toml \
     dask[dataframe] \
     pyarrow \
+    nest_asyncio \
     geemap==0.37.2
 
 # Copy your application code
