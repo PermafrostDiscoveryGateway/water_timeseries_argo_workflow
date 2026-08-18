@@ -148,9 +148,24 @@ def main():
         ds_existing['id_geohash'] = ds_existing['id_geohash'].astype(str)
         existing_dates = {pd.Timestamp(d).strftime("%Y-%m") for d in ds_existing.date.values}
 
+    # Cheap up-front check: compare the latest month already in the combined archive
+    # against the latest month available from the regional results. If they match,
+    # this job has already been run for the latest data and there's nothing to do -
+    # skip before doing any of the (expensive) per-region merging below.
+    available_dates = discover_available_dates(output_dir, regions)
+    if existing_dates and available_dates:
+        latest_existing_date = max(existing_dates)
+        latest_available_date = max(available_dates)
+        if latest_existing_date == latest_available_date:
+            logger.info(
+                f"Combined archive is already up to date through {latest_existing_date} "
+                f"(latest available regional result) - already run, skipping"
+            )
+            return
+
     if combine_all:
         logger.debug("Combining all output dates with existing historical zarr dataset")
-        target_dates = discover_available_dates(output_dir, regions)
+        target_dates = available_dates
         if not target_dates:
             logger.error(f"No breakpoint zarr datasets found under {output_dir} - aborting")
             return
