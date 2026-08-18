@@ -116,7 +116,7 @@ spec:
           export EE_PROJECT=pdg-project-406720
           export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
 
-          mkdir -p /data/water_timeseries/{dynamic_world_data,split_lakes,input,new_dynamic_world,split_new_dynamic_world,output,checkpoint,temp_netcdf,subsets,breakpoints}
+          mkdir -p /data/water_timeseries/{split_lakes,input,new_dynamic_world,split_new_dynamic_world,checkpoint,temp_netcdf,subsets,breakpoints} /data/water_timeseries/test/{dynamic_world_data,output}
           mkdir -p /data/water_timeseries/dask_work_space
           chmod -R 755 /data/water_timeseries
 
@@ -138,11 +138,11 @@ spec:
           vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           bucket_path=pdg-storage-default/water_timeseries_v2/data/input
           base_dir=/data/water_timeseries
-          dynamic_world_dir=/data/water_timeseries/dynamic_world_data
-          dynamic_world_data=/data/water_timeseries/dynamic_world_data
-          dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
+          dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
-          output_dir=/data/water_timeseries/output
+          output_dir=/data/water_timeseries/test/output
           region_name=${REGION_NAME}
           EOF
 
@@ -223,7 +223,7 @@ spec:
           export EE_PROJECT=pdg-project-406720
           export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
 
-          mkdir -p /data/water_timeseries/{dynamic_world_data,split_lakes,input,new_dynamic_world,split_new_dynamic_world,output,checkpoint,temp_netcdf,subsets,breakpoints}
+          mkdir -p /data/water_timeseries/{split_lakes,input,new_dynamic_world,split_new_dynamic_world,checkpoint,temp_netcdf,subsets,breakpoints} /data/water_timeseries/test/{dynamic_world_data,output}
           mkdir -p /data/water_timeseries/dask_work_space
           chmod -R 755 /data/water_timeseries
 
@@ -245,11 +245,11 @@ spec:
           vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           bucket_path=pdg-storage-default/water_timeseries_v2/data/input
           base_dir=/data/water_timeseries
-          dynamic_world_dir=/data/water_timeseries/dynamic_world_data
-          dynamic_world_data=/data/water_timeseries/dynamic_world_data
-          dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
+          dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
-          output_dir=/data/water_timeseries/output
+          output_dir=/data/water_timeseries/test/output
           region_name=${REGION_NAME}
           EOF
 
@@ -351,11 +351,11 @@ spec:
           vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           bucket_path=pdg-storage-default/water_timeseries_v2/data/input
           base_dir=/data/water_timeseries
-          dynamic_world_dir=/data/water_timeseries/dynamic_world_data
-          dynamic_world_data=/data/water_timeseries/dynamic_world_data
-          dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
+          dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
-          output_dir=/data/water_timeseries/output
+          output_dir=/data/water_timeseries/test/output
           EOF
 
           cd /app
@@ -438,11 +438,11 @@ spec:
           vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           bucket_path=pdg-storage-default/water_timeseries_v2/data/input
           base_dir=/data/water_timeseries
-          dynamic_world_dir=/data/water_timeseries/dynamic_world_data
-          dynamic_world_data=/data/water_timeseries/dynamic_world_data
-          dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
+          dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
-          output_dir=/data/water_timeseries/output
+          output_dir=/data/water_timeseries/test/output
           EOF
 
           cd /app
@@ -565,7 +565,7 @@ spec:
           export EE_PROJECT=pdg-project-406720
           export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
 
-          mkdir -p /data/water_timeseries/{dynamic_world_data,split_lakes,input,new_dynamic_world,split_new_dynamic_world,output,checkpoint,temp_netcdf,subsets,breakpoints}
+          mkdir -p /data/water_timeseries/{split_lakes,input,new_dynamic_world,split_new_dynamic_world,checkpoint,temp_netcdf,subsets,breakpoints} /data/water_timeseries/test/{dynamic_world_data,output}
           mkdir -p /data/water_timeseries/dask_work_space
           chmod -R 755 /data/water_timeseries
 
@@ -587,11 +587,11 @@ spec:
             echo "vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
             echo "bucket_path=pdg-storage-default/water_timeseries_v2/data/input"
             echo "base_dir=/data/water_timeseries"
-            echo "dynamic_world_dir=/data/water_timeseries/dynamic_world_data"
-            echo "dynamic_world_data=/data/water_timeseries/dynamic_world_data"
-            echo "dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads"
+            echo "dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data"
+            echo "dynamic_world_data=/data/water_timeseries/test/dynamic_world_data"
+            echo "dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads"
             echo "vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
-            echo "output_dir=/data/water_timeseries/output"
+            echo "output_dir=/data/water_timeseries/test/output"
             echo "region_name=${REGION_NAME}"
             [ -n "$ID_CHUNK_SIZE" ] && echo "id_chunk_size=${ID_CHUNK_SIZE}"
             [ -n "$SAVE_INTERVAL" ] && echo "save_interval=${SAVE_INTERVAL}"
@@ -690,11 +690,11 @@ spec:
           vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           bucket_path=pdg-storage-default/water_timeseries_v2/data/input
           base_dir=/data/water_timeseries
-          dynamic_world_dir=/data/water_timeseries/dynamic_world_data
-          dynamic_world_data=/data/water_timeseries/dynamic_world_data
-          dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
+          dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
-          output_dir=/data/water_timeseries/output
+          output_dir=/data/water_timeseries/test/output
           EOF
 
           cd /app
@@ -720,5 +720,83 @@ spec:
       - name: earth-engine-creds
         mountPath: /root/.config/earthengine
         readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  # ============================================================
+  # create-historical-zarr-archive: merge this month's regional
+  # breakpoint zarr results into the combined NRT zarr archive
+  # ============================================================
+  - name: create-historical-zarr-archive
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="create_historical_zarr_archive"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE ==="
+          echo "Timestamp: $(date)"
+
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
+          export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
+          export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
+          export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
+          export DASK_SCHEDULER=threads
+          export DASK_NUM_THREADS=$(nproc)
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          base_dir=/data/water_timeseries
+          output_dir=/data/water_timeseries/test/output
+          combined_zarr_datasets=/data/water_timeseries/combined_zarr_datasets
+          combine_all=True
+          EOF
+
+          cd /app
+          python -u /app/near_real_time/combine_results_into_zarr_historical_archive.py "$SCRATCH_DIR/.env"
+          SCRIPT_EXIT_CODE=$?
+
+          echo "{\"stage\":\"$STAGE\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
       - name: lake-drainage-volume
         mountPath: /data
