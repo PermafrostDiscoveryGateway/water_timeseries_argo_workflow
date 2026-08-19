@@ -1,7 +1,7 @@
 from utils.helper_functions import verify_downloads_complete, merge_new_results
 import sys
 from loguru import logger
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
 import glob
@@ -1019,11 +1019,15 @@ def main():
     # ========== Determine if we should run ==========
     SHOULD_RUN = False
     summer_months = [6, 7, 8, 9]
+    test_mode = os.environ.get('test', 'False').lower() in ('true', '1', 'yes')
 
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
 
-    if TODAY_MONTH - 1 in summer_months:
+    if test_mode:
+        SHOULD_RUN = True
+        logger.debug("test=True - bypassing the summer-month/day-of-month gate so this can run any time")
+    elif TODAY_MONTH - 1 in summer_months:
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 3:
             SHOULD_RUN = True
@@ -1034,7 +1038,11 @@ def main():
         return
 
     # ========== Prepare date to run ==========
-    date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
+    # Last complete (previous) month, computed this way so it also handles the
+    # January wraparound correctly - reachable now that test_mode can trigger
+    # a run in any month, not just June-September.
+    last_month_date = TODAY.replace(day=1) - timedelta(days=1)
+    date_to_run = last_month_date.strftime("%Y-%m")
     logger.info(f"Processing date: {date_to_run}")
 
     # ========== Process ALL regions (FAST - no verification) ==========
