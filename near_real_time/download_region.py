@@ -122,7 +122,7 @@ def main():
 
     if SHOULD_RUN:
         timestamp_to_run = [pd.Timestamp(date(datetime.now().year, TODAY_MONTH -2, 1))]
-        date_to_run = [datetime(TODAY.year, TODAY_MONTH -2, 1).strftime("%Y-%m")]
+        date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
         logger.debug(f"timestamp_to_run: {timestamp_to_run}")
 
         downloads_complete = verify_downloads_complete(region=REGION, analysis_dates=date_to_run)
