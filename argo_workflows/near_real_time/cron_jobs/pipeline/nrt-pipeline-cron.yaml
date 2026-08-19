@@ -103,7 +103,7 @@ spec:
         # Fan out: one process run per region, in parallel. Waits for the
         # merge/backfill loop above to finish (successfully or exhausted).
         - name: process
-          depends: "merge-and-backfill"
+          depends: "merge-and-backfill.Succeeded || merge-and-backfill.Failed || merge-and-backfill.Errored"
           templateRef:
             name: nrt-pipeline-templates
             template: process-region

@@ -69,6 +69,12 @@ spec:
   # download-region: full per-tile download for one region
   # ============================================================
   - name: download-region
+    retryStrategy:
+      limit: "3"
+      retryPolicy: "OnFailure"
+      backoff:
+        duration: "2m"
+        factor: "2"
     inputs:
       parameters:
       - name: region_name
@@ -176,6 +182,12 @@ spec:
   # download-missing-region: targeted ID backfill for one region
   # ============================================================
   - name: download-missing-region
+    retryStrategy:
+      limit: "3"
+      retryPolicy: "OnFailure"
+      backoff:
+        duration: "2m"
+        factor: "2"
     inputs:
       parameters:
       - name: region_name
@@ -485,6 +497,8 @@ spec:
     steps:
     - - name: merge
         template: merge-all-regions
+        continueOn:
+          failed: true
     - - name: check
         template: check-all-regions-completion
     - - name: backfill
