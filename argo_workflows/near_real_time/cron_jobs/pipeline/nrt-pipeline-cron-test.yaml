@@ -21,6 +21,36 @@ spec:
       secondsAfterCompletion: 86400
     entrypoint: main
 
+    # Pod-level fields like volumes/imagePullSecrets/artifactRepository on the
+    # referenced WorkflowTemplate only apply when that template runs directly.
+    # Since tasks below call into nrt-pipeline-templates-test via templateRef,
+    # the pod is actually built from this workflowSpec, so these must be
+    # duplicated here to match.
+    imagePullSecrets:
+    - name: ghcr-secret
+
+    artifactRepository:
+      pvc:
+        claimName: argo-workflows-share
+        key: artifacts
+
+    volumes:
+    - name: lake-drainage-volume
+      persistentVolumeClaim:
+        claimName: argo-workflows-share
+    - name: gcp-creds
+      secret:
+        secretName: personal-gcp-creds
+        items:
+        - key: key.json
+          path: application_default_credentials.json
+    - name: earth-engine-creds
+      secret:
+        secretName: earth-engine-creds
+        items:
+        - key: credentials
+          path: credentials
+
     arguments:
       parameters:
       - name: regions
