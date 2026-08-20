@@ -8,8 +8,9 @@ metadata:
 spec:
   # Same schedule/DAG shape as nrt-pipeline-cron, but points at the
   # nrt-pipeline-templates-test templates (test/ output + dynamic_world_data
-  # paths, no upload stage). Suspended by default - this is meant to be run
-  # manually while testing, not on its own schedule.
+  # paths, test_run=True region restriction, dry_run=True upload). Suspended
+  # by default - this is meant to be run manually while testing, not on its
+  # own schedule.
   schedule: "20 12 * * *"
   concurrencyPolicy: "Forbid"
   startingDeadlineSeconds: 300
@@ -53,16 +54,12 @@ spec:
 
     arguments:
       parameters:
+      # Restricted to utils.region_boundaries.get_small_regions() - the test
+      # pipeline is meant to exercise the DAG quickly, not process every region.
       - name: regions
         value: |
           [
-            {"region_name": "ALASKA",   "id_chunk_size": "",     "save_interval": "", "n_jobs": ""},
-            {"region_name": "CANADA1",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
-            {"region_name": "CANADA2",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
-            {"region_name": "CANADA3",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
-            {"region_name": "CANADA4",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
-            {"region_name": "EURASIA1", "id_chunk_size": "1000", "save_interval": "1", "n_jobs": "8"},
-            {"region_name": "EURASIA2", "id_chunk_size": "1000", "save_interval": "1", "n_jobs": "8"},
+            {"region_name": "TEST",     "id_chunk_size": "",     "save_interval": "", "n_jobs": ""},
             {"region_name": "EURASIA3", "id_chunk_size": "",     "save_interval": "", "n_jobs": ""}
           ]
       # How many merge -> backfill rounds to try before giving up and moving
@@ -128,9 +125,16 @@ spec:
             template: create-historical-zarr-archive
 
         # Runs after the combined NRT zarr archive has been created/updated.
-        # Last stage in the test pipeline - no upload stage here.
         - name: create-historical-file
           depends: "create-historical-zarr-archive"
           templateRef:
             name: nrt-pipeline-templates-test
             template: create-new-historical-file
+
+        # Last stage in the test pipeline. Runs with dry_run=True, so it only
+        # logs what would be uploaded rather than actually syncing to GCS.
+        - name: upload
+          depends: "create-historical-file"
+          templateRef:
+            name: nrt-pipeline-templates-test
+            template: upload
