@@ -292,6 +292,34 @@ spec:
         mountPath: /data
 
   # ============================================================
+  # download-region-with-fallback: run the full per-tile download for
+  # one region; if it still fails after exhausting its own retries,
+  # immediately trigger the targeted ID backfill for that same region
+  # rather than waiting for the merge-and-backfill-loop's next pass.
+  # ============================================================
+  - name: download-region-with-fallback
+    inputs:
+      parameters:
+      - name: region_name
+    steps:
+    - - name: download
+        template: download-region
+        arguments:
+          parameters:
+          - name: region_name
+            value: "{{inputs.parameters.region_name}}"
+        continueOn:
+          failed: true
+          error: true
+    - - name: download-missing
+        template: download-missing-region
+        when: "{{steps.download.status}} != Succeeded"
+        arguments:
+          parameters:
+          - name: region_name
+            value: "{{inputs.parameters.region_name}}"
+
+  # ============================================================
   # merge-all-regions: fold new downloads into each region's merged
   # file and combine. Retries itself on transient failure.
   # ============================================================

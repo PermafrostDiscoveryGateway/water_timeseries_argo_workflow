@@ -78,7 +78,7 @@ spec:
         - name: download
           templateRef:
             name: nrt-pipeline-templates
-            template: download-region
+            template: download-region-with-fallback
           arguments:
             parameters:
             - name: region_name
@@ -89,7 +89,7 @@ spec:
         # regions are still below 98%, repeat up to max-backfill-attempts.
         # Waits for every download item above to finish first.
         - name: merge-and-backfill
-          depends: "download"
+          depends: "download.Succeeded || download.Failed || download.Errored"
           templateRef:
             name: nrt-pipeline-templates
             template: merge-and-backfill-loop
