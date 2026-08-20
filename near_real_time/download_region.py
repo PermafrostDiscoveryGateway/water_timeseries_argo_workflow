@@ -121,7 +121,7 @@ def main():
             logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
 
     if SHOULD_RUN:
-        timestamp_to_run = [pd.Timestamp(date(datetime.now().year, TODAY_MONTH -2, 1))]
+        timestamp_to_run = [pd.Timestamp(date(datetime.now().year, TODAY_MONTH -1, 1))]
         date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
         logger.debug(f"timestamp_to_run: {timestamp_to_run}")
 
