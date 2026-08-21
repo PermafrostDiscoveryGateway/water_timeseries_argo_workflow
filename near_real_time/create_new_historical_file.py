@@ -332,8 +332,12 @@ def combine_region_files(
         datasets = []
         file_info = []
 
-        # Use a smaller chunk size for the combine operation
-        combine_chunk = min(id_chunk, 500)  # Smaller chunks for combining
+        # Respect the operator-configured chunk size (lake_chunk_size). This
+        # used to be artificially capped at 500 regardless of that setting,
+        # which for ~4M IDs meant ~8,000 tiny compressed chunks per variable
+        # instead of ~200 -- the dominant cost of these combine/merge writes.
+        # The pod has generous headroom (32-48Gi) for this, so honor it.
+        combine_chunk = id_chunk
 
         for file_path in region_files:
             try:
@@ -376,7 +380,7 @@ def combine_region_files(
             return {'success': False, 'error': 'No datasets to combine'}
 
         # Use concat with dask to avoid loading everything into memory
-        combined = xr.concat(datasets, dim='id_geohash', combine='nested')
+        combined = xr.concat(datasets, dim='id_geohash')
 
         # Close the original datasets to free memory
         for ds in datasets:
@@ -387,25 +391,18 @@ def combine_region_files(
         datasets = None
         gc.collect()
 
-        # Remove duplicates using dask operations (lazy)
-        # Instead of loading all IDs into memory, use dask's unique operation
+        # Remove duplicates. xarray's DataArray has no .unique()/.drop_duplicates()
+        # dask-aware shortcut in this environment, so fall back to plain numpy on
+        # the (lightweight, 1-D) id_geohash coordinate values.
         logger.info("Removing duplicate IDs...")
 
-        # Get unique IDs using dask - this is still memory intensive but less so
-        # because dask can chunk the operation
-        unique_ids = combined['id_geohash'].unique().compute()
+        id_values = combined['id_geohash'].values
+        _, unique_idx = np.unique(id_values, return_index=True)
 
-        if len(unique_ids) < len(combined['id_geohash']):
-            removed_count = len(combined['id_geohash']) - len(unique_ids)
+        if len(unique_idx) < len(id_values):
+            removed_count = len(id_values) - len(unique_idx)
             logger.info(f"Removed {removed_count} duplicate IDs")
-
-            # Use where and drop to filter - this is more memory efficient
-            mask = combined['id_geohash'].isin(unique_ids)
-            # Note: This still loads data, but dask handles it in chunks
-
-            # Alternative: Use groupby first to avoid loading all IDs
-            # This is a more memory-efficient way to deduplicate
-            combined = combined.drop_duplicates(dim='id_geohash')
+            combined = combined.isel(id_geohash=np.sort(unique_idx))
 
         # Sort by IDs and date
         logger.info("Sorting combined dataset...")
@@ -483,8 +480,10 @@ def merge_historical_file(
     if id_chunk is None:
         id_chunk = _get_id_chunk_size()
 
-    # Use smaller chunks for merging
-    merge_chunk = min(id_chunk, 500)
+    # Respect the operator-configured chunk size -- see combine_region_files
+    # for why the previous hardcoded 500 cap was overriding it and making
+    # this write far slower than necessary given the pod's memory headroom.
+    merge_chunk = id_chunk
 
     try:
         # Open files with dask and chunking
@@ -660,6 +659,9 @@ def main():
     import utils.region_boundaries
     boundaries = utils.region_boundaries.get_region_boundaries()
     all_regions = list(boundaries.keys())
+    test_run = os.environ.get("test_run")
+    if test_run and test_run.lower() == 'true':
+        all_regions = list(utils.region_boundaries.get_small_regions().keys())
     logger.info(f"Available regions: {all_regions}")
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
@@ -682,7 +684,7 @@ def main():
         return
 
     # ========== Prepare date to run ==========
-    date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
+    date_to_run = datetime(TODAY.year, TODAY_MONTH - 2, 1).strftime("%Y-%m")
     logger.info(f"Processing date: {date_to_run}")
 
     # ========== STEP 1: Wait for region merges to complete ==========
