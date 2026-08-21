@@ -352,7 +352,7 @@ def main():
     # Define regions to process
     if region_name == "ALL":
         # All main regions - can be customized
-        regions_to_process = ['TEST', 'ALASKA', 'CANADA', 'EURASIA1', 'EURASIA2', 'EURASIA3']
+        regions_to_process = ['ALASKA', 'CANADA1', 'CANADA2', 'CANADA3', 'CANADA4', 'EURASIA1', 'EURASIA2', 'EURASIA3']
         logger.info(f"Processing ALL main regions: {regions_to_process}")
     else:
         regions_to_process = [region_name]
