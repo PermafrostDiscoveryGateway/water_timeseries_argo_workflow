@@ -20,6 +20,17 @@ if str(project_root) not in sys.path:
 
 
 
+def format_elapsed_time(seconds: float) -> str:
+    """Format a duration in seconds as a human-readable "Hh Mm Ss" string."""
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 def generate_date_range_from_env(
         start_year: int,
         start_month: int,
@@ -261,6 +272,8 @@ def process_single_date_for_region(
 def main():
     """Main function to process historical dates with RBEAST using the new method."""
 
+    run_start_time = time.time()
+
     logger.debug("=" * 80)
     logger.debug("PROCESS_HISTORICAL_BST.PY STARTED (NEW BEAST METHOD)")
     logger.debug("=" * 80)
@@ -459,6 +472,9 @@ def main():
                 logger.info(f"    {status} {target_date}: {reason}")
 
         logger.info(f"    Summary: {region_success} successful, {region_fail} failed")
+
+    total_run_time = time.time() - run_start_time
+    logger.info(f"⏱️ Total run time: {format_elapsed_time(total_run_time)}")
 
     logger.info("=" * 80)
     logger.info("PROCESS_HISTORICAL_BST.PY COMPLETED")
