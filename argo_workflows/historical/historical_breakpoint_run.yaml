@@ -1,0 +1,264 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: historical-breakpoint-run
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+  entrypoint: main
+
+  # No downloading here - this assumes the most recent historical NetCDF file
+  # already has all the data needed for the requested date range.
+  arguments:
+    parameters:
+    - name: start_year
+      value: "2015"
+    - name: start_month
+      value: "6"
+    - name: end_year
+      value: "2026"
+    - name: end_month
+      value: "9"
+
+  podResourceRequest:
+    cpu: "100m"
+    memory: "128Mi"
+    ephemeral-storage: "1Gi"
+
+  podSpecPatch: |
+    initContainers:
+    - name: init
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+          ephemeral-storage: "1Gi"
+    containers:
+    - name: wait
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+          ephemeral-storage: "1Gi"
+    - name: main
+      resources:
+        requests:
+          cpu: "8"
+          memory: "32Gi"
+          ephemeral-storage: "8Gi"
+        limits:
+          cpu: "16"
+          memory: "48Gi"
+          ephemeral-storage: "16Gi"
+
+  artifactRepository:
+    pvc:
+      claimName: argo-workflows-share
+      key: artifacts
+
+  artifactGC:
+    strategy: Never
+
+  imagePullSecrets:
+  - name: ghcr-secret
+
+  volumes:
+  - name: lake-drainage-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+  - name: gcp-creds
+    secret:
+      secretName: personal-gcp-creds
+      items:
+      - key: key.json
+        path: application_default_credentials.json
+  - name: earth-engine-creds
+    secret:
+      secretName: earth-engine-creds
+      items:
+      - key: credentials
+        path: credentials
+
+  templates:
+
+  - name: main
+    steps:
+    - - name: process-all-regions
+        template: process-all-regions
+    - - name: combine-into-zarr
+        template: combine-into-zarr
+
+  # ============================================================
+  # process-all-regions: run the BEAST historical breakpoint method
+  # for every region, over the configured date range. Assumes the
+  # most recent historical NetCDF file already has all needed data.
+  # ============================================================
+  - name: process-all-regions
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
+        limits:
+          cpu: "16"
+          memory: "48Gi"
+          ephemeral-storage: "16Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING HISTORICAL BREAKPOINT JOB: process-all-regions ==="
+          echo "Timestamp: $(date)"
+          echo "Pod: ${POD_NAME:-unknown}"
+
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_historical_process"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          mkdir -p /tmp/home/.config/earthengine
+          cp -L /root/.config/earthengine/credentials /tmp/home/.config/earthengine/credentials
+          export HOME=/tmp/home
+          export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
+          export EE_CONFIG_DIR=/tmp/home/.config/earthengine
+          export EE_CLOUD_PROJECT=pdg-wg-workflow
+          export EE_PROJECT=pdg-project-406720
+          export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+
+          mkdir -p /data/water_timeseries/{dynamic_world_data,input,output,checkpoint,temp_netcdf,breakpoints,combined_historical_zarr}
+          chmod -R 755 /data/water_timeseries
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          # No downloading - the most recent NetCDF in dynamic_world_data is
+          # assumed to already have all the data needed for this date range.
+          cat > /data/.env << EOF
+          project=pdg-project-406720
+          dynamic_world_data=/data/water_timeseries/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          output_dir=/data/water_timeseries/output
+          combined_zarr_datasets=/data/water_timeseries/combined_historical_zarr
+          region_name=ALL
+          start_year={{workflow.parameters.start_year}}
+          start_month={{workflow.parameters.start_month}}
+          end_year={{workflow.parameters.end_year}}
+          end_month={{workflow.parameters.end_month}}
+          EOF
+
+          cd /app
+          python -u /app/historical_run/process_historical_BST.py /data/.env
+          SCRIPT_EXIT_CODE=$?
+
+          echo "=== process-all-regions completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: earth-engine-creds
+        mountPath: /root/.config/earthengine
+        readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  # ============================================================
+  # combine-into-zarr: merge every region's breakpoint results for
+  # the requested date range into a single
+  # historical_breakpoint_results_{start_date}_{end_date}.zarr
+  # ============================================================
+  - name: combine-into-zarr
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING HISTORICAL BREAKPOINT JOB: combine-into-zarr ==="
+          echo "Timestamp: $(date)"
+
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_historical_combine"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          cat > /data/.env << EOF
+          output_dir=/data/water_timeseries/output
+          combined_zarr_datasets=/data/water_timeseries/combined_historical_zarr
+          start_year={{workflow.parameters.start_year}}
+          start_month={{workflow.parameters.start_month}}
+          end_year={{workflow.parameters.end_year}}
+          end_month={{workflow.parameters.end_month}}
+          EOF
+
+          cd /app
+          python -u /app/historical_run/combine_historical_breakpoint_results.py /data/.env
+          SCRIPT_EXIT_CODE=$?
+
+          echo "=== combine-into-zarr completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: lake-drainage-volume
+        mountPath: /data
