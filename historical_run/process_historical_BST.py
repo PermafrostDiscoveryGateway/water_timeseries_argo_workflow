@@ -280,7 +280,7 @@ def main():
         'dynamic_world_data',
         'dynamic_world_downloads',
         'vector_lake_file',
-        'output_dir',
+        'historical_output_dir',
         'project',
         'region_name'
     ]
