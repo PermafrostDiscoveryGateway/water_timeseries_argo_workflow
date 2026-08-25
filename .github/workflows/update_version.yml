@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - fix-merge
   workflow_dispatch:
     inputs:
       tag:

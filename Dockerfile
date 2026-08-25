@@ -1,4 +1,4 @@
-FROM tcnichol/water-timeseries-v2:latest
+FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:latest
 
 # Install the latest water-timeseries from GitHub
 # RUN uv pip install git+https://github.com/permafrostdiscoverygateway/water-timeseries-v2.git@main
@@ -11,6 +11,7 @@ RUN uv pip install \
     toml \
     dask[dataframe] \
     pyarrow \
+    nest_asyncio \
     geemap==0.37.2
 
 # Copy your application code

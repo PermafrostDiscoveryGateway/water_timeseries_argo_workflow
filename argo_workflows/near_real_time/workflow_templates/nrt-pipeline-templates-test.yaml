@@ -1,0 +1,946 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: nrt-pipeline-templates-test
+  namespace: argo
+spec:
+  podResourceRequest:
+    cpu: "100m"
+    memory: "128Mi"
+    ephemeral-storage: "1Gi"
+
+  podSpecPatch: |
+    initContainers:
+    - name: init
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+          ephemeral-storage: "1Gi"
+    containers:
+    - name: wait
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+          ephemeral-storage: "1Gi"
+    - name: main
+      resources:
+        requests:
+          cpu: "8"
+          memory: "32Gi"
+          ephemeral-storage: "8Gi"
+        limits:
+          cpu: "16"
+          memory: "48Gi"
+          ephemeral-storage: "16Gi"
+
+  artifactRepository:
+    pvc:
+      claimName: argo-workflows-share
+      key: artifacts
+
+  artifactGC:
+    strategy: Never
+
+  imagePullSecrets:
+  - name: ghcr-secret
+
+  volumes:
+  - name: lake-drainage-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+  - name: gcp-creds
+    secret:
+      secretName: personal-gcp-creds
+      items:
+      - key: key.json
+        path: application_default_credentials.json
+  - name: earth-engine-creds
+    secret:
+      secretName: earth-engine-creds
+      items:
+      - key: credentials
+        path: credentials
+
+  templates:
+
+  # ============================================================
+  # download-region: full per-tile download for one region
+  # ============================================================
+  - name: download-region
+    retryStrategy:
+      limit: "3"
+      retryPolicy: "OnFailure"
+      backoff:
+        duration: "2m"
+        factor: "2"
+    inputs:
+      parameters:
+      - name: region_name
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:fix-merge
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="download"
+          REGION_NAME="{{inputs.parameters.region_name}}"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE / $REGION_NAME ==="
+          echo "Timestamp: $(date)"
+
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}_${REGION_NAME}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          mkdir -p /tmp/home/.config/earthengine
+          cp -L /root/.config/earthengine/credentials /tmp/home/.config/earthengine/credentials
+          export HOME=/tmp/home
+          export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
+          export EE_CONFIG_DIR=/tmp/home/.config/earthengine
+          export EE_CLOUD_PROJECT=pdg-wg-workflow
+          export EE_PROJECT=pdg-project-406720
+          export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+
+          mkdir -p /data/water_timeseries/{split_lakes,input,new_dynamic_world,split_new_dynamic_world,checkpoint,temp_netcdf,subsets,breakpoints} /data/water_timeseries/test/{dynamic_world_data,output}
+          mkdir -p /data/water_timeseries/dask_work_space
+          chmod -R 755 /data/water_timeseries
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
+          export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
+          export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
+          export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
+          export DASK_SCHEDULER=threads
+          export DASK_NUM_THREADS=$(nproc)
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}/${REGION_NAME}"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          bucket_path=pdg-storage-default/water_timeseries_v2/data/input
+          base_dir=/data/water_timeseries
+          dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          output_dir=/data/water_timeseries/test/output
+          region_name=${REGION_NAME}
+          EOF
+
+          cd /app
+          python -u /app/near_real_time/download_region.py "$SCRATCH_DIR/.env"
+          SCRIPT_EXIT_CODE=$?
+
+          echo "{\"stage\":\"$STAGE\",\"region\":\"$REGION_NAME\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE / $REGION_NAME completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: lake_chunk_size
+        value: "20000"
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: earth-engine-creds
+        mountPath: /root/.config/earthengine
+        readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  # ============================================================
+  # download-missing-region: targeted ID backfill for one region
+  # ============================================================
+  - name: download-missing-region
+    retryStrategy:
+      limit: "3"
+      retryPolicy: "OnFailure"
+      backoff:
+        duration: "2m"
+        factor: "2"
+    inputs:
+      parameters:
+      - name: region_name
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:fix-merge
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="download_missing"
+          REGION_NAME="{{inputs.parameters.region_name}}"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE / $REGION_NAME ==="
+          echo "Timestamp: $(date)"
+
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}_${REGION_NAME}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          mkdir -p /tmp/home/.config/earthengine
+          cp -L /root/.config/earthengine/credentials /tmp/home/.config/earthengine/credentials
+          export HOME=/tmp/home
+          export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
+          export EE_CONFIG_DIR=/tmp/home/.config/earthengine
+          export EE_CLOUD_PROJECT=pdg-wg-workflow
+          export EE_PROJECT=pdg-project-406720
+          export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+
+          mkdir -p /data/water_timeseries/{split_lakes,input,new_dynamic_world,split_new_dynamic_world,checkpoint,temp_netcdf,subsets,breakpoints} /data/water_timeseries/test/{dynamic_world_data,output}
+          mkdir -p /data/water_timeseries/dask_work_space
+          chmod -R 755 /data/water_timeseries
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
+          export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
+          export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
+          export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
+          export DASK_SCHEDULER=threads
+          export DASK_NUM_THREADS=$(nproc)
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}/${REGION_NAME}"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          bucket_path=pdg-storage-default/water_timeseries_v2/data/input
+          base_dir=/data/water_timeseries
+          dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          output_dir=/data/water_timeseries/test/output
+          region_name=${REGION_NAME}
+          EOF
+
+          cd /app
+          python -u /app/near_real_time/download_region_missing_ids.py "$SCRATCH_DIR/.env"
+          SCRIPT_EXIT_CODE=$?
+
+          echo "{\"stage\":\"$STAGE\",\"region\":\"$REGION_NAME\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE / $REGION_NAME completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: lake_chunk_size
+        value: "20000"
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: earth-engine-creds
+        mountPath: /root/.config/earthengine
+        readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  # ============================================================
+  # download-region-with-fallback: run the full per-tile download for
+  # one region; if it still fails after exhausting its own retries,
+  # immediately trigger the targeted ID backfill for that same region
+  # rather than waiting for the merge-and-backfill-loop's next pass.
+  # ============================================================
+  - name: download-region-with-fallback
+    inputs:
+      parameters:
+      - name: region_name
+    steps:
+    - - name: download
+        template: download-region
+        arguments:
+          parameters:
+          - name: region_name
+            value: "{{inputs.parameters.region_name}}"
+        continueOn:
+          failed: true
+          error: true
+    - - name: download-missing
+        template: download-missing-region
+        when: "{{steps.download.status}} != Succeeded"
+        arguments:
+          parameters:
+          - name: region_name
+            value: "{{inputs.parameters.region_name}}"
+
+  # ============================================================
+  # merge-all-regions: fold new downloads into each region's merged
+  # file and combine. Retries itself on transient failure.
+  # ============================================================
+  - name: merge-all-regions
+    retryStrategy:
+      limit: "3"
+      retryPolicy: "OnFailure"
+      backoff:
+        duration: "2m"
+        factor: "2"
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:fix-merge
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="merge"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE (attempt {{retries}}) ==="
+          echo "Timestamp: $(date)"
+
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          mkdir -p /tmp/home/.config/earthengine
+          cp -L /root/.config/earthengine/credentials /tmp/home/.config/earthengine/credentials
+          export HOME=/tmp/home
+          export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
+          export EE_CONFIG_DIR=/tmp/home/.config/earthengine
+          export EE_CLOUD_PROJECT=pdg-wg-workflow
+          export EE_PROJECT=pdg-project-406720
+          export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
+          export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
+          export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
+          export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
+          export DASK_SCHEDULER=threads
+          export DASK_NUM_THREADS=$(nproc)
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/merge"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          bucket_path=pdg-storage-default/water_timeseries_v2/data/input
+          base_dir=/data/water_timeseries
+          dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          output_dir=/data/water_timeseries/test/output
+          test_run=True
+          EOF
+
+          cd /app
+          python -u /app/near_real_time/merge_recent_downloads.py "$SCRATCH_DIR/.env"
+          SCRIPT_EXIT_CODE=$?
+
+          echo "{\"stage\":\"$STAGE\",\"attempt\":\"{{retries}}\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: lake_chunk_size
+        value: "20000"
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: earth-engine-creds
+        mountPath: /root/.config/earthengine
+        readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  # ============================================================
+  # check-all-regions-completion: read-only auditor, reports which
+  # regions are still below the 98% threshold after a merge pass.
+  # ============================================================
+  - name: check-all-regions-completion
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+      parameters:
+      - name: all-complete
+        valueFrom:
+          path: /tmp/completion/all_complete.txt
+      - name: incomplete-regions
+        valueFrom:
+          path: /tmp/completion/incomplete_regions.json
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:fix-merge
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "8Gi"
+          cpu: "2"
+          ephemeral-storage: "4Gi"
+        limits:
+          cpu: "4"
+          memory: "16Gi"
+          ephemeral-storage: "8Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="check_completion"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE ==="
+          echo "Timestamp: $(date)"
+
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+          export COMPLETION_OUTPUT_DIR=/tmp/completion
+          mkdir -p "$COMPLETION_OUTPUT_DIR"
+
+          SCRATCH_DIR="/data/scratch/check_completion"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          bucket_path=pdg-storage-default/water_timeseries_v2/data/input
+          base_dir=/data/water_timeseries
+          dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          output_dir=/data/water_timeseries/test/output
+          test_run=True
+          EOF
+
+          cd /app
+          python -u /app/near_real_time/check_all_regions_completion.py "$SCRATCH_DIR/.env"
+          SCRIPT_EXIT_CODE=$?
+
+          # Defensive defaults in case the script errored before writing its outputs
+          [ -f "$COMPLETION_OUTPUT_DIR/all_complete.txt" ] || echo "false" > "$COMPLETION_OUTPUT_DIR/all_complete.txt"
+          [ -f "$COMPLETION_OUTPUT_DIR/incomplete_regions.json" ] || echo "[]" > "$COMPLETION_OUTPUT_DIR/incomplete_regions.json"
+
+          echo "{\"stage\":\"$STAGE\",\"all_complete\":\"$(cat $COMPLETION_OUTPUT_DIR/all_complete.txt)\",\"incomplete_regions\":$(cat $COMPLETION_OUTPUT_DIR/incomplete_regions.json),\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: earth-engine-creds
+        mountPath: /root/.config/earthengine
+        readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  # ============================================================
+  # merge-and-backfill-loop: merge -> check -> backfill only the
+  # regions still below threshold -> recurse, up to max-attempts.
+  # ============================================================
+  - name: merge-and-backfill-loop
+    inputs:
+      parameters:
+      - name: attempt
+        value: "1"
+      - name: max-attempts
+        value: "5"
+    steps:
+    - - name: merge
+        template: merge-all-regions
+        continueOn:
+          failed: true
+    - - name: check
+        template: check-all-regions-completion
+    - - name: backfill
+        template: download-missing-region
+        when: "{{steps.check.outputs.parameters.all-complete}} != true && {{inputs.parameters.attempt}} < {{inputs.parameters.max-attempts}}"
+        arguments:
+          parameters:
+          - name: region_name
+            value: "{{item}}"
+        withParam: "{{steps.check.outputs.parameters.incomplete-regions}}"
+    - - name: recurse
+        template: merge-and-backfill-loop
+        when: "{{steps.check.outputs.parameters.all-complete}} != true && {{inputs.parameters.attempt}} < {{inputs.parameters.max-attempts}}"
+        arguments:
+          parameters:
+          - name: attempt
+            value: "{{=asInt(inputs.parameters.attempt) + 1}}"
+          - name: max-attempts
+            value: "{{inputs.parameters.max-attempts}}"
+
+  # ============================================================
+  # process-region: run NRT processing for one region
+  # ============================================================
+  - name: process-region
+    inputs:
+      parameters:
+      - name: region_name
+      - name: id_chunk_size
+        value: ""
+      - name: save_interval
+        value: ""
+      - name: n_jobs
+        value: ""
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:fix-merge
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="process"
+          REGION_NAME="{{inputs.parameters.region_name}}"
+          ID_CHUNK_SIZE="{{inputs.parameters.id_chunk_size}}"
+          SAVE_INTERVAL="{{inputs.parameters.save_interval}}"
+          N_JOBS="{{inputs.parameters.n_jobs}}"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE / $REGION_NAME ==="
+          echo "Timestamp: $(date)"
+
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}_${REGION_NAME}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          mkdir -p /tmp/home/.config/earthengine
+          cp -L /root/.config/earthengine/credentials /tmp/home/.config/earthengine/credentials
+          export HOME=/tmp/home
+          export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
+          export EE_CONFIG_DIR=/tmp/home/.config/earthengine
+          export EE_CLOUD_PROJECT=pdg-wg-workflow
+          export EE_PROJECT=pdg-project-406720
+          export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+
+          mkdir -p /data/water_timeseries/{split_lakes,input,new_dynamic_world,split_new_dynamic_world,checkpoint,temp_netcdf,subsets,breakpoints} /data/water_timeseries/test/{dynamic_world_data,output}
+          mkdir -p /data/water_timeseries/dask_work_space
+          chmod -R 755 /data/water_timeseries
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
+          export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
+          export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
+          export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
+          export DASK_SCHEDULER=threads
+          export DASK_NUM_THREADS=$(nproc)
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}/${REGION_NAME}"
+          mkdir -p "$SCRATCH_DIR"
+          {
+            echo "project=pdg-project-406720"
+            echo "vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
+            echo "bucket_path=pdg-storage-default/water_timeseries_v2/data/input"
+            echo "base_dir=/data/water_timeseries"
+            echo "dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data"
+            echo "dynamic_world_data=/data/water_timeseries/test/dynamic_world_data"
+            echo "dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads"
+            echo "vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
+            echo "output_dir=/data/water_timeseries/test/output"
+            echo "region_name=${REGION_NAME}"
+            [ -n "$ID_CHUNK_SIZE" ] && echo "id_chunk_size=${ID_CHUNK_SIZE}"
+            [ -n "$SAVE_INTERVAL" ] && echo "save_interval=${SAVE_INTERVAL}"
+            [ -n "$N_JOBS" ] && echo "n_jobs=${N_JOBS}"
+          } > "$SCRATCH_DIR/.env"
+
+          cd /app
+          python -u /app/near_real_time/process_NRT.py "$SCRATCH_DIR/.env"
+          SCRIPT_EXIT_CODE=$?
+
+          echo "{\"stage\":\"$STAGE\",\"region\":\"$REGION_NAME\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE / $REGION_NAME completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: lake_chunk_size
+        value: "20000"
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: earth-engine-creds
+        mountPath: /root/.config/earthengine
+        readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  # ============================================================
+  # create-new-historical-file: consolidate the month once all
+  # regions have been processed
+  # ============================================================
+  - name: create-new-historical-file
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:fix-merge
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="create_new_historical_file"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE ==="
+          echo "Timestamp: $(date)"
+
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          mkdir -p /tmp/home/.config/earthengine
+          cp -L /root/.config/earthengine/credentials /tmp/home/.config/earthengine/credentials
+          export HOME=/tmp/home
+          export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
+          export EE_CONFIG_DIR=/tmp/home/.config/earthengine
+          export EE_CLOUD_PROJECT=pdg-wg-workflow
+          export EE_PROJECT=pdg-project-406720
+          export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
+          export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
+          export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
+          export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
+          export DASK_SCHEDULER=threads
+          export DASK_NUM_THREADS=$(nproc)
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          bucket_path=pdg-storage-default/water_timeseries_v2/data/input
+          base_dir=/data/water_timeseries
+          dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          output_dir=/data/water_timeseries/test/output
+          test_run=True
+          EOF
+
+          cd /app
+          python -u /app/near_real_time/create_new_historical_file.py "$SCRATCH_DIR/.env"
+          SCRIPT_EXIT_CODE=$?
+
+          echo "{\"stage\":\"$STAGE\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: lake_chunk_size
+        value: "20000"
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: earth-engine-creds
+        mountPath: /root/.config/earthengine
+        readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  # ============================================================
+  # create-historical-zarr-archive: merge this month's regional
+  # breakpoint zarr results into the combined NRT zarr archive
+  # ============================================================
+  - name: create-historical-zarr-archive
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:fix-merge
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="create_historical_zarr_archive"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE ==="
+          echo "Timestamp: $(date)"
+
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
+          export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
+          export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
+          export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
+          export DASK_SCHEDULER=threads
+          export DASK_NUM_THREADS=$(nproc)
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          base_dir=/data/water_timeseries
+          output_dir=/data/water_timeseries/test/output
+          combined_zarr_datasets=/data/water_timeseries/combined_zarr_datasets
+          combine_all=True
+          EOF
+
+          cd /app
+          python -u /app/near_real_time/combine_results_into_zarr_historical_archive.py "$SCRATCH_DIR/.env"
+          SCRIPT_EXIT_CODE=$?
+
+          echo "{\"stage\":\"$STAGE\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  # ============================================================
+  # upload: dry-run only. Logs what would be synced to GCS without
+  # actually uploading anything - this is the test pipeline.
+  # ============================================================
+  - name: upload
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:fix-merge
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="upload"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE (dry run) ==="
+          echo "Timestamp: $(date)"
+
+          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          mkdir -p /tmp/home/.config/earthengine
+          cp -L /root/.config/earthengine/credentials /tmp/home/.config/earthengine/credentials
+          export HOME=/tmp/home
+          export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
+          export EE_CONFIG_DIR=/tmp/home/.config/earthengine
+          export EE_CLOUD_PROJECT=pdg-wg-workflow
+          export EE_PROJECT=pdg-project-406720
+          export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          bucket_path=pdg-storage-default/water_timeseries_v2/data/input
+          base_dir=/data/water_timeseries
+          dynamic_world_dir=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/test/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          output_dir=/data/water_timeseries/test/output
+          combined_zarr_datasets=/data/water_timeseries/combined_zarr_datasets
+          dry_run=True
+          EOF
+
+          cd /app
+          python -u /app/google_cloud_utils/upload_to_cloud.py "$SCRATCH_DIR/.env"
+          SCRIPT_EXIT_CODE=$?
+
+          echo "{\"stage\":\"$STAGE\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: GOOGLE_APPLICATION_CREDENTIALS
+        value: /root/.config/gcloud/application_default_credentials.json
+      - name: EE_CLOUD_PROJECT
+        value: "pdg-wg-workflow"
+      - name: EE_PROJECT
+        value: "pdg-project-406720"
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: earth-engine-creds
+        mountPath: /root/.config/earthengine
+        readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data

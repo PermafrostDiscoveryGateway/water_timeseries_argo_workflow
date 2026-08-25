@@ -575,6 +575,13 @@ def generate_expected_dates(
     return dates
 
 
+# Threshold for accepting a single grid tile's download as "complete" even
+# when a few requested lakes never come back (chronic per-feature GEE
+# errors). Matches COMPLETION_THRESHOLD/ACCEPTABLE_MERGE_THRESHOLD in
+# near_real_time/merge_recent_downloads.py.
+TILE_COMPLETION_THRESHOLD = 0.99
+
+
 def download_near_real_time_region_dates(
         region: str = "TEST",
         run_start_label: str = None,
@@ -682,7 +689,7 @@ def download_near_real_time_region_dates(
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         return {'success': False, 'error': 'No .nc files found'}
 
-    original_historical_file = max(all_dynamic_world_files, key=os.path.getctime)
+    original_historical_file = max(all_dynamic_world_files, key=os.path.getmtime)
     logger.info("Loading original historical dataset to get valid IDs...")
     ds_original = xr.open_dataset(original_historical_file)
     original_valid_ids = set(ds_original['id_geohash'].values)
@@ -856,6 +863,44 @@ def download_near_real_time_region_dates(
                 )
 
                 if ds_dl is not None:
+                    # ========== VERIFY ALL REQUESTED LAKES CAME BACK ==========
+                    # download_dw_monthly can return a non-None dataset that's
+                    # missing some of the requested lakes (e.g. per-feature GEE
+                    # errors/timeouts within the tile). Without this check the
+                    # tile is marked "successful" and, since the output file
+                    # now exists with content, the skip-if-exists check above
+                    # means it is never retried again.
+                    downloaded_ids = set(ds_dl['id_geohash'].values.tolist())
+                    expected_ids = set(id_list)
+                    missing_in_tile = expected_ids - downloaded_ids
+                    tile_completion_pct = len(downloaded_ids) / len(expected_ids) if expected_ids else 1.0
+
+                    # A small residual of chronically-unavailable lakes (GEE
+                    # errors that never clear) should not be retried forever.
+                    # Accept >=99% per tile, matching the region-level
+                    # COMPLETION_THRESHOLD/ACCEPTABLE_MERGE_THRESHOLD used
+                    # downstream in merge_recent_downloads.py.
+                    if missing_in_tile and tile_completion_pct < TILE_COMPLETION_THRESHOLD:
+                        print(
+                            f'WARNING: Grid {bbox_west} {bbox_south} returned {len(downloaded_ids)}/{len(expected_ids)} '
+                            f'requested lakes ({len(missing_in_tile)} missing, {tile_completion_pct:.2%} complete, '
+                            f'below {TILE_COMPLETION_THRESHOLD:.0%} threshold) - treating as failed so it is retried')
+                        ds_dl.close()
+                        del ds_dl
+                        try:
+                            outfile_download.unlink()
+                        except Exception as e:
+                            logger.warning(f"Could not remove incomplete file {outfile_download}: {e}")
+                        date_results['failed_bbox_downloads'] += 1
+                        with open(outfile_downloads_failed_file, 'a') as f:
+                            f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+                        continue
+                    elif missing_in_tile:
+                        print(
+                            f'NOTE: Grid {bbox_west} {bbox_south} returned {len(downloaded_ids)}/{len(expected_ids)} '
+                            f'requested lakes ({tile_completion_pct:.2%} complete, >= {TILE_COMPLETION_THRESHOLD:.0%} '
+                            f'threshold) - accepting as complete')
+
                     download_successful = True
                     if should_overwrite:
                         print(f'Successfully re-downloaded data for {bbox_west} {bbox_south} (overwrote empty file)')
@@ -1582,6 +1627,7 @@ def process_region_date_new_fast_NRT(
         merge_dir = Path(dynamic_world_data_dir) / 'merge'
         nc_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
         historical_file = max(nc_files, key=os.path.getmtime)
+        logger.debug(f"Using historical file {historical_file}")
         new_data_file = merge_dir / f"dw_{region}_{analysis_date}.nc"
         vector_lake_file = os.environ.get('vector_lake_file')
 
@@ -2171,15 +2217,15 @@ def process_region_date_beast_historical(
         logger.info(f"Training data has {len(ds_historical_train.id_geohash)} IDs")
 
         # 6. Setup output directories
-        output_dir = os.environ.get('output_dir')
+        output_dir = os.environ.get('regional_historical_output_dir')
         if not output_dir:
-            logger.error("❌ output_dir not set in environment")
-            return {'success': False, 'error': 'output_dir not set in environment'}
+            logger.error("❌ regional_historical_output_dir not set in environment")
+            return {'success': False, 'error': 'regional_historical_output_dir not set in environment'}
 
         output_dir = Path(output_dir) / region
         zarr_output_dir = output_dir / 'breakpoint_zarr'
         zarr_output_dir.mkdir(exist_ok=True, parents=True)
-        zarr_path = zarr_output_dir / f'beast_breakpoints_{analysis_date}.zarr'
+        zarr_path = zarr_output_dir / f'beast_breakpoints_{region}_{analysis_date}.zarr'
 
         current_breakpoint_dir = output_dir / f'beast_breakpoint_{analysis_date}'
         current_breakpoint_dir.mkdir(exist_ok=True, parents=True)
@@ -2265,8 +2311,6 @@ def process_region_date_beast_historical(
             chunk_start_time = time.time()
             progress_pct = (float(total_processed) / float(total_ids)) * 100 if total_ids > 0 else 0
             logger.info(f"Chunk {chunk_idx + 1}/{total_chunks}: {len(chunk_ids)} IDs ({progress_pct:.1f}%)")
-            if progress_pct > 20:
-                logger.debug(f"We got 20% done! time to retest")
             try:
                 # Get data for this chunk
                 ds_historical_chunk = ds_historical_train.sel(id_geohash=chunk_ids)
@@ -2305,7 +2349,6 @@ def process_region_date_beast_historical(
                         cols = ['id_geohash'] + [c for c in breaks_df.columns if c != 'id_geohash']
                         breaks_df = breaks_df[cols]
 
-                    logger.debug(f"Chunk {chunk_idx + 1} DataFrame columns: {breaks_df.columns.tolist()}")
                     logger.debug(f"Chunk {chunk_idx + 1} has {len(breaks_df)} rows")
 
                     # SAVE INCREMENTALLY IMMEDIATELY
@@ -3288,208 +3331,6 @@ def process_region_date_new_fast_historical_safe(
 
 
 def create_final_zarr_from_incremental(
-        incremental_file: Path,
-        zarr_path: Path,
-        region: str,
-        analysis_date: str,
-        analysis_source: str,
-        total_ids: int
-) -> Dict[str, Any]:
-    """
-    Create the final Zarr file from incremental results.
-
-    Handles DataFrames where id_geohash might be the index or a column named 'index'.
-
-    Args:
-        incremental_file: Path to incremental Parquet file
-        zarr_path: Path where Zarr file should be saved
-        region: Region name
-        analysis_date: Date in "YYYY-MM" format
-        analysis_source: Source of the data ("historical" or "downloaded")
-        total_ids: Total number of IDs processed
-
-    Returns:
-        dict: Result with status and metadata
-    """
-    import datetime
-
-    logger.info(f"\n{'=' * 60}")
-    logger.info(f"📦 CREATING FINAL ZARR FROM INCREMENTAL DATA")
-    logger.info(f"{'=' * 60}")
-
-    if not incremental_file.exists():
-        logger.warning(f"No incremental file found at {incremental_file}")
-        # Create empty Zarr with proper structure
-        empty_result = pd.DataFrame(columns=[
-            'id_geohash', 'date_break', 'date_before_break', 'date_after_break',
-            'break_method', 'break_number', 'proba_rbeast',
-            'water_area_before', 'water_area_after',
-            'water_area_before_normalized', 'water_area_after_normalized'
-        ])
-        empty_ds = empty_result.set_index('id_geohash').to_xarray()
-        empty_ds.attrs.update({
-            'region': region,
-            'analysis_date': analysis_date,
-            'created_at': datetime.datetime.now().isoformat(),
-            'complete': True,
-            'empty': True,
-            'analysis_source': analysis_source,
-            'total_ids': total_ids
-        })
-        empty_ds.to_zarr(zarr_path, mode='w')
-        empty_ds.close()
-        return {
-            'success': True,
-            'total_ids': total_ids,
-            'processed': 0,
-            'breakpoints_found': 0,
-            'zarr_path': str(zarr_path)
-        }
-
-    try:
-        # Load all incremental results
-        logger.info(f"Loading incremental results from {incremental_file}")
-        breaks_merged = pd.read_parquet(incremental_file)
-
-        logger.debug(f"Initial DataFrame columns: {breaks_merged.columns.tolist()}")
-        logger.debug(f"Initial DataFrame index: {breaks_merged.index.name}")
-        logger.debug(f"DataFrame shape: {breaks_merged.shape}")
-
-        if breaks_merged.empty:
-            logger.warning("Incremental file is empty")
-            # Create empty Zarr
-            empty_result = pd.DataFrame(columns=[
-                'id_geohash', 'date_break', 'date_before_break', 'date_after_break',
-                'break_method', 'break_number', 'proba_rbeast',
-                'water_area_before', 'water_area_after',
-                'water_area_before_normalized', 'water_area_after_normalized'
-            ])
-            empty_ds = empty_result.set_index('id_geohash').to_xarray()
-            empty_ds.attrs.update({
-                'region': region,
-                'analysis_date': analysis_date,
-                'created_at': datetime.datetime.now().isoformat(),
-                'complete': True,
-                'empty': True,
-                'analysis_source': analysis_source,
-                'total_ids': total_ids
-            })
-            empty_ds.to_zarr(zarr_path, mode='w')
-            empty_ds.close()
-            return {
-                'success': True,
-                'total_ids': total_ids,
-                'processed': 0,
-                'breakpoints_found': 0,
-                'zarr_path': str(zarr_path)
-            }
-
-        # ========== FIX: Handle id_geohash properly ==========
-        # Check if 'id_geohash' exists as a column
-        if 'id_geohash' in breaks_merged.columns:
-            logger.info("✅ Found 'id_geohash' as a column")
-            # Set it as index
-            breaks_merged = breaks_merged.set_index('id_geohash')
-        elif 'index' in breaks_merged.columns:
-            # The 'index' column contains the id_geohash values
-            logger.info("🔄 Found 'index' column - renaming to 'id_geohash' and setting as index")
-            breaks_merged = breaks_merged.rename(columns={'index': 'id_geohash'})
-            breaks_merged = breaks_merged.set_index('id_geohash')
-        elif breaks_merged.index.name == 'id_geohash' or breaks_merged.index.name is None:
-            # Check if the index itself is the id_geohash
-            # For the first chunk, the index might be the default RangeIndex
-            # We need to check if the index values look like geohash strings
-            if breaks_merged.index.name is None:
-                # Try to infer if index contains geohash-like strings
-                sample_val = breaks_merged.index[0] if len(breaks_merged) > 0 else None
-                if sample_val is not None and isinstance(sample_val, str) and len(sample_val) >= 10:
-                    # Looks like a geohash - set the index name
-                    logger.info("🔄 Index appears to contain geohash strings - naming it 'id_geohash'")
-                    breaks_merged.index.name = 'id_geohash'
-                else:
-                    # The index might be the geohash but we need to verify
-                    # Try to find a column that looks like it contains IDs
-                    id_col = None
-                    for col in breaks_merged.columns:
-                        if 'id' in col.lower() or 'geohash' in col.lower():
-                            id_col = col
-                            break
-
-                    if id_col:
-                        logger.info(f"🔄 Found ID-like column '{id_col}' - using as id_geohash")
-                        breaks_merged = breaks_merged.set_index(id_col)
-                    else:
-                        # Last resort: use the index as-is but rename it
-                        logger.warning("⚠️ Could not find id_geohash column - using index as id_geohash")
-                        breaks_merged.index.name = 'id_geohash'
-        else:
-            # The index has a different name - try to rename it
-            logger.warning(f"⚠️ Index name is '{breaks_merged.index.name}' - renaming to 'id_geohash'")
-            breaks_merged.index.name = 'id_geohash'
-
-        # Verify we have a proper index
-        logger.info(f"Final index name: {breaks_merged.index.name}")
-        logger.info(f"Number of unique IDs: {len(breaks_merged.index.unique())}")
-        logger.debug(f"Sample IDs: {list(breaks_merged.index[:5])}")
-
-        # Save to Zarr
-        logger.info(f"💾 Saving {len(breaks_merged):,} records to Zarr: {zarr_path}")
-
-        # Convert to xarray dataset
-        ds_breaks = breaks_merged.to_xarray()
-
-        # Add attributes
-        ds_breaks.attrs.update({
-            'region': region,
-            'analysis_date': analysis_date,
-            'created_at': datetime.datetime.now().isoformat(),
-            'complete': True,
-            'analysis_source': analysis_source,
-            'total_ids': total_ids,
-            'breakpoints_found': len(breaks_merged)
-        })
-
-        # Write to Zarr
-        ds_breaks.to_zarr(zarr_path, mode='w', consolidated=True)
-        logger.info(f"   ✅ Zarr saved successfully")
-
-        # Optional: Save Parquet backup
-        current_breakpoint_dir = incremental_file.parent
-        path_to_joined_file = current_breakpoint_dir / f'drain_{analysis_date}.parquet'
-        breaks_merged.to_parquet(path_to_joined_file)
-        logger.info(f"   ✅ Parquet backup saved to {path_to_joined_file}")
-
-        # Check Zarr file size
-        if zarr_path.exists():
-            zarr_size_gb = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file()) / (1024 ** 3)
-            logger.info(f"   📦 Zarr file size: {zarr_size_gb:.2f} GB")
-
-        ds_breaks.close()
-
-        return {
-            'success': True,
-            'region': region,
-            'analysis_date': analysis_date,
-            'analysis_source': analysis_source,
-            'total_ids': total_ids,
-            'processed': len(breaks_merged),
-            'breakpoints_found': len(breaks_merged),
-            'zarr_path': str(zarr_path)
-        }
-
-    except Exception as e:
-        logger.error(f"Error creating Zarr from incremental data: {e}")
-        import traceback
-        traceback.print_exc()
-        return {
-            'success': False,
-            'error': str(e),
-            'region': region,
-            'analysis_date': analysis_date
-        }
-
-
-def create_final_zarr_from_incremental_2(
         incremental_file: Path,
         zarr_path: Path,
         region: str,

@@ -275,7 +275,6 @@ def quick_look(file_path: str):
 
 if __name__ == "__main__":
     import sys
-
     # Use command line argument or prompt
     if len(sys.argv) > 1:
         file_path = sys.argv[1]
