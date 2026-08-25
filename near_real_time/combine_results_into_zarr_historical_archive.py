@@ -110,7 +110,6 @@ def main():
         logger.info("Loading environment from default .env file")
 
     combined_zarr_datasets = os.environ.get("combined_zarr_datasets")
-    combine_all = bool(os.environ.get("combine_all"))
 
     existing_combined_path = get_most_recent_combined_zarr(combined_zarr_datasets)
     if existing_combined_path:
@@ -154,36 +153,31 @@ def main():
         ds_existing['id_geohash'] = ds_existing['id_geohash'].astype(str)
         existing_dates = {pd.Timestamp(d).strftime("%Y-%m") for d in ds_existing.date.values}
 
-    # Cheap up-front check: compare the latest month already in the combined archive
-    # against the latest month available from the regional results. If they match,
-    # this job has already been run for the latest data and there's nothing to do -
-    # skip before doing any of the (expensive) per-region merging below.
+    # Cheap up-front check: if every available regional month (including any
+    # earlier ones a prior run may have skipped) is already in the combined
+    # archive, there's nothing to do - skip before doing any of the
+    # (expensive) per-region merging below.
     available_dates = discover_available_dates(output_dir, regions)
-    if existing_dates and available_dates:
-        latest_existing_date = max(existing_dates)
-        latest_available_date = max(available_dates)
-        if latest_existing_date == latest_available_date:
-            logger.info(
-                f"Combined archive is already up to date through {latest_existing_date} "
-                f"(latest available regional result) - already run, skipping"
-            )
-            return
+    if available_dates and set(available_dates) <= existing_dates:
+        logger.info(
+            f"Combined archive already contains every available regional month "
+            f"(through {max(available_dates)}) - already run, skipping"
+        )
+        return
 
-    if combine_all:
-        logger.debug("Combining all output dates with existing historical zarr dataset")
-        target_dates = available_dates
-        if not target_dates:
-            logger.error(f"No breakpoint zarr datasets found under {output_dir} - aborting")
-            return
-        logger.debug(f"Found {len(target_dates)} date(s) to combine: {target_dates}")
-    else:
-        logger.debug(f"Adding output for {target_date} to historical zarr dataset")
-        target_dates = [target_date]
+    # Combine the current target month plus any earlier available months that
+    # aren't in the existing archive yet (e.g. a prior run that skipped/failed
+    # a month), rather than just the single most recent one.
+    if not available_dates:
+        logger.error(f"No breakpoint zarr datasets found under {output_dir} - aborting")
+        return
 
+    target_dates = sorted(set(available_dates) | {target_date})
     target_dates = [date for date in target_dates if date not in existing_dates]
     if not target_dates:
         logger.info("All available dates are already present in the existing combined archive - nothing to do")
         return
+    logger.debug(f"Found {len(target_dates)} date(s) not yet in the combined archive: {target_dates}")
 
     per_date_items = [
         (date, ds) for date, ds in (
