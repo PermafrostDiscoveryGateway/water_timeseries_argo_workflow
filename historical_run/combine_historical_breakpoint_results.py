@@ -30,7 +30,7 @@ def merge_regions_for_date(date, output_dir, regions):
     """Open and merge every region's breakpoint zarr for a single date along id_geohash, skipping missing stores."""
     results_paths_to_merge = []
     for region in regions:
-        path = os.path.join(output_dir, region, 'breakpoint_zarr', f"breakpoints_{date}.zarr")
+        path = os.path.join(output_dir, region, 'breakpoint_zarr', f"beast_breakpoints_{region}_{date}.zarr")
         if not os.path.exists(path):
             logger.warning(f"Breakpoint zarr does not exist, skipping: {path}")
             continue
@@ -73,9 +73,14 @@ def main():
         load_dotenv()
         logger.info("Loading environment from default .env file")
 
-    output_dir = os.environ['output_dir']
-    combined_zarr_datasets = os.environ.get('combined_zarr_datasets', output_dir)
-    os.makedirs(combined_zarr_datasets, exist_ok=True)
+    combine = os.environ.get("combine", "true").strip().lower() in ("true", "1", "yes")
+    if not combine:
+        logger.info("combine=false - skipping combine step")
+        return {'success': True, 'skipped': True}
+
+    regional_output_dir = os.environ['regional_historical_output_dir']
+    combined_output_dir = os.environ['historical_output_dir']
+    os.makedirs(combined_output_dir, exist_ok=True)
 
     start_year = int(os.environ.get("start_year", 2015))
     start_month = int(os.environ.get("start_month", 6))
@@ -96,15 +101,19 @@ def main():
         logger.error("No dates generated for the given start/end/months configuration - aborting")
         return {'success': False, 'error': 'No dates to process'}
 
-    regions = list(get_region_boundaries().keys())
-    regions = [r for r in ALL_REGIONS if r in regions]
+    region_name = os.environ.get("region_name", "ALL")
+    if region_name == "ALL":
+        regions = list(get_region_boundaries().keys())
+        regions = [r for r in ALL_REGIONS if r in regions]
+    else:
+        regions = [region_name]
 
     logger.info(f"Combining {len(dates_to_process)} date(s) across {len(regions)} region(s)")
     logger.info(f"Date range: {dates_to_process[0]} to {dates_to_process[-1]}")
 
     per_date_items = [
         (date, ds) for date, ds in (
-            (date, merge_regions_for_date(date, output_dir, regions)) for date in dates_to_process
+            (date, merge_regions_for_date(date, regional_output_dir, regions)) for date in dates_to_process
         )
         if ds is not None
     ]
@@ -135,8 +144,11 @@ def main():
 
     start_date_str = f"{start_year}-{start_month:02d}"
     end_date_str = f"{end_year}-{end_month:02d}"
-    new_zarr_dataset_name = f"historical_breakpoint_results_{start_date_str}_{end_date_str}.zarr"
-    new_zarr_dataset_path = os.path.join(combined_zarr_datasets, new_zarr_dataset_name)
+    if region_name == "ALL":
+        new_zarr_dataset_name = f"historical_breakpoint_results_{start_date_str}_{end_date_str}.zarr"
+    else:
+        new_zarr_dataset_name = f"historical_breakpoint_results_{region_name}_{start_date_str}_{end_date_str}.zarr"
+    new_zarr_dataset_path = os.path.join(combined_output_dir, new_zarr_dataset_name)
 
     logger.info(f"Saving combined result to {new_zarr_dataset_path}")
     ds_combined.to_zarr(new_zarr_dataset_path, mode='w', align_chunks=True)

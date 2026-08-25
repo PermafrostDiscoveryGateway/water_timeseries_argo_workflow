@@ -19,9 +19,13 @@ spec:
     - name: start_month
       value: "6"
     - name: end_year
-      value: "2026"
+      value: "2018"
     - name: end_month
       value: "9"
+    - name: region_name
+      value: "ALL"
+    - name: combine
+      value: "true"
 
   podResourceRequest:
     cpu: "100m"
@@ -107,7 +111,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:create-historical-run
       imagePullPolicy: Always
       resources:
         requests:
@@ -144,7 +148,7 @@ spec:
           export EE_PROJECT=pdg-project-406720
           export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
 
-          mkdir -p /data/water_timeseries/{dynamic_world_data,input,output,checkpoint,temp_netcdf,breakpoints,combined_historical_zarr}
+          mkdir -p /data/water_timeseries/{dynamic_world_data,input,output,historical_output,regional_historical_output,checkpoint,temp_netcdf,breakpoints}
           chmod -R 755 /data/water_timeseries
 
           export TMPDIR=/data/water_timeseries/temp_netcdf
@@ -159,9 +163,8 @@ spec:
           dynamic_world_data=/data/water_timeseries/dynamic_world_data
           dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
-          output_dir=/data/water_timeseries/output
-          combined_zarr_datasets=/data/water_timeseries/combined_historical_zarr
-          region_name=ALL
+          regional_historical_output_dir=/data/water_timeseries/regional_historical_output
+          region_name={{workflow.parameters.region_name}}
           start_year={{workflow.parameters.start_year}}
           start_month={{workflow.parameters.start_month}}
           end_year={{workflow.parameters.end_year}}
@@ -210,7 +213,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:create-historical-run
       imagePullPolicy: Always
       resources:
         requests:
@@ -239,8 +242,10 @@ spec:
           export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
 
           cat > /data/.env << EOF
-          output_dir=/data/water_timeseries/output
-          combined_zarr_datasets=/data/water_timeseries/combined_historical_zarr
+          regional_historical_output_dir=/data/water_timeseries/regional_historical_output
+          historical_output_dir=/data/water_timeseries/historical_output
+          region_name={{workflow.parameters.region_name}}
+          combine={{workflow.parameters.combine}}
           start_year={{workflow.parameters.start_year}}
           start_month={{workflow.parameters.start_month}}
           end_year={{workflow.parameters.end_year}}

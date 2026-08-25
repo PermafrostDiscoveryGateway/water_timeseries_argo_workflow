@@ -2217,15 +2217,15 @@ def process_region_date_beast_historical(
         logger.info(f"Training data has {len(ds_historical_train.id_geohash)} IDs")
 
         # 6. Setup output directories
-        output_dir = os.environ.get('historical_output_dir')
+        output_dir = os.environ.get('regional_historical_output_dir')
         if not output_dir:
-            logger.error("❌ historical_output_dir not set in environment")
-            return {'success': False, 'error': 'historical_output_dir not set in environment'}
+            logger.error("❌ regional_historical_output_dir not set in environment")
+            return {'success': False, 'error': 'regional_historical_output_dir not set in environment'}
 
         output_dir = Path(output_dir) / region
         zarr_output_dir = output_dir / 'breakpoint_zarr'
         zarr_output_dir.mkdir(exist_ok=True, parents=True)
-        zarr_path = zarr_output_dir / f'beast_breakpoints_{analysis_date}.zarr'
+        zarr_path = zarr_output_dir / f'beast_breakpoints_{region}_{analysis_date}.zarr'
 
         current_breakpoint_dir = output_dir / f'beast_breakpoint_{analysis_date}'
         current_breakpoint_dir.mkdir(exist_ok=True, parents=True)

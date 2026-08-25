@@ -293,7 +293,7 @@ def main():
         'dynamic_world_data',
         'dynamic_world_downloads',
         'vector_lake_file',
-        'historical_output_dir',
+        'regional_historical_output_dir',
         'project',
         'region_name'
     ]
