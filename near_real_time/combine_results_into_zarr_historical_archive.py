@@ -118,18 +118,24 @@ def main():
     else:
         logger.info(f"No existing combined archive found in {combined_zarr_datasets} - starting a new one")
 
+    MANUAL = bool(os.environ.get("MANUAL"))
+
     SHOULD_RUN = False
     summer_months = [6, 7, 8, 9]
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
     TODAY_YEAR = TODAY.year
+    # Previous calendar month, wrapping the year when today is in January.
+    target_date = (pd.Timestamp(year=TODAY_YEAR, month=TODAY_MONTH, day=1) - pd.DateOffset(months=1)).strftime("%Y-%m")
 
-    if (TODAY_MONTH - 1) in summer_months:
+    if MANUAL:
+        SHOULD_RUN = True
+        logger.debug(f"MANUAL=True - bypassing day-of-month/season gate. Should run: {SHOULD_RUN}")
+        logger.debug(f"Target date: {target_date}")
+    elif (TODAY_MONTH - 1) in summer_months:
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 3:
             SHOULD_RUN = True
-            target_month = TODAY_MONTH - 1
-            target_date = f"{TODAY_YEAR}-{target_month:02d}"
             logger.debug(f"TODAY_DAY: {TODAY_DAY} - Should run: {SHOULD_RUN}")
             logger.debug(f"Target date: {target_date}")
 

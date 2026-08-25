@@ -444,7 +444,26 @@ def main():
         logger.warning("dynamic_world_data environment variable not set - skipping combined historical file sync")
         nrt_input_success = True
 
-    if zarr_success and parquet_success and nrt_output_success and nrt_input_success:
+    # Also sync the same combined historical files to the near-real-time
+    # "dynamic_world_data" bucket
+    nrt_dynamic_world_cloud_folder = 'water-timeseries-v2/near-real-time/dynamic_world_data'
+    if dynamic_world_data_dir:
+        logger.info(
+            f"Syncing combined historical files from {dynamic_world_data_dir} "
+            f"to gs://{bucket_name}/{nrt_dynamic_world_cloud_folder}"
+        )
+        nrt_dynamic_world_success = sync_top_level_matches_to_gcs(
+            base_dir=dynamic_world_data_dir,
+            bucket_name=bucket_name,
+            path_to_cloud_folder=nrt_dynamic_world_cloud_folder,
+            pattern="dynamic_world_historical_*.nc",
+            dry_run=dry_run
+        )
+    else:
+        logger.warning("dynamic_world_data environment variable not set - skipping dynamic_world_data sync")
+        nrt_dynamic_world_success = True
+
+    if zarr_success and parquet_success and nrt_output_success and nrt_input_success and nrt_dynamic_world_success:
         logger.info("Sync complete!")
     else:
         logger.error("Sync failed!")
