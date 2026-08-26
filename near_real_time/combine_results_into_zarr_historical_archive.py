@@ -8,6 +8,7 @@ nest_asyncio.apply()
 from dotenv import load_dotenv
 import os
 import glob
+import shutil
 import time
 import numpy as np
 import pandas as pd
@@ -45,7 +46,6 @@ def zarr_store_age_seconds(zarr_path):
 def discover_available_dates(output_dir, regions):
     """Return every date (e.g. '2026-07') that has at least one region breakpoint zarr in output_dir."""
     dates = set()
-    dates_by_region = {}
     for region in regions:
         breakpoint_dir = os.path.join(output_dir, region, 'breakpoint_zarr')
         suffix = ".zarr"
@@ -55,7 +55,6 @@ def discover_available_dates(output_dir, regions):
             date = filename[len("breakpoints_"):-len(suffix)]
             dates.add(date)
             region_dates.append(date)
-        dates_by_region[region] = sorted(region_dates)
         if region_dates:
             logger.debug(f"{region}: found breakpoint zarr for {sorted(region_dates)}")
         else:
@@ -249,23 +248,33 @@ def main():
     if ds_existing is not None:
         logger.info(f"Appending {len(target_dates)} new month(s) to existing combined archive...")
         ds_combined = xr.concat([ds_existing, ds_new_merged], dim="date", join="outer")
-        latest_date = pd.Timestamp(ds_combined.date.values[-1]).strftime("%Y-%m")
     else:
         ds_combined = ds_new_merged
-        latest_date = target_dates[-1]
 
     # Concatenation/alignment can leave ragged dask chunks (especially with join="outer"
     # padding mismatched id_geohash coordinates), which zarr refuses to write. Consolidate
     # to a single chunk per dimension before saving.
     ds_combined = ds_combined.chunk({"id_geohash": -1, "date": -1})
 
-    new_zarr_dataset_name = f"combined_historical_nrt_{latest_date}.zarr"
+    # Name the store after the full date range it covers (not just the latest month) so
+    # it's obvious from the filename alone that e.g. a "..._2026-07.zarr" store also
+    # holds June - it doesn't get a separate file per month, it's one growing archive.
+    combined_sorted_dates = sorted(pd.Timestamp(d) for d in ds_combined.date.values)
+    earliest_date = combined_sorted_dates[0].strftime("%Y-%m")
+    latest_date = combined_sorted_dates[-1].strftime("%Y-%m")
+    new_zarr_dataset_name = f"combined_historical_nrt_{earliest_date}_to_{latest_date}.zarr"
     new_zarr_dataset_path = os.path.join(combined_zarr_datasets, new_zarr_dataset_name)
 
-    logger.info(f"Saving combined result to {new_zarr_dataset_path}")
+    logger.info(f"Saving combined result ({earliest_date} to {latest_date}) to {new_zarr_dataset_path}")
     ds_combined.to_zarr(new_zarr_dataset_path, mode='w', align_chunks=True)
 
     logger.success(f"Combined zarr dataset written to {new_zarr_dataset_path}")
+
+    # The store is always rewritten in full above (mode='w'), so a previous store under
+    # the old name (e.g. before this month was added) is now a stale duplicate - remove it.
+    if existing_combined_path and os.path.abspath(existing_combined_path) != os.path.abspath(new_zarr_dataset_path):
+        logger.info(f"Removing superseded combined archive: {existing_combined_path}")
+        shutil.rmtree(existing_combined_path)
 
 
 if __name__ == "__main__":
