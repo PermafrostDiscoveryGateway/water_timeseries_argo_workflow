@@ -1,0 +1,37 @@
+site_name: water-timeseries-argo-workflow
+site_description: Argo Workflows pipeline for running the water time series lake drainage analysis on Google Kubernetes Engine
+site_url: https://PermafrostDiscoveryGateway.github.io/water_timeseries_argo_workflow/
+repo_url: https://github.com/PermafrostDiscoveryGateway/water_timeseries_argo_workflow
+repo_name: PermafrostDiscoveryGateway/water_timeseries_argo_workflow
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: blue
+      accent: light blue
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tasklist
+  - pymdownx.highlight
+  - toc:
+      permalink: "🔗"
+
+nav:
+  - Home: index.md
+  - Getting Started: getting_started.md
+  - Storage Setup: storage_setup.md
+  - Secrets Setup: secrets.md
+  - Argo Workflows (NRT Pipeline): argo_workflows.md
