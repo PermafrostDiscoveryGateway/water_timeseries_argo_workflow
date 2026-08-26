@@ -88,6 +88,9 @@ def main():
             logger.info(f"Deleting {old_dir} (last modified {modified}, {age_days:.1f} days old)")
             shutil.rmtree(old_dir)
 
+    if dry_run:
+        logger.info(f"[DRY RUN] Would delete {len(old_dirs)} debug directories")
+
 
 if __name__ == '__main__':
     main()
