@@ -55,9 +55,9 @@ spec:
             echo "Timestamp: $(date)"
 
             cat > /tmp/clean_up_debug.env << 'EOF'
-            debug_dir=/data/water_timeseries
-            num_days=15
-            DRY_RUN=True
+            debug_dir=/data/water_timeseries/debug
+            num_days=7
+            DRY_RUN=False
             EOF
 
             cd /app

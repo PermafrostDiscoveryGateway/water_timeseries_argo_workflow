@@ -60,7 +60,7 @@ spec:
           echo "Timestamp: $(date)"
 
           WORKFLOW_NAME="{{workflow.name}}"
-          DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          DEBUG_DIR="/data/water_timeseries/debug/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
           mkdir -p "$DEBUG_DIR"
           exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
 

@@ -112,7 +112,7 @@ spec:
             
             # Create debug directory on PVC for long-term storage
             WORKFLOW_NAME="{{workflow.name}}"
-            DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)"
+            DEBUG_DIR="/data/water_timeseries/debug/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)"
             mkdir -p "$DEBUG_DIR"
             
             # Also tee to PVC for persistence
