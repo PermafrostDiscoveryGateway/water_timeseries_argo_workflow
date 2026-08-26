@@ -1,0 +1,103 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: combine-zarr-historical-archive-
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  # One-off, manually-submitted run (not a CronWorkflow) that combines
+  # whatever regional breakpoint_zarr results are currently under `output`
+  # into the combined NRT historical zarr archive.
+  entrypoint: main
+
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+
+  imagePullSecrets:
+  - name: ghcr-secret
+
+  artifactRepository:
+    pvc:
+      claimName: argo-workflows-share
+      key: artifacts
+
+  volumes:
+  - name: lake-drainage-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+
+  templates:
+  - name: main
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:fix-merge
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "32Gi"
+          cpu: "8"
+          ephemeral-storage: "8Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="combine_zarr_historical_archive"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING MANUAL JOB: $STAGE ==="
+          echo "Timestamp: $(date)"
+
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
+          export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
+          export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
+          export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
+          export DASK_SCHEDULER=threads
+          export DASK_NUM_THREADS=$(nproc)
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          base_dir=/data/water_timeseries
+          output_dir=/data/water_timeseries/output
+          combined_zarr_datasets=/data/water_timeseries/combined_zarr_datasets
+          combine_all=True
+          MANUAL=True
+          EOF
+
+          cd /app
+          python -u /app/near_real_time/combine_results_into_zarr_historical_archive.py "$SCRATCH_DIR/.env"
+          SCRIPT_EXIT_CODE=$?
+
+          echo "=== $STAGE completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: lake-drainage-volume
+        mountPath: /data

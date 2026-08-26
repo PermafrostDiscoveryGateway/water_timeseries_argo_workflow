@@ -6,7 +6,7 @@ metadata:
   annotations:
     workflows.argoproj.io/pod-keep: "OnCompletion"
 spec:
-  schedule: "45 17 * * *"
+  schedule: "0 0 * * *"
   concurrencyPolicy: "Forbid"
   startingDeadlineSeconds: 300
   successfulJobsHistoryLimit: 3
@@ -14,7 +14,7 @@ spec:
   suspend: false
   workflowSpec:
     ttlStrategy:
-      secondsAfterCompletion: 86400
+      secondsAfterCompletion: 7200
     entrypoint: main
 
     podResourceRequest:
@@ -89,7 +89,7 @@ spec:
           archive:
             none: {}
       container:
-        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:fix-merge
         imagePullPolicy: Always
         resources:
           requests:
@@ -180,6 +180,7 @@ spec:
             dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
             vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
             output_dir=/data/water_timeseries/output
+            combined_zarr_datasets=/data/water_timeseries/combined_zarr_datasets
             EOF
             
             # Save environment info to PVC
@@ -196,11 +197,22 @@ spec:
             SCRIPT_EXIT_CODE=$?
             
             echo "=== SCRIPT COMPLETED with exit code: $SCRIPT_EXIT_CODE ==="
-            
-            # Check for output files
+
+            # Check the source of each of the four syncs (breakpoint_zarr dirs,
+            # drain_*.parquet, combined NRT zarr archives, combined historical files)
             if [ -d "/data/water_timeseries/output" ]; then
-              echo "Output files:"
+              echo "Output files (breakpoint_zarr + drain_*.parquet):"
               ls -lh /data/water_timeseries/output/
+            fi
+
+            if [ -d "/data/water_timeseries/combined_zarr_datasets" ]; then
+              echo "Combined NRT zarr archives:"
+              ls -lh /data/water_timeseries/combined_zarr_datasets/
+            fi
+
+            if [ -d "/data/water_timeseries/dynamic_world_data" ]; then
+              echo "Combined historical files:"
+              ls -lh /data/water_timeseries/dynamic_world_data/
             fi
             
             echo "=== DEBUG INFO SAVED TO: $DEBUG_DIR ==="
