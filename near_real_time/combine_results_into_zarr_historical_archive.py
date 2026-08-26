@@ -45,36 +45,65 @@ def zarr_store_age_seconds(zarr_path):
 def discover_available_dates(output_dir, regions):
     """Return every date (e.g. '2026-07') that has at least one region breakpoint zarr in output_dir."""
     dates = set()
+    dates_by_region = {}
     for region in regions:
         breakpoint_dir = os.path.join(output_dir, region, 'breakpoint_zarr')
         suffix = ".zarr"
+        region_dates = []
         for zarr_path in glob.glob(os.path.join(breakpoint_dir, f"breakpoints_*{suffix}")):
             filename = os.path.basename(zarr_path)
             date = filename[len("breakpoints_"):-len(suffix)]
             dates.add(date)
+            region_dates.append(date)
+        dates_by_region[region] = sorted(region_dates)
+        if region_dates:
+            logger.debug(f"{region}: found breakpoint zarr for {sorted(region_dates)}")
+        else:
+            logger.warning(f"{region}: no breakpoint zarr files found under {breakpoint_dir}")
     return sorted(dates)
 
 
 def merge_regions_for_date(date, output_dir, regions):
     """Open and merge every region's breakpoint zarr for a single date along id_geohash, skipping missing/stale stores."""
     results_paths_to_merge = []
+    missing_regions = []
+    stale_regions = []
     for region in regions:
         path = os.path.join(output_dir, region, 'breakpoint_zarr', f"breakpoints_{date}.zarr")
         if not os.path.exists(path):
-            logger.warning(f"Breakpoint zarr does not exist, skipping: {path}")
+            missing_regions.append(region)
+            logger.warning(f"[{date}] Breakpoint zarr does not exist, skipping: {path}")
             continue
         age_seconds = zarr_store_age_seconds(path)
         if age_seconds < STALE_THRESHOLD_SECONDS:
+            stale_regions.append(region)
             logger.warning(
-                f"Breakpoint zarr was modified {age_seconds:.0f}s ago (< {STALE_THRESHOLD_SECONDS}s) "
+                f"[{date}] Breakpoint zarr was modified {age_seconds:.0f}s ago (< {STALE_THRESHOLD_SECONDS}s) "
                 f"and may still be writing, skipping: {path}"
             )
             continue
         results_paths_to_merge.append(path)
 
+    logger.info(
+        f"[{date}] Region availability: {len(results_paths_to_merge)}/{len(regions)} usable"
+        f"{f', missing: {missing_regions}' if missing_regions else ''}"
+        f"{f', stale/still-writing: {stale_regions}' if stale_regions else ''}"
+    )
+
     if not results_paths_to_merge:
-        logger.error(f"No complete breakpoint zarr datasets available to merge for {date}")
+        logger.error(
+            f"[{date}] No complete breakpoint zarr datasets available to merge - this date will be "
+            f"dropped from this run. Missing for every region: {missing_regions or 'n/a'}; "
+            f"stale/still-writing: {stale_regions or 'n/a'}"
+        )
         return None
+
+    if missing_regions or stale_regions:
+        logger.warning(
+            f"[{date}] Merging PARTIAL data - {len(missing_regions)} region(s) missing, "
+            f"{len(stale_regions)} region(s) stale/still-writing. This month's combined archive "
+            f"will be incomplete for: {missing_regions + stale_regions}"
+        )
 
     logger.info(f"Opening {len(results_paths_to_merge)} region breakpoint zarr datasets for {date}...")
     merged = xr.open_mfdataset(
@@ -185,6 +214,16 @@ def main():
         )
         if ds is not None
     ]
+
+    merged_dates = {date for date, _ in per_date_items}
+    dropped_dates = [date for date in target_dates if date not in merged_dates]
+    if dropped_dates:
+        logger.warning(
+            f"{len(dropped_dates)} target date(s) will NOT be added to the combined archive this run "
+            f"because no region had usable breakpoint data for them: {dropped_dates}. "
+            f"See the '[<date>] Region availability' / 'this date will be dropped' log lines above "
+            f"for the per-region breakdown."
+        )
 
     if not per_date_items:
         logger.error("No complete breakpoint zarr datasets available to merge - aborting")
