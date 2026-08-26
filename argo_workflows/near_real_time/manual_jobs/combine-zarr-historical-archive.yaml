@@ -59,7 +59,8 @@ spec:
           echo "=== STARTING MANUAL JOB: $STAGE ==="
           echo "Timestamp: $(date)"
 
-          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
           mkdir -p "$DEBUG_DIR"
           exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
 

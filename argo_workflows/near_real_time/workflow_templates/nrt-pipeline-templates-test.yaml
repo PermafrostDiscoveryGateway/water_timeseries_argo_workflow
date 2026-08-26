@@ -109,7 +109,8 @@ spec:
           echo "=== STARTING NRT PIPELINE STAGE: $STAGE / $REGION_NAME ==="
           echo "Timestamp: $(date)"
 
-          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}_${REGION_NAME}"
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}_${REGION_NAME}"
           mkdir -p "$DEBUG_DIR"
           exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
 
@@ -222,7 +223,8 @@ spec:
           echo "=== STARTING NRT PIPELINE STAGE: $STAGE / $REGION_NAME ==="
           echo "Timestamp: $(date)"
 
-          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}_${REGION_NAME}"
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}_${REGION_NAME}"
           mkdir -p "$DEBUG_DIR"
           exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
 
@@ -360,7 +362,8 @@ spec:
           echo "=== STARTING NRT PIPELINE STAGE: $STAGE (attempt {{retries}}) ==="
           echo "Timestamp: $(date)"
 
-          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
           mkdir -p "$DEBUG_DIR"
           exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
 
@@ -596,7 +599,8 @@ spec:
           echo "=== STARTING NRT PIPELINE STAGE: $STAGE / $REGION_NAME ==="
           echo "Timestamp: $(date)"
 
-          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}_${REGION_NAME}"
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}_${REGION_NAME}"
           mkdir -p "$DEBUG_DIR"
           exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
 
@@ -703,7 +707,8 @@ spec:
           echo "=== STARTING NRT PIPELINE STAGE: $STAGE ==="
           echo "Timestamp: $(date)"
 
-          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
           mkdir -p "$DEBUG_DIR"
           exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
 
@@ -803,7 +808,8 @@ spec:
           echo "=== STARTING NRT PIPELINE STAGE: $STAGE ==="
           echo "Timestamp: $(date)"
 
-          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
           mkdir -p "$DEBUG_DIR"
           exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
 
@@ -881,7 +887,8 @@ spec:
           echo "=== STARTING NRT PIPELINE STAGE: $STAGE (dry run) ==="
           echo "Timestamp: $(date)"
 
-          DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
           mkdir -p "$DEBUG_DIR"
           exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
 

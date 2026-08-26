@@ -111,7 +111,8 @@ spec:
             echo "Pod: ${POD_NAME:-unknown}"
             
             # Create debug directory on PVC for long-term storage
-            DEBUG_DIR="/data/water_timeseries/debug_$(date +%Y%m%d_%H%M%S)"
+            WORKFLOW_NAME="{{workflow.name}}"
+            DEBUG_DIR="/data/water_timeseries/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)"
             mkdir -p "$DEBUG_DIR"
             
             # Also tee to PVC for persistence
