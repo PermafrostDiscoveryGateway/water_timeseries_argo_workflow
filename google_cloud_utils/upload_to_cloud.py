@@ -368,16 +368,16 @@ def main():
 
     if not output_dir:
         logger.error("output_dir environment variable not set")
-        return
+        sys.exit(1)
 
     if not project:
         logger.error("project environment variable not set")
-        return
+        sys.exit(1)
 
     # Verify output directory exists
     if not Path(output_dir).exists():
         logger.error(f"Output directory {output_dir} does not exist")
-        return
+        sys.exit(1)
 
     # Set environment variables
     os.environ["EE_PROJECT"] = project
@@ -448,6 +448,7 @@ def main():
         logger.info("Sync complete!")
     else:
         logger.error("Sync failed!")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

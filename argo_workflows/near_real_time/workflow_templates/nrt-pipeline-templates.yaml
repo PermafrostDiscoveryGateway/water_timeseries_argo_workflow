@@ -154,8 +154,8 @@ spec:
           EOF
 
           cd /app
-          python -u /app/near_real_time/download_region.py "$SCRATCH_DIR/.env"
-          SCRIPT_EXIT_CODE=$?
+          SCRIPT_EXIT_CODE=0
+          python -u /app/near_real_time/download_region.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
 
           echo "{\"stage\":\"$STAGE\",\"region\":\"$REGION_NAME\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
 
@@ -268,8 +268,8 @@ spec:
           EOF
 
           cd /app
-          python -u /app/near_real_time/download_region_missing_ids.py "$SCRATCH_DIR/.env"
-          SCRIPT_EXIT_CODE=$?
+          SCRIPT_EXIT_CODE=0
+          python -u /app/near_real_time/download_region_missing_ids.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
 
           echo "{\"stage\":\"$STAGE\",\"region\":\"$REGION_NAME\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
 
@@ -402,8 +402,8 @@ spec:
           EOF
 
           cd /app
-          python -u /app/near_real_time/merge_recent_downloads.py "$SCRATCH_DIR/.env"
-          SCRIPT_EXIT_CODE=$?
+          SCRIPT_EXIT_CODE=0
+          python -u /app/near_real_time/merge_recent_downloads.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
 
           echo "{\"stage\":\"$STAGE\",\"attempt\":\"{{retries}}\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
 
@@ -489,8 +489,8 @@ spec:
           EOF
 
           cd /app
-          python -u /app/near_real_time/check_all_regions_completion.py "$SCRATCH_DIR/.env"
-          SCRIPT_EXIT_CODE=$?
+          SCRIPT_EXIT_CODE=0
+          python -u /app/near_real_time/check_all_regions_completion.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
 
           # Defensive defaults in case the script errored before writing its outputs
           [ -f "$COMPLETION_OUTPUT_DIR/all_complete.txt" ] || echo "false" > "$COMPLETION_OUTPUT_DIR/all_complete.txt"
@@ -535,6 +535,8 @@ spec:
     - - name: backfill
         template: download-missing-region
         when: "{{steps.check.outputs.parameters.all-complete}} != true && {{inputs.parameters.attempt}} < {{inputs.parameters.max-attempts}}"
+        continueOn:
+          failed: true
         arguments:
           parameters:
           - name: region_name
@@ -645,8 +647,8 @@ spec:
           } > "$SCRATCH_DIR/.env"
 
           cd /app
-          python -u /app/near_real_time/process_NRT.py "$SCRATCH_DIR/.env"
-          SCRIPT_EXIT_CODE=$?
+          SCRIPT_EXIT_CODE=0
+          python -u /app/near_real_time/process_NRT.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
 
           echo "{\"stage\":\"$STAGE\",\"region\":\"$REGION_NAME\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
 
@@ -745,8 +747,8 @@ spec:
           EOF
 
           cd /app
-          python -u /app/near_real_time/create_new_historical_file.py "$SCRATCH_DIR/.env"
-          SCRIPT_EXIT_CODE=$?
+          SCRIPT_EXIT_CODE=0
+          python -u /app/near_real_time/create_new_historical_file.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
 
           echo "{\"stage\":\"$STAGE\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
 
@@ -832,8 +834,8 @@ spec:
           EOF
 
           cd /app
-          python -u /app/near_real_time/combine_results_into_zarr_historical_archive.py "$SCRATCH_DIR/.env"
-          SCRIPT_EXIT_CODE=$?
+          SCRIPT_EXIT_CODE=0
+          python -u /app/near_real_time/combine_results_into_zarr_historical_archive.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
 
           echo "{\"stage\":\"$STAGE\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
 
@@ -919,8 +921,8 @@ spec:
           EOF
 
           cd /app
-          python -u /app/google_cloud_utils/upload_to_cloud.py "$SCRATCH_DIR/.env"
-          SCRIPT_EXIT_CODE=$?
+          SCRIPT_EXIT_CODE=0
+          python -u /app/google_cloud_utils/upload_to_cloud.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
 
           echo "{\"stage\":\"$STAGE\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
 
