@@ -747,13 +747,15 @@ def main():
     logger.info("STEP 3: Merging combined file with historical data")
     logger.info("=" * 80)
 
-    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-
-    # Find the most recent .nc file (excluding the merge directory)
-    # Use the helper from your earlier code
+    # Find the most recent dynamic_world_historical_*.nc file (excluding the merge
+    # directory). Matching on this filename pattern -- rather than every *.nc file
+    # in the directory -- matters because dynamic_world_data_dir also holds
+    # unrelated files like lakes_dw_V2d_compressed.nc (used by process_NRT.py);
+    # whichever of those happens to have the newest mtime would otherwise get
+    # picked as the "historical" baseline instead of the real one.
     from pathlib import Path
     def find_most_recent_nc_file(directory):
-        nc_files = list(Path(directory).glob("*.nc"))
+        nc_files = list(Path(directory).glob("dynamic_world_historical_*.nc"))
         if not nc_files:
             return None
         return max(nc_files, key=lambda f: f.stat().st_mtime)

@@ -27,12 +27,12 @@ spec:
     - name: main
       resources:
         requests:
-          cpu: "8"
-          memory: "32Gi"
+          cpu: "4"
+          memory: "16Gi"
           ephemeral-storage: "8Gi"
         limits:
-          cpu: "16"
-          memory: "48Gi"
+          cpu: "8"
+          memory: "24Gi"
           ephemeral-storage: "16Gi"
 
   artifactRepository:
