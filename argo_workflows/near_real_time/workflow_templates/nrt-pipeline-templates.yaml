@@ -27,12 +27,12 @@ spec:
     - name: main
       resources:
         requests:
-          cpu: "8"
-          memory: "32Gi"
+          cpu: "4"
+          memory: "14Gi"
           ephemeral-storage: "8Gi"
         limits:
-          cpu: "16"
-          memory: "48Gi"
+          cpu: "4"
+          memory: "20Gi"
           ephemeral-storage: "16Gi"
 
   artifactRepository:
@@ -92,9 +92,13 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "32Gi"
-          cpu: "8"
+          memory: "14Gi"
+          cpu: "4"
           ephemeral-storage: "8Gi"
+        limits:
+          memory: "20Gi"
+          cpu: "4"
+          ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
         - |
@@ -205,9 +209,13 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "32Gi"
-          cpu: "8"
+          memory: "14Gi"
+          cpu: "4"
           ephemeral-storage: "8Gi"
+        limits:
+          memory: "20Gi"
+          cpu: "4"
+          ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
         - |
@@ -344,9 +352,13 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "32Gi"
-          cpu: "8"
+          memory: "14Gi"
+          cpu: "4"
           ephemeral-storage: "8Gi"
+        limits:
+          memory: "20Gi"
+          cpu: "4"
+          ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
         - |
@@ -447,13 +459,13 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "8Gi"
-          cpu: "2"
-          ephemeral-storage: "4Gi"
+          memory: "4Gi"
+          cpu: "1"
+          ephemeral-storage: "2Gi"
         limits:
-          cpu: "4"
-          memory: "16Gi"
-          ephemeral-storage: "8Gi"
+          cpu: "2"
+          memory: "6Gi"
+          ephemeral-storage: "4Gi"
       command: ["bash", "-c"]
       args:
         - |
@@ -574,9 +586,13 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "32Gi"
-          cpu: "8"
+          memory: "14Gi"
+          cpu: "4"
           ephemeral-storage: "8Gi"
+        limits:
+          memory: "20Gi"
+          cpu: "4"
+          ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
         - |
@@ -685,9 +701,13 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "32Gi"
-          cpu: "8"
+          memory: "14Gi"
+          cpu: "4"
           ephemeral-storage: "8Gi"
+        limits:
+          memory: "20Gi"
+          cpu: "4"
+          ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
         - |
@@ -784,9 +804,13 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "32Gi"
-          cpu: "8"
+          memory: "14Gi"
+          cpu: "4"
           ephemeral-storage: "8Gi"
+        limits:
+          memory: "20Gi"
+          cpu: "4"
+          ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
         - |
@@ -862,9 +886,13 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "32Gi"
-          cpu: "8"
+          memory: "14Gi"
+          cpu: "4"
           ephemeral-storage: "8Gi"
+        limits:
+          memory: "20Gi"
+          cpu: "4"
+          ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
         - |

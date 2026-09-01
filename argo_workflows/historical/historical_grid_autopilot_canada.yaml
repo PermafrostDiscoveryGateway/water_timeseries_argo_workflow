@@ -33,12 +33,12 @@ spec:
     - name: main
       resources:
         requests:
-          cpu: "8"
-          memory: "32Gi"
+          cpu: "4"
+          memory: "14Gi"
           ephemeral-storage: "8Gi"
         limits:
-          cpu: "16"
-          memory: "48Gi"
+          cpu: "4"
+          memory: "20Gi"
           ephemeral-storage: "16Gi"
 
   artifactRepository:
@@ -86,9 +86,13 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "32Gi"
-          cpu: "8"
+          memory: "14Gi"
+          cpu: "4"
           ephemeral-storage: "8Gi"
+        limits:
+          memory: "20Gi"
+          cpu: "4"
+          ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
         - |
