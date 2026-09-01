@@ -43,9 +43,13 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "32Gi"
-          cpu: "8"
+          memory: "14Gi"
+          cpu: "4"
           ephemeral-storage: "8Gi"
+        limits:
+          memory: "20Gi"
+          cpu: "4"
+          ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
         - |
