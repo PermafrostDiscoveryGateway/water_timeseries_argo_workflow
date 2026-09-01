@@ -3,9 +3,10 @@
 # Normal runs only fire in June-September, and only a few days into the month
 # (so the prior month's upstream data is actually available) - see the
 # `TODAY_DAY > N` checks next to each call site. A test run needs to be able
-# to fire on any day, against whichever month is actually testable, so it
-# always targets the current month if that's a summer month, otherwise the
-# most recent summer month before today.
+# to fire on any day, against whichever month is actually testable. The
+# current month is never a candidate - even in-season it's still in
+# progress and won't have data yet - so this always targets the most recent
+# *complete* summer month, starting the search at last month.
 import os
 from datetime import datetime
 
@@ -20,6 +21,10 @@ def most_recent_summer_month(today: datetime = None) -> datetime:
     if today is None:
         today = datetime.now()
     year, month = today.year, today.month
+    month -= 1
+    if month == 0:
+        month = 12
+        year -= 1
     while month not in SUMMER_MONTHS:
         month -= 1
         if month == 0:
