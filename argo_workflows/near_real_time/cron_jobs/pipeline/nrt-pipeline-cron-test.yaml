@@ -124,17 +124,10 @@ spec:
             name: nrt-pipeline-templates-test
             template: create-historical-zarr-archive
 
-        # Runs after the combined NRT zarr archive has been created/updated.
+        # Last stage in the test pipeline, run once the combined NRT zarr
+        # archive has been created/updated.
         - name: create-historical-file
           depends: "create-historical-zarr-archive"
           templateRef:
             name: nrt-pipeline-templates-test
             template: create-new-historical-file
-
-        # Last stage in the test pipeline. Runs with dry_run=True, so it only
-        # logs what would be uploaded rather than actually syncing to GCS.
-        - name: upload
-          depends: "create-historical-file"
-          templateRef:
-            name: nrt-pipeline-templates-test
-            template: upload

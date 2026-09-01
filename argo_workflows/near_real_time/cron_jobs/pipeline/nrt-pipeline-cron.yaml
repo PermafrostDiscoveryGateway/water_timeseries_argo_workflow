@@ -126,17 +126,9 @@ spec:
             name: nrt-pipeline-templates
             template: create-historical-zarr-archive
 
-        # Runs after the combined NRT zarr archive has been created/updated.
+        # Runs last, after the combined NRT zarr archive has been created/updated.
         - name: create-historical-file
           depends: "create-historical-zarr-archive"
           templateRef:
             name: nrt-pipeline-templates
             template: create-new-historical-file
-
-        # Runs last: syncs breakpoint/parquet results, the combined NRT zarr
-        # archive, and the combined historical file to GCS.
-        - name: upload
-          depends: "create-historical-file"
-          templateRef:
-            name: nrt-pipeline-templates
-            template: upload
