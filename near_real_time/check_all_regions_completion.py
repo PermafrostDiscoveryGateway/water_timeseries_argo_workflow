@@ -25,6 +25,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from utils.region_boundaries import get_region_boundaries, get_small_regions
+from utils.date_gate import is_test_run, most_recent_summer_month
 from near_real_time.download_region_missing_ids import (
     get_region_lakes,
     get_historical_valid_ids,
@@ -76,7 +77,13 @@ def main():
     # scripts use, so the checker doesn't chase a date nobody is processing.
     summer_months = [6, 7, 8, 9]
     TODAY = datetime.now()
-    should_run = (TODAY.month - 1) in summer_months and TODAY.day > 3
+    if is_test_run():
+        should_run = True
+        target_month = most_recent_summer_month(TODAY)
+        logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
+    else:
+        should_run = (TODAY.month - 1) in summer_months and TODAY.day > 3
+        target_month = datetime(TODAY.year, TODAY.month - 1, 1)
 
     if not should_run:
         logger.info("Outside the operating window this month - reporting all-complete so the pipeline proceeds")
@@ -84,7 +91,7 @@ def main():
         (output_dir / 'incomplete_regions.json').write_text('[]')
         return 0
 
-    date_to_run = datetime(TODAY.year, TODAY.month - 1, 1).strftime("%Y-%m")
+    date_to_run = target_month.strftime("%Y-%m")
 
     region_boundaries = get_region_boundaries()
     all_regions = list(region_boundaries.keys())

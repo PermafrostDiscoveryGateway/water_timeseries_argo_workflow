@@ -1,4 +1,5 @@
 from utils.helper_functions import verify_merged_netcdf, enable_memory_tracking, log_memory_usage
+from utils.date_gate import is_test_run, most_recent_summer_month
 import sys
 from loguru import logger
 from datetime import datetime
@@ -672,11 +673,17 @@ def main():
 
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
+    target_month = None
 
-    if TODAY_MONTH - 1 in summer_months:
+    if is_test_run():
+        SHOULD_RUN = True
+        target_month = most_recent_summer_month(TODAY)
+        logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
+    elif TODAY_MONTH - 1 in summer_months:
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 3:
             SHOULD_RUN = True
+            target_month = datetime(TODAY.year, TODAY_MONTH - 1, 1)
             logger.debug(f"Should run: {SHOULD_RUN}")
 
     if not SHOULD_RUN:
@@ -684,7 +691,7 @@ def main():
         return
 
     # ========== Prepare date to run ==========
-    date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
+    date_to_run = target_month.strftime("%Y-%m")
     logger.info(f"Processing date: {date_to_run}")
 
     # ========== STEP 1: Wait for region merges to complete ==========

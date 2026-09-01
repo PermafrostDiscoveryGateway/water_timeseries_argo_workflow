@@ -1,4 +1,5 @@
 from utils.helper_functions import verify_downloads_complete , download_near_real_time_region_dates, compare_netcdf_files
+from utils.date_gate import is_test_run, most_recent_summer_month
 import sys
 import utils.download_utils as download_new_dynamic_world_data
 from loguru import logger
@@ -112,17 +113,23 @@ def main():
 
     TODAY =  datetime.now()
     TODAY_MONTH = TODAY.month
-    if TODAY_MONTH - 1 in summer_months:
+    target_month = None
+    if is_test_run():
+        target_month = most_recent_summer_month(TODAY)
+        SHOULD_RUN = True
+        logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
+    elif TODAY_MONTH - 1 in summer_months:
         logger.debug(f"TODAY MONTH: {TODAY_MONTH}")
         logger.debug(f"Last month: {TODAY.month - 1} checking to see if we should run")
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 2:
             SHOULD_RUN = True
+            target_month = datetime(TODAY.year, TODAY_MONTH - 1, 1)
             logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
 
     if SHOULD_RUN:
-        timestamp_to_run = [pd.Timestamp(date(datetime.now().year, TODAY_MONTH -1, 1))]
-        date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
+        timestamp_to_run = [pd.Timestamp(target_month)]
+        date_to_run = [target_month.strftime("%Y-%m")]
         logger.debug(f"timestamp_to_run: {timestamp_to_run}")
 
         downloads_complete = verify_downloads_complete(region=REGION, analysis_dates=date_to_run)

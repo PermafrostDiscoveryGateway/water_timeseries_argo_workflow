@@ -39,6 +39,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from utils.region_boundaries import get_region_boundaries
+from utils.date_gate import is_test_run, most_recent_summer_month
 
 # Accept a batch as complete if this fraction of its requested lakes come
 # back. Matches TILE_COMPLETION_THRESHOLD in utils/helper_functions.py and
@@ -140,16 +141,22 @@ def main():
     summer_months = [6, 7, 8, 9]
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
-    if TODAY_MONTH - 1 in summer_months:
+    target_month = None
+    if is_test_run():
+        target_month = most_recent_summer_month(TODAY)
+        SHOULD_RUN = True
+        logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
+    elif TODAY_MONTH - 1 in summer_months:
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 2:
             SHOULD_RUN = True
+            target_month = datetime(TODAY.year, TODAY_MONTH - 1, 1)
 
     if not SHOULD_RUN:
         logger.debug("Too early in the month to run - exiting")
         return 0
 
-    date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
+    date_to_run = target_month.strftime("%Y-%m")
     logger.info(f"Backfilling missing IDs for {REGION} / {date_to_run}")
 
     # ========== FIGURE OUT WHICH IDs ARE ACTUALLY MISSING ==========

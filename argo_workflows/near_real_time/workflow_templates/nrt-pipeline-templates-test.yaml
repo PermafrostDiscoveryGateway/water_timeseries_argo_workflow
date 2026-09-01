@@ -155,6 +155,7 @@ spec:
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           output_dir=/data/water_timeseries/test/output
           region_name=${REGION_NAME}
+          test_run=True
           EOF
 
           cd /app
@@ -273,6 +274,7 @@ spec:
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           output_dir=/data/water_timeseries/test/output
           region_name=${REGION_NAME}
+          test_run=True
           EOF
 
           cd /app
@@ -659,6 +661,7 @@ spec:
             echo "vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
             echo "output_dir=/data/water_timeseries/test/output"
             echo "region_name=${REGION_NAME}"
+            echo "test_run=True"
             [ -n "$ID_CHUNK_SIZE" ] && echo "id_chunk_size=${ID_CHUNK_SIZE}"
             [ -n "$SAVE_INTERVAL" ] && echo "save_interval=${SAVE_INTERVAL}"
             [ -n "$N_JOBS" ] && echo "n_jobs=${N_JOBS}"
@@ -858,6 +861,7 @@ spec:
           output_dir=/data/water_timeseries/test/output
           combined_zarr_datasets=/data/water_timeseries/combined_zarr_datasets
           combine_all=True
+          test_run=True
           EOF
 
           cd /app

@@ -1,4 +1,5 @@
 from utils.helper_functions import verify_downloads_complete, merge_new_results
+from utils.date_gate import is_test_run, most_recent_summer_month
 import sys
 from loguru import logger
 from datetime import datetime, timedelta
@@ -1022,18 +1023,22 @@ def main():
     # ========== Determine if we should run ==========
     SHOULD_RUN = False
     summer_months = [6, 7, 8, 9]
-    test_mode = os.environ.get('test', 'False').lower() in ('true', '1', 'yes')
 
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
+    target_month = None
 
-    if test_mode:
+    if is_test_run():
         SHOULD_RUN = True
-        logger.debug("test=True - bypassing the summer-month/day-of-month gate so this can run any time")
+        target_month = most_recent_summer_month(TODAY)
+        logger.debug(f"test_run=True - bypassing the summer-month/day-of-month gate, using {target_month.strftime('%Y-%m')}")
     elif TODAY_MONTH - 1 in summer_months:
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 3:
             SHOULD_RUN = True
+            # Last complete (previous) month, computed this way so it also
+            # handles the January wraparound correctly.
+            target_month = TODAY.replace(day=1) - timedelta(days=1)
             logger.debug(f"Should run: {SHOULD_RUN}")
 
     if not SHOULD_RUN:
@@ -1041,11 +1046,7 @@ def main():
         return
 
     # ========== Prepare date to run ==========
-    # Last complete (previous) month, computed this way so it also handles the
-    # January wraparound correctly - reachable now that test_mode can trigger
-    # a run in any month, not just June-September.
-    last_month_date = TODAY.replace(day=1) - timedelta(days=1)
-    date_to_run = last_month_date.strftime("%Y-%m")
+    date_to_run = target_month.strftime("%Y-%m")
     logger.info(f"Processing date: {date_to_run}")
 
     # ========== Process ALL regions (FAST - no verification) ==========

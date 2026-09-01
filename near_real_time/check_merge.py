@@ -8,6 +8,7 @@ import os
 import glob
 import time
 import utils.region_boundaries
+from utils.date_gate import is_test_run, most_recent_summer_month
 from pathlib import Path
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
@@ -114,14 +115,20 @@ def main():
 
     TODAY =  datetime.now()
     TODAY_MONTH = TODAY.month
-    if TODAY_MONTH - 1 in summer_months:
+    target_month = None
+    if is_test_run():
+        target_month = most_recent_summer_month(TODAY)
+        SHOULD_RUN = True
+        logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
+    elif TODAY_MONTH - 1 in summer_months:
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 3:
             SHOULD_RUN = True
+            target_month = datetime(TODAY.year, TODAY_MONTH - 1, 1)
             logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
 
     if SHOULD_RUN:
-        date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
+        date_to_run = [target_month.strftime("%Y-%m")]
         dates_to_run_string = date_to_run[0].replace('-', '_')
         name_of_final_merge_file = f"{dynamic_world_data_dir}_lakes_dw_Vdc_{dates_to_run_string}.nc"
         REGIONS = utils.region_boundaries.get_region_boundaries()
