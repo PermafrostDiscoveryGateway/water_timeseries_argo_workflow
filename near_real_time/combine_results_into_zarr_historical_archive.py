@@ -236,11 +236,13 @@ def main():
 
     target_dates = [date for date, _ in per_date_items]
 
-    # Each per-region store already has a per-lake 'date' variable (breakpoint date),
-    # which collides with the 'date' dimension we're about to create to stack months.
-    # Rename it out of the way before adding the real month coordinate.
+    # Some per-region stores have a per-lake 'date' variable (breakpoint date),
+    # which would collide with the 'date' dimension we're about to create to
+    # stack months - rename it out of the way when present. Current breakpoint
+    # output instead uses date_before_break/date_after_break/date_break, which
+    # don't collide and are left as-is; those are enough on their own.
     per_date_datasets = [
-        ds.rename({"date": "breakpoint_date"})
+        (ds.rename({"date": "breakpoint_date"}) if "date" in ds.variables or "date" in ds.dims else ds)
         .assign_coords(date=pd.Timestamp(f"{date}-01"))
         .expand_dims("date")
         for date, ds in per_date_items

@@ -465,13 +465,13 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "4Gi"
-          cpu: "1"
-          ephemeral-storage: "2Gi"
+          memory: "14Gi"
+          cpu: "4"
+          ephemeral-storage: "8Gi"
         limits:
-          cpu: "2"
-          memory: "6Gi"
-          ephemeral-storage: "4Gi"
+          cpu: "4"
+          memory: "20Gi"
+          ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
         - |
@@ -548,6 +548,8 @@ spec:
           failed: true
     - - name: check
         template: check-all-regions-completion
+        continueOn:
+          failed: true
     - - name: backfill
         template: download-missing-region
         when: "{{steps.check.outputs.parameters.all-complete}} != true && {{inputs.parameters.attempt}} < {{inputs.parameters.max-attempts}}"
