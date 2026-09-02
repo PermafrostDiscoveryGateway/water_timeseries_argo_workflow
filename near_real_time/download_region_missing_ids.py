@@ -44,7 +44,7 @@ from utils.date_gate import is_test_run, most_recent_summer_month
 # Accept a batch as complete if this fraction of its requested lakes come
 # back. Matches TILE_COMPLETION_THRESHOLD in utils/helper_functions.py and
 # COMPLETION_THRESHOLD/ACCEPTABLE_MERGE_THRESHOLD in merge_recent_downloads.py.
-COMPLETION_THRESHOLD = 0.99
+COMPLETION_THRESHOLD = 0.98
 
 # How many lakes to request per Earth Engine call.
 BATCH_SIZE = 500

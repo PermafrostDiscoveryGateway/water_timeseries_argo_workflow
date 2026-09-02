@@ -579,7 +579,7 @@ def generate_expected_dates(
 # when a few requested lakes never come back (chronic per-feature GEE
 # errors). Matches COMPLETION_THRESHOLD/ACCEPTABLE_MERGE_THRESHOLD in
 # near_real_time/merge_recent_downloads.py.
-TILE_COMPLETION_THRESHOLD = 0.99
+TILE_COMPLETION_THRESHOLD = 0.98
 
 
 def download_near_real_time_region_dates(
@@ -877,7 +877,7 @@ def download_near_real_time_region_dates(
 
                     # A small residual of chronically-unavailable lakes (GEE
                     # errors that never clear) should not be retried forever.
-                    # Accept >=99% per tile, matching the region-level
+                    # Accept >=98% per tile, matching the region-level
                     # COMPLETION_THRESHOLD/ACCEPTABLE_MERGE_THRESHOLD used
                     # downstream in merge_recent_downloads.py.
                     if missing_in_tile and tile_completion_pct < TILE_COMPLETION_THRESHOLD:
