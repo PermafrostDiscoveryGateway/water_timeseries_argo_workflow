@@ -88,7 +88,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
       imagePullPolicy: Always
       resources:
         requests:
@@ -207,7 +207,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
       imagePullPolicy: Always
       resources:
         requests:
@@ -352,7 +352,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
       imagePullPolicy: Always
       resources:
         requests:
@@ -461,7 +461,7 @@ spec:
         valueFrom:
           path: /tmp/completion/incomplete_regions.json
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
       imagePullPolicy: Always
       resources:
         requests:
@@ -593,7 +593,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
       imagePullPolicy: Always
       resources:
         requests:
@@ -710,7 +710,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
       imagePullPolicy: Always
       resources:
         requests:
@@ -815,7 +815,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
       imagePullPolicy: Always
       resources:
         requests:
@@ -899,7 +899,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
       imagePullPolicy: Always
       resources:
         requests:

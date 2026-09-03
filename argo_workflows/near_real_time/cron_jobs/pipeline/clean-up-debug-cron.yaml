@@ -38,7 +38,7 @@ spec:
         labels:
           long-running-job: "true"
       container:
-        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
+        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
         imagePullPolicy: Always
         resources:
           requests:
