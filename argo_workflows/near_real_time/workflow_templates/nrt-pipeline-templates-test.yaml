@@ -93,11 +93,11 @@ spec:
       resources:
         requests:
           memory: "14Gi"
-          cpu: "4"
+          cpu: "1"
           ephemeral-storage: "8Gi"
         limits:
           memory: "20Gi"
-          cpu: "4"
+          cpu: "1"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
@@ -212,11 +212,11 @@ spec:
       resources:
         requests:
           memory: "14Gi"
-          cpu: "4"
+          cpu: "1"
           ephemeral-storage: "8Gi"
         limits:
           memory: "20Gi"
-          cpu: "4"
+          cpu: "1"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
@@ -357,11 +357,11 @@ spec:
       resources:
         requests:
           memory: "14Gi"
-          cpu: "4"
+          cpu: "2"
           ephemeral-storage: "8Gi"
         limits:
           memory: "20Gi"
-          cpu: "4"
+          cpu: "2"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
@@ -466,10 +466,10 @@ spec:
       resources:
         requests:
           memory: "14Gi"
-          cpu: "4"
+          cpu: "1"
           ephemeral-storage: "8Gi"
         limits:
-          cpu: "4"
+          cpu: "1"
           memory: "20Gi"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
@@ -715,11 +715,11 @@ spec:
       resources:
         requests:
           memory: "14Gi"
-          cpu: "4"
+          cpu: "2"
           ephemeral-storage: "8Gi"
         limits:
           memory: "20Gi"
-          cpu: "4"
+          cpu: "2"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
@@ -820,11 +820,11 @@ spec:
       resources:
         requests:
           memory: "14Gi"
-          cpu: "4"
+          cpu: "2"
           ephemeral-storage: "8Gi"
         limits:
           memory: "20Gi"
-          cpu: "4"
+          cpu: "2"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
@@ -904,11 +904,11 @@ spec:
       resources:
         requests:
           memory: "14Gi"
-          cpu: "4"
+          cpu: "1"
           ephemeral-storage: "8Gi"
         limits:
           memory: "20Gi"
-          cpu: "4"
+          cpu: "1"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:

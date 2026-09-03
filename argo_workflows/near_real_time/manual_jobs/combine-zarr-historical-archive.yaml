@@ -44,11 +44,11 @@ spec:
       resources:
         requests:
           memory: "14Gi"
-          cpu: "4"
+          cpu: "2"
           ephemeral-storage: "8Gi"
         limits:
           memory: "20Gi"
-          cpu: "4"
+          cpu: "2"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
