@@ -92,11 +92,11 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "14Gi"
+          memory: "4Gi"
           cpu: "1"
           ephemeral-storage: "8Gi"
         limits:
-          memory: "20Gi"
+          memory: "8Gi"
           cpu: "1"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
@@ -153,6 +153,7 @@ spec:
           dynamic_world_data=/data/water_timeseries/dynamic_world_data
           dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          region_lake_polygons_dir=/data/water_timeseries/region_lake_polygons
           output_dir=/data/water_timeseries/output
           region_name=${REGION_NAME}
           EOF
@@ -210,11 +211,11 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "14Gi"
+          memory: "4Gi"
           cpu: "1"
           ephemeral-storage: "8Gi"
         limits:
-          memory: "20Gi"
+          memory: "8Gi"
           cpu: "1"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
@@ -271,6 +272,7 @@ spec:
           dynamic_world_data=/data/water_timeseries/dynamic_world_data
           dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          region_lake_polygons_dir=/data/water_timeseries/region_lake_polygons
           output_dir=/data/water_timeseries/output
           region_name=${REGION_NAME}
           EOF
@@ -657,6 +659,7 @@ spec:
             echo "dynamic_world_data=/data/water_timeseries/dynamic_world_data"
             echo "dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads"
             echo "vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
+            echo "region_lake_polygons_dir=/data/water_timeseries/region_lake_polygons"
             echo "output_dir=/data/water_timeseries/output"
             echo "region_name=${REGION_NAME}"
             [ -n "$ID_CHUNK_SIZE" ] && echo "id_chunk_size=${ID_CHUNK_SIZE}"
