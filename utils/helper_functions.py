@@ -675,8 +675,8 @@ def download_near_real_time_region_dates(
         logger.info("No dates to process")
         return {'success': True, 'dates_processed': [], 'message': 'No dates to process'}
 
-    vector_lake_file = os.environ['vector_lake_file']
-    path_lake_vector = vector_lake_file
+    region_lake_polygons_dir = os.environ['region_lake_polygons_dir']
+    path_lake_vector = Path(region_lake_polygons_dir) / f"{REGION_NAME}_lake_polygons.parquet"
 
     # Track results for all dates
     all_results = {}
@@ -696,7 +696,9 @@ def download_near_real_time_region_dates(
     ds_original.close()
     logger.info(f"Found {len(original_valid_ids)} valid IDs in original historical dataset")
 
-    # Load GDF once for the region (same for all dates)
+    # Load the pre-split, region-scoped lake vector file (id_geohash + full geometry
+    # for just this region) instead of the multi-GB global vector file.
+    logger.info(f"Loading pre-split lake vector file for {REGION_NAME}: {path_lake_vector}")
     gdf = gpd.read_parquet(path_lake_vector)
     log_memory_usage("After loading lake vectors")
 

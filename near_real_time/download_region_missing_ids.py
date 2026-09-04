@@ -133,7 +133,7 @@ def main():
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     dynamic_world_download_dir = Path(os.environ['dynamic_world_downloads'])
-    vector_lake_file = os.environ['vector_lake_file']
+    region_lake_polygons_dir = os.environ['region_lake_polygons_dir']
     project = os.environ['project']
 
     # ========== DETERMINE DATE TO RUN (same window as the regular download jobs) ==========
@@ -170,13 +170,13 @@ def main():
     ds_merged.close()
     logger.info(f"Merged file currently has {len(ids_in_merged_file):,} IDs")
 
-    logger.info("Loading lake vector file...")
-    gdf = gpd.read_parquet(vector_lake_file)
-    gdf['id_geohash'] = gdf['id_geohash'].apply(normalize_id)
+    region_lake_file = Path(region_lake_polygons_dir) / f"{REGION}_lake_polygons.parquet"
+    logger.info(f"Loading pre-split lake vector file for {REGION}: {region_lake_file}")
+    gdf_region = gpd.read_parquet(region_lake_file)
+    gdf_region['id_geohash'] = gdf_region['id_geohash'].apply(normalize_id)
 
-    gdf_region = get_region_lakes(gdf, region_boundaries, REGION)
     region_ids = set(gdf_region['id_geohash'].values.tolist())
-    logger.info(f"Region {REGION} bounding box contains {len(region_ids):,} lakes")
+    logger.info(f"Region {REGION} has {len(region_ids):,} lakes")
 
     historical_valid_ids = get_historical_valid_ids(dynamic_world_data_dir)
     if historical_valid_ids is not None:
