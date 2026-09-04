@@ -1631,9 +1631,9 @@ def process_region_date_new_fast_NRT(
         historical_file = max(nc_files, key=os.path.getmtime)
         logger.debug(f"Using historical file {historical_file}")
         new_data_file = merge_dir / f"dw_{region}_{analysis_date}.nc"
-        vector_lake_file = os.environ.get('vector_lake_file')
+        region_lake_polygons_dir = os.environ.get('region_lake_polygons_dir')
 
-        # 2. Get region boundaries
+        # 2. Validate the region name
         from utils.region_boundaries import get_region_boundaries
         region_boundaries = get_region_boundaries()
 
@@ -1641,37 +1641,21 @@ def process_region_date_new_fast_NRT(
             logger.error(f"❌ Region {region} not found in boundaries!")
             return {'success': False, 'error': f'Region {region} not found in boundaries'}
 
-        bounds = region_boundaries[region]
-        logger.info(f"📍 Region boundaries for {region}:")
-        logger.info(f"   X_MIN_START: {bounds['X_MIN_START']}")
-        logger.info(f"   X_MIN_END: {bounds['X_MIN_END']}")
-        logger.info(f"   Y_MIN_START: {bounds['Y_MIN_START']}")
-        logger.info(f"   Y_MIN_END: {bounds['Y_MIN_END']}")
+        # 3. Load region IDs from the pre-split, region-scoped lake vector file.
+        # Only id_geohash is needed here - region_ids_list is only used below to
+        # select IDs out of the historical/analysis NetCDF files, so there's no
+        # need to load geometry (or the full global vector file) at all.
+        if not region_lake_polygons_dir:
+            logger.error("❌ region_lake_polygons_dir not set in environment")
+            return {'success': False, 'error': 'region_lake_polygons_dir not set in environment'}
 
-        # 3. Load vector file and filter by region boundaries
-        logger.info(f"Loading vector file and filtering for region {region}...")
+        region_lake_file = Path(region_lake_polygons_dir) / f"{region}_lake_polygons.parquet"
+        if not region_lake_file.exists():
+            logger.error(f"❌ Region lake polygons file not found: {region_lake_file}")
+            return {'success': False, 'error': f'Region lake polygons file not found: {region_lake_file}'}
 
-        if not vector_lake_file or not Path(vector_lake_file).exists():
-            logger.error(f"❌ Vector file not found: {vector_lake_file}")
-            return {'success': False, 'error': 'Vector file not found'}
-
-        gdf = gpd.read_parquet(vector_lake_file)
-
-        # Handle Polygon geometries - convert to centroids for filtering
-        if gdf.geometry.geom_type.iloc[0] in ['Polygon', 'MultiPolygon']:
-            logger.info("Converting Polygon geometries to centroids for spatial filtering")
-            gdf['centroid'] = gdf.geometry.centroid
-            gdf = gdf.set_geometry('centroid')
-
-        # Filter by region boundaries
-        region_ids = gdf[
-            (gdf.geometry.x >= bounds['X_MIN_START']) &
-            (gdf.geometry.x <= bounds['X_MIN_END']) &
-            (gdf.geometry.y >= bounds['Y_MIN_START']) &
-            (gdf.geometry.y <= bounds['Y_MIN_END'])
-            ]['id_geohash'].values
-
-        region_ids_list = list(region_ids)
+        logger.info(f"Loading region IDs for {region} from {region_lake_file}...")
+        region_ids_list = list(pd.read_parquet(region_lake_file, columns=['id_geohash'])['id_geohash'].values)
         original_total_ids = len(region_ids_list)  # Store original total
         logger.info(f"📍 {region} has {original_total_ids:,} IDs in vector file")
 
