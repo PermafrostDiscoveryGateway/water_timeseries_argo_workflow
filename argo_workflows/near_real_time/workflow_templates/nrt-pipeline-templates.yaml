@@ -75,6 +75,15 @@ spec:
       backoff:
         duration: "2m"
         factor: "2"
+    # Shares one pool of `download-concurrency` slots with download-missing-region
+    # (nrt-pipeline-semaphores ConfigMap) so at most that many EE-downloading
+    # pods run at once across the whole cluster, regardless of how many regions
+    # fan out - keeps concurrent Earth Engine requests from this stage bounded.
+    synchronization:
+      semaphores:
+        - configMapKeyRef:
+            name: nrt-pipeline-semaphores
+            key: download-concurrency
     inputs:
       parameters:
       - name: region_name
@@ -194,6 +203,12 @@ spec:
       backoff:
         duration: "2m"
         factor: "2"
+    # Shares the same semaphore pool as download-region - see comment there.
+    synchronization:
+      semaphores:
+        - configMapKeyRef:
+            name: nrt-pipeline-semaphores
+            key: download-concurrency
     inputs:
       parameters:
       - name: region_name

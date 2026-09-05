@@ -255,7 +255,7 @@ def main():
             ds_dl = downloader.download_dw_monthly(
                 gdf=gdf_batch,
                 max_total_requests=max_total_requests,
-                n_parallel=2,
+                n_parallel=1,
                 date_list=[date_to_run],
                 save_to_file=outfile
             )

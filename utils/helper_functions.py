@@ -859,7 +859,7 @@ def download_near_real_time_region_dates(
                 ds_dl = downloader.download_dw_monthly(
                     gdf=gdf_subset,
                     max_total_requests=max_total_requests,
-                    n_parallel=2,
+                    n_parallel=1,
                     date_list=[ANALYSIS_DATE],
                     save_to_file=outfile_download
                 )
