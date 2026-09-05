@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nrt-pipeline-semaphores
+  namespace: argo
+data:
+  # Max number of download-region + download-missing-region pods that may run
+  # at once, cluster-wide, combined (referenced by both templates in
+  # nrt-pipeline-templates.yaml via synchronization.semaphores.configMapKeyRef).
+  # Raise/lower this to trade off pipeline throughput against how hard we hit
+  # Earth Engine's per-project concurrency limit.
+  download-concurrency: "3"

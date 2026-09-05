@@ -1,0 +1,134 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: nrt-pipeline-cron
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  # Kicks off the whole nightly pipeline. Downstream stages are gated by
+  # `depends` in the DAG below, not by clock offsets - this is just "start
+  # the day's run".
+  schedule: "20 12 * * *"
+  concurrencyPolicy: "Forbid"
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  suspend: false
+  workflowSpec:
+    ttlStrategy:
+      secondsAfterCompletion: 86400
+    entrypoint: main
+
+    # Pod-level fields like volumes/imagePullSecrets/artifactRepository on the
+    # referenced WorkflowTemplate only apply when that template runs directly.
+    # Since tasks below call into nrt-pipeline-templates via templateRef, the
+    # pod is actually built from this workflowSpec, so these must be
+    # duplicated here to match.
+    imagePullSecrets:
+    - name: ghcr-secret
+
+    artifactRepository:
+      pvc:
+        claimName: argo-workflows-share
+        key: artifacts
+
+    volumes:
+    - name: lake-drainage-volume
+      persistentVolumeClaim:
+        claimName: argo-workflows-share
+    - name: gcp-creds
+      secret:
+        secretName: personal-gcp-creds
+        items:
+        - key: key.json
+          path: application_default_credentials.json
+    - name: earth-engine-creds
+      secret:
+        secretName: earth-engine-creds
+        items:
+        - key: credentials
+          path: credentials
+
+    arguments:
+      parameters:
+      - name: regions
+        value: |
+          [
+            {"region_name": "ALASKA",   "id_chunk_size": "",     "save_interval": "", "n_jobs": ""},
+            {"region_name": "CANADA1",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
+            {"region_name": "CANADA2",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
+            {"region_name": "CANADA3",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
+            {"region_name": "CANADA4",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
+            {"region_name": "EURASIA1", "id_chunk_size": "1000", "save_interval": "1", "n_jobs": "8"},
+            {"region_name": "EURASIA2", "id_chunk_size": "1000", "save_interval": "1", "n_jobs": "8"},
+            {"region_name": "EURASIA3", "id_chunk_size": "",     "save_interval": "", "n_jobs": ""}
+          ]
+      # How many merge -> backfill rounds to try before giving up and moving
+      # on with whatever completeness was reached.
+      - name: max-backfill-attempts
+        value: "5"
+
+    templates:
+    - name: main
+      dag:
+        tasks:
+
+        # Fan out: one download per region, in parallel. No dependencies.
+        - name: download
+          templateRef:
+            name: nrt-pipeline-templates
+            template: download-region-with-fallback
+          arguments:
+            parameters:
+            - name: region_name
+              value: "{{item.region_name}}"
+          withParam: "{{workflow.parameters.regions}}"
+
+        # Merge all regions, check completeness, backfill+re-merge whichever
+        # regions are still below 98%, repeat up to max-backfill-attempts.
+        # Waits for every download item above to finish first.
+        - name: merge-and-backfill
+          depends: "download.Succeeded || download.Failed || download.Errored"
+          templateRef:
+            name: nrt-pipeline-templates
+            template: merge-and-backfill-loop
+          arguments:
+            parameters:
+            - name: attempt
+              value: "1"
+            - name: max-attempts
+              value: "{{workflow.parameters.max-backfill-attempts}}"
+
+        # Fan out: one process run per region, in parallel. Waits for the
+        # merge/backfill loop above to finish (successfully or exhausted).
+        - name: process
+          depends: "merge-and-backfill.Succeeded || merge-and-backfill.Failed || merge-and-backfill.Errored"
+          templateRef:
+            name: nrt-pipeline-templates
+            template: process-region
+          arguments:
+            parameters:
+            - name: region_name
+              value: "{{item.region_name}}"
+            - name: id_chunk_size
+              value: "{{item.id_chunk_size}}"
+            - name: save_interval
+              value: "{{item.save_interval}}"
+            - name: n_jobs
+              value: "{{item.n_jobs}}"
+          withParam: "{{workflow.parameters.regions}}"
+
+        # Only runs once every region's process task has finished.
+        - name: create-historical-zarr-archive
+          depends: "process"
+          templateRef:
+            name: nrt-pipeline-templates
+            template: create-historical-zarr-archive
+
+        # Runs last, after the combined NRT zarr archive has been created/updated.
+        - name: create-historical-file
+          depends: "create-historical-zarr-archive"
+          templateRef:
+            name: nrt-pipeline-templates
+            template: create-new-historical-file

@@ -1,0 +1,67 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: clean-up-debug-cron
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  # Deletes debug_* directories older than num_days from the PVC so debug
+  # output doesn't grow unbounded.
+  schedule: "0 3 * * *"
+  concurrencyPolicy: "Forbid"
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  suspend: false
+  workflowSpec:
+    ttlStrategy:
+      secondsAfterCompletion: 7200
+    entrypoint: clean-up-debug
+
+    podResourceRequest:
+      cpu: "100m"
+      memory: "128Mi"
+      ephemeral-storage: "1Gi"
+
+    imagePullSecrets:
+    - name: ghcr-secret
+
+    volumes:
+    - name: lake-drainage-volume
+      persistentVolumeClaim:
+        claimName: argo-workflows-share
+
+    templates:
+    - name: clean-up-debug
+      metadata:
+        labels:
+          long-running-job: "true"
+      container:
+        image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+        imagePullPolicy: Always
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+            ephemeral-storage: "1Gi"
+        command: ["bash", "-c"]
+        args:
+          - |
+            set -e
+            set -x
+
+            echo "=== STARTING CLEAN UP DEBUG JOB ==="
+            echo "Timestamp: $(date)"
+
+            cat > /tmp/clean_up_debug.env << 'EOF'
+            debug_dir=/data/water_timeseries/debug
+            num_days=31
+            DRY_RUN=False
+            EOF
+
+            cd /app
+            python -u /app/utils/clean_up_old_debug.py /tmp/clean_up_debug.env
+        volumeMounts:
+        - name: lake-drainage-volume
+          mountPath: /data
