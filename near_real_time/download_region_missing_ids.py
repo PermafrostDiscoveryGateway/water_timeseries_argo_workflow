@@ -113,6 +113,31 @@ def get_already_backfilled_ids(download_dir, date_to_run):
     return already_have
 
 
+def get_downloaded_tile_ids(download_dir, date_to_run):
+    """
+    IDs already captured across the regular per-tile download files for this date.
+
+    Used as a fallback baseline when the region's merged file doesn't exist yet
+    (merge_recent_downloads only writes it once a region's raw downloads are
+    already >=98% complete) - without this, a region that fell short on its
+    first download pass would have no merged file to diff against, so this
+    script would have nothing to compute "missing" from and could never
+    contribute the topped-up IDs merge is waiting on.
+    """
+    ids = set()
+    pattern = str(download_dir / f'DW_{date_to_run}_*.nc')
+    for f in glob.glob(pattern):
+        if 'missing_backfill' in os.path.basename(f):
+            continue  # counted separately by get_already_backfilled_ids
+        try:
+            ds = xr.open_dataset(f)
+            ids.update(normalize_id_set(ds['id_geohash'].values.tolist()))
+            ds.close()
+        except Exception as e:
+            logger.warning(f"Could not read downloaded tile file {f}: {e}")
+    return ids
+
+
 def main():
     env_path = None
     if len(sys.argv) > 1:
@@ -159,16 +184,27 @@ def main():
     date_to_run = target_month.strftime("%Y-%m")
     logger.info(f"Backfilling missing IDs for {REGION} / {date_to_run}")
 
-    # ========== FIGURE OUT WHICH IDs ARE ACTUALLY MISSING ==========
-    merged_file_path = os.path.join(dynamic_world_data_dir, 'merge', f"dw_{REGION}_{date_to_run}.nc")
-    if not Path(merged_file_path).exists():
-        logger.error(f"No merged file found at {merged_file_path} - run the regular merge job first")
-        return 1
+    # ========== FIGURE OUT WHICH IDs ARE ALREADY CAPTURED ==========
+    current_download_dir = dynamic_world_download_dir / REGION / f'download_{date_to_run}'
+    current_download_dir.mkdir(parents=True, exist_ok=True)
 
-    ds_merged = xr.open_dataset(merged_file_path)
-    ids_in_merged_file = normalize_id_set(ds_merged['id_geohash'].values.tolist())
-    ds_merged.close()
-    logger.info(f"Merged file currently has {len(ids_in_merged_file):,} IDs")
+    merged_file_path = os.path.join(dynamic_world_data_dir, 'merge', f"dw_{REGION}_{date_to_run}.nc")
+    if Path(merged_file_path).exists():
+        ds_merged = xr.open_dataset(merged_file_path)
+        ids_in_merged_file = normalize_id_set(ds_merged['id_geohash'].values.tolist())
+        ds_merged.close()
+        logger.info(f"Merged file currently has {len(ids_in_merged_file):,} IDs")
+    else:
+        # No merged file yet - most likely because this region's raw downloads
+        # never reached the completeness threshold merge requires. Fall back to
+        # the raw per-tile downloads already on disk so we can still compute
+        # (and backfill) what's missing instead of bailing out here.
+        logger.warning(
+            f"No merged file found at {merged_file_path} yet - falling back to "
+            f"raw per-tile downloads on disk for {date_to_run} as the baseline"
+        )
+        ids_in_merged_file = get_downloaded_tile_ids(current_download_dir, date_to_run)
+        logger.info(f"Found {len(ids_in_merged_file):,} IDs already downloaded in per-tile files")
 
     region_lake_file = Path(region_lake_polygons_dir) / f"{REGION}_lake_polygons.parquet"
     logger.info(f"Loading pre-split lake vector file for {REGION}: {region_lake_file}")
@@ -185,9 +221,6 @@ def main():
         logger.info(f"Restricted to historical baseline: {before:,} -> {len(region_ids):,} eligible lakes")
     else:
         logger.warning("Could not load historical valid IDs - using full bounding-box lake set")
-
-    current_download_dir = dynamic_world_download_dir / REGION / f'download_{date_to_run}'
-    current_download_dir.mkdir(parents=True, exist_ok=True)
 
     already_backfilled_ids = get_already_backfilled_ids(current_download_dir, date_to_run)
     if already_backfilled_ids:

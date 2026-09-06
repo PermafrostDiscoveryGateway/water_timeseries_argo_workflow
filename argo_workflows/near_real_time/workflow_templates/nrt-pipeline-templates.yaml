@@ -70,7 +70,7 @@ spec:
   # ============================================================
   - name: download-region
     retryStrategy:
-      limit: "3"
+      limit: "5"
       retryPolicy: "OnFailure"
       backoff:
         duration: "2m"
