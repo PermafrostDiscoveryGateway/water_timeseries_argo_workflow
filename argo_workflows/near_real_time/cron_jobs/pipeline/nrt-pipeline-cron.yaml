@@ -56,12 +56,12 @@ spec:
         value: |
           [
             {"region_name": "ALASKA",   "id_chunk_size": "",     "save_interval": "", "n_jobs": ""},
-            {"region_name": "CANADA1",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
-            {"region_name": "CANADA2",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
-            {"region_name": "CANADA3",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
-            {"region_name": "CANADA4",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "8"},
-            {"region_name": "EURASIA1", "id_chunk_size": "1000", "save_interval": "1", "n_jobs": "8"},
-            {"region_name": "EURASIA2", "id_chunk_size": "1000", "save_interval": "1", "n_jobs": "8"},
+            {"region_name": "CANADA1",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "2"},
+            {"region_name": "CANADA2",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "2"},
+            {"region_name": "CANADA3",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "2"},
+            {"region_name": "CANADA4",  "id_chunk_size": "500",  "save_interval": "1", "n_jobs": "2"},
+            {"region_name": "EURASIA1", "id_chunk_size": "1000", "save_interval": "1", "n_jobs": "2"},
+            {"region_name": "EURASIA2", "id_chunk_size": "1000", "save_interval": "1", "n_jobs": "2"},
             {"region_name": "EURASIA3", "id_chunk_size": "",     "save_interval": "", "n_jobs": ""},
             {"region_name": "TEST",     "id_chunk_size": "",     "save_interval": "", "n_jobs": ""}
           ]
