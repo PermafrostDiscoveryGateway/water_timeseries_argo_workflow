@@ -17,6 +17,22 @@ def is_test_run() -> bool:
     return os.environ.get("test_run", "False").lower() in ("true", "1", "yes")
 
 
+def should_run_last_attempts(today: datetime = None, min_day: int = 15) -> bool:
+    """Gate for download_region_last_attempts.py.
+
+    Dynamic World ingestion for a just-finished month can lag by a couple of
+    weeks, so a lake confirmed "no data" early in the month (day 3-14, when
+    the regular download/backfill scripts run) may just not be ingested yet.
+    This gate holds the last-attempts script back until `min_day`, giving
+    ingestion time to catch up before treating a lake as permanently no-data.
+    """
+    if is_test_run():
+        return True
+    if today is None:
+        today = datetime.now()
+    return today.day >= min_day and today.month - 1 in SUMMER_MONTHS
+
+
 def most_recent_summer_month(today: datetime = None) -> datetime:
     if today is None:
         today = datetime.now()

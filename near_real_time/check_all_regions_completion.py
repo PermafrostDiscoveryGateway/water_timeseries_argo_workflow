@@ -31,22 +31,39 @@ from near_real_time.download_region_missing_ids import (
     get_historical_valid_ids,
     normalize_id,
     normalize_id_set,
+    no_data_ids_path,
+    load_no_data_ids,
 )
 
 COMPLETION_THRESHOLD = 0.98
 
 
-def region_completion(region, region_boundaries, gdf, historical_valid_ids, merged_file):
+def get_confirmed_no_data_ids(dynamic_world_data_dir, region, date_to_run):
+    """Lake IDs download_region_last_attempts.py has permanently confirmed have no
+    Dynamic World data for this region/date - these can never be "present" in the
+    merged file, so they shouldn't count against completion once confirmed final.
+    Provisional (not-yet-final) no-data IDs still count as missing here - they're
+    just deferred to the last-attempts check, not yet known to be unrecoverable.
+    """
+    no_data_record = load_no_data_ids(no_data_ids_path(dynamic_world_data_dir, region, date_to_run))
+    return {id_ for id_, info in no_data_record.items() if info.get('final')}
+
+
+def region_completion(region, region_boundaries, gdf, historical_valid_ids, merged_file,
+                       dynamic_world_data_dir, date_to_run):
     gdf_region = get_region_lakes(gdf, region_boundaries, region)
     region_ids = set(gdf_region['id_geohash'].values.tolist())
     if historical_valid_ids is not None:
         region_ids = region_ids & historical_valid_ids
 
-    if not region_ids:
-        return 1.0, 0, 0
+    confirmed_no_data_ids = get_confirmed_no_data_ids(dynamic_world_data_dir, region, date_to_run)
+    obtainable_ids = region_ids - confirmed_no_data_ids
+
+    if not obtainable_ids:
+        return 1.0, 0, 0, len(confirmed_no_data_ids)
 
     if not Path(merged_file).exists():
-        return 0.0, 0, len(region_ids)
+        return 0.0, 0, len(obtainable_ids), len(confirmed_no_data_ids)
 
     ds = xr.open_dataset(merged_file)
     try:
@@ -54,8 +71,8 @@ def region_completion(region, region_boundaries, gdf, historical_valid_ids, merg
     finally:
         ds.close()
 
-    present = len(ids_in_file & region_ids)
-    return present / len(region_ids), present, len(region_ids)
+    present = len(ids_in_file & obtainable_ids)
+    return present / len(obtainable_ids), present, len(obtainable_ids), len(confirmed_no_data_ids)
 
 
 def main():
@@ -109,11 +126,22 @@ def main():
     incomplete_regions = []
     for region in all_regions:
         merged_file = os.path.join(dynamic_world_data_dir, 'merge', f"dw_{region}_{date_to_run}.nc")
-        pct, present, total = region_completion(region, region_boundaries, gdf, historical_valid_ids, merged_file)
-        region_status[region] = {'completion_pct': pct, 'ids_present': present, 'ids_expected': total}
+        pct, present, total, confirmed_no_data = region_completion(
+            region, region_boundaries, gdf, historical_valid_ids, merged_file,
+            dynamic_world_data_dir, date_to_run
+        )
+        region_status[region] = {
+            'completion_pct': pct,
+            'ids_present': present,
+            'ids_expected': total,
+            'ids_confirmed_no_data': confirmed_no_data,
+        }
 
         status_icon = "✅" if pct >= COMPLETION_THRESHOLD else "⚠️"
-        logger.info(f"{status_icon} {region}: {pct:.2%} complete ({present:,}/{total:,}) for {date_to_run}")
+        logger.info(
+            f"{status_icon} {region}: {pct:.2%} complete ({present:,}/{total:,}, "
+            f"{confirmed_no_data:,} confirmed no-data excluded) for {date_to_run}"
+        )
 
         if pct < COMPLETION_THRESHOLD:
             incomplete_regions.append(region)

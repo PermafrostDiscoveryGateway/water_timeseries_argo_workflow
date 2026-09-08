@@ -319,6 +319,147 @@ spec:
         mountPath: /data
 
   # ============================================================
+  # download-region-last-attempts: once-a-month final retry for lake IDs
+  # download-missing-region has parked as confirmed no-data. The script
+  # itself gates on day-of-month >= 15 (see utils.date_gate.should_run_last_attempts)
+  # so this can run every day like the other stages and just no-op until then -
+  # giving Dynamic World's ingestion lag time to catch up before anything is
+  # treated as permanently unavailable.
+  # ============================================================
+  - name: download-region-last-attempts
+    retryStrategy:
+      limit: "3"
+      retryPolicy: "OnFailure"
+      backoff:
+        duration: "2m"
+        factor: "2"
+    # Shares the same semaphore pool as download-region - see comment there.
+    synchronization:
+      semaphores:
+        - configMapKeyRef:
+            name: nrt-pipeline-semaphores
+            key: download-concurrency
+    inputs:
+      parameters:
+      - name: region_name
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+      parameters:
+      - name: recovered
+        valueFrom:
+          path: /tmp/last_attempt_status/recovered.txt
+          default: "false"
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "4Gi"
+          cpu: "1"
+          ephemeral-storage: "8Gi"
+        limits:
+          memory: "8Gi"
+          cpu: "1"
+          ephemeral-storage: "16Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="download_last_attempts"
+          REGION_NAME="{{inputs.parameters.region_name}}"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE / $REGION_NAME ==="
+          echo "Timestamp: $(date)"
+
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}_${REGION_NAME}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          mkdir -p /tmp/home/.config/earthengine
+          cp -L /root/.config/earthengine/credentials /tmp/home/.config/earthengine/credentials
+          export HOME=/tmp/home
+          export EARTHENGINE_TOKEN=/tmp/home/.config/earthengine/credentials
+          export EE_CONFIG_DIR=/tmp/home/.config/earthengine
+          export EE_CLOUD_PROJECT=pdg-wg-workflow
+          export EE_PROJECT=pdg-project-406720
+          export GOOGLE_APPLICATION_CREDENTIALS=/root/.config/gcloud/application_default_credentials.json
+
+          mkdir -p /data/water_timeseries/{dynamic_world_data,split_lakes,input,new_dynamic_world,split_new_dynamic_world,output,checkpoint,temp_netcdf,subsets,breakpoints}
+          mkdir -p /data/water_timeseries/dask_work_space
+          chmod -R 755 /data/water_timeseries
+
+          export TMPDIR=/data/water_timeseries/temp_netcdf
+          export TEMP=/data/water_timeseries/temp_netcdf
+          export TMP=/data/water_timeseries/temp_netcdf
+          export DASK_TEMPORARY_DIRECTORY=/data/water_timeseries/dask_work_space
+          export DASK_DISTRIBUTED__WORKER__MEMORY__TARGET=0.7
+          export DASK_DISTRIBUTED__WORKER__MEMORY__SPILL=0.8
+          export DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE=0.95
+          export DASK_SCHEDULER=threads
+          export DASK_NUM_THREADS=$(nproc)
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          export LAST_ATTEMPT_OUTPUT_DIR=/tmp/last_attempt_status
+          mkdir -p "$LAST_ATTEMPT_OUTPUT_DIR"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}/${REGION_NAME}"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          vector_dataset_file_url=pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          bucket_path=pdg-storage-default/water_timeseries_v2/data/input
+          base_dir=/data/water_timeseries
+          dynamic_world_dir=/data/water_timeseries/dynamic_world_data
+          dynamic_world_data=/data/water_timeseries/dynamic_world_data
+          dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          region_lake_polygons_dir=/data/water_timeseries/region_lake_polygons
+          output_dir=/data/water_timeseries/output
+          region_name=${REGION_NAME}
+          EOF
+
+          cd /app
+          SCRIPT_EXIT_CODE=0
+          python -u /app/near_real_time/download_region_last_attempts.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
+
+          # Defensive default in case the script errored before writing its output
+          [ -f "$LAST_ATTEMPT_OUTPUT_DIR/recovered.txt" ] || echo "false" > "$LAST_ATTEMPT_OUTPUT_DIR/recovered.txt"
+
+          echo "{\"stage\":\"$STAGE\",\"region\":\"$REGION_NAME\",\"recovered\":\"$(cat $LAST_ATTEMPT_OUTPUT_DIR/recovered.txt)\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE / $REGION_NAME completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: lake_chunk_size
+        value: "20000"
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: gcp-creds
+        mountPath: /root/.config/gcloud
+        readOnly: true
+      - name: earth-engine-creds
+        mountPath: /root/.config/earthengine
+        readOnly: true
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  # ============================================================
   # download-region-with-fallback: run the full per-tile download for
   # one region; if it still fails after exhausting its own retries,
   # immediately trigger the targeted ID backfill for that same region
@@ -872,8 +1013,9 @@ spec:
 
   # ============================================================
   # region-pipeline: one region's full chain - download (with its
-  # missing-ID fallback) -> merge+backfill -> process - run
-  # independently of every other region, so a region that finishes
+  # missing-ID fallback) -> merge+backfill -> last-attempts check
+  # (a no-op most days, see download-region-last-attempts) -> process -
+  # run independently of every other region, so a region that finishes
   # early isn't held up waiting on a slower one.
   # ============================================================
   - name: region-pipeline
@@ -908,6 +1050,21 @@ spec:
             value: "1"
           - name: max-attempts
             value: "{{inputs.parameters.max-backfill-attempts}}"
+    - - name: last-attempts
+        template: download-region-last-attempts
+        continueOn:
+          failed: true
+        arguments:
+          parameters:
+          - name: region_name
+            value: "{{inputs.parameters.region_name}}"
+    - - name: merge-after-last-attempts
+        template: merge-region
+        when: "{{steps.last-attempts.outputs.parameters.recovered}} == true"
+        arguments:
+          parameters:
+          - name: region_name
+            value: "{{inputs.parameters.region_name}}"
     - - name: process
         template: process-region
         arguments:

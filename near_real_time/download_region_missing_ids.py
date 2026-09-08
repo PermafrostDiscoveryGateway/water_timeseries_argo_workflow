@@ -23,6 +23,7 @@ import ee
 import gc
 import geemap
 import glob
+import json
 import os
 import sys
 from datetime import datetime
@@ -111,6 +112,128 @@ def get_already_backfilled_ids(download_dir, date_to_run):
         except Exception as e:
             logger.warning(f"Could not read existing backfill file {f}: {e}")
     return already_have
+
+
+def no_data_ids_path(dynamic_world_data_dir, region, date_to_run):
+    """Path to the record of lake IDs confirmed to have no Dynamic World data for region/date.
+
+    Lives next to the merged file (same dynamic_world_data_dir/merge directory)
+    since both are keyed by region + date.
+    """
+    return Path(dynamic_world_data_dir) / 'merge' / f'no_data_ids_{region}_{date_to_run}.json'
+
+
+def load_no_data_ids(path):
+    """Load the {id: {first_seen, last_checked, final}} record of confirmed-no-data lakes."""
+    if not Path(path).exists():
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+def save_no_data_ids(path, no_data_record):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump(no_data_record, f, indent=2, sort_keys=True)
+
+
+def mark_no_data(no_data_record, ids, final=False):
+    """Record `ids` as confirmed no-data as of now, preserving each ID's original first_seen."""
+    now = datetime.now().isoformat()
+    for id_ in ids:
+        entry = no_data_record.setdefault(id_, {'first_seen': now})
+        entry['last_checked'] = now
+        if final:
+            entry['final'] = True
+    return no_data_record
+
+
+def download_id_batches(downloader, gdf_ids, id_list, date_to_run, current_download_dir, run_label,
+                         file_prefix, completion_threshold=COMPLETION_THRESHOLD):
+    """Download a set of specific lake IDs in batches, distinguishing confirmed-no-data from real errors.
+
+    Shared between the daily missing-IDs backfill and the once-a-month last-attempts
+    script, since both need the exact same batching/threshold/error-handling logic -
+    the only difference between callers is which ID set they target and what they do
+    with a confirmed no-data result.
+
+    Returns:
+        dict with:
+            recovered_ids: set of IDs successfully downloaded (>= completion_threshold per batch)
+            no_data_ids: set of IDs whose batch came back as a confirmed-empty DW collection
+            discarded_ids: set of IDs whose batch came back below completion_threshold (retryable)
+            had_real_error: True if any batch raised something other than the no-data ValueError
+    """
+    recovered_ids = set()
+    no_data_ids = set()
+    discarded_ids = set()
+    had_real_error = False
+
+    batches = [id_list[i:i + BATCH_SIZE] for i in range(0, len(id_list), BATCH_SIZE)]
+    logger.info(f"Requesting {len(id_list):,} lakes in {len(batches)} batch(es) of up to {BATCH_SIZE}")
+
+    for batch_idx, batch_ids in enumerate(batches):
+        logger.info(f"\n{'=' * 80}")
+        logger.info(f"Batch {batch_idx + 1}/{len(batches)}: {len(batch_ids)} lakes")
+        logger.info(f"{'=' * 80}")
+
+        batch_id_set = set(batch_ids)
+        gdf_batch = gdf_ids[gdf_ids['id_geohash'].isin(batch_id_set)]
+        outfile = current_download_dir / f'DW_{date_to_run}_{file_prefix}_{run_label}_{batch_idx}.nc'
+
+        n_features = len(gdf_batch)
+        max_total_requests = min(100, n_features) if n_features > 500 else 500
+
+        try:
+            ds_dl = downloader.download_dw_monthly(
+                gdf=gdf_batch,
+                max_total_requests=max_total_requests,
+                n_parallel=1,
+                date_list=[date_to_run],
+                save_to_file=outfile
+            )
+        except ValueError as e:
+            if "No data was extracted" in str(e):
+                logger.warning(f"Batch {batch_idx}: confirmed no data for {len(batch_id_set)} lakes")
+                no_data_ids.update(batch_id_set)
+            else:
+                logger.error(f"Batch {batch_idx} failed: {e}")
+                had_real_error = True
+            continue
+        except Exception as e:
+            logger.error(f"Batch {batch_idx} failed: {e}")
+            had_real_error = True
+            continue
+
+        downloaded_ids = normalize_id_set(ds_dl['id_geohash'].values.tolist())
+        completion_pct = len(downloaded_ids) / len(batch_id_set) if batch_id_set else 1.0
+
+        ds_dl.close()
+        del ds_dl
+        gc.collect()
+
+        if completion_pct < completion_threshold:
+            logger.warning(
+                f"Batch {batch_idx}: only {len(downloaded_ids)}/{len(batch_id_set)} lakes came back "
+                f"({completion_pct:.2%}, below {completion_threshold:.0%} threshold) - discarding, will retry")
+            try:
+                outfile.unlink()
+            except Exception as e:
+                logger.warning(f"Could not remove incomplete batch file {outfile}: {e}")
+            discarded_ids.update(batch_id_set)
+            continue
+
+        logger.info(
+            f"✅ Batch {batch_idx}: {len(downloaded_ids)}/{len(batch_id_set)} lakes "
+            f"({completion_pct:.2%}) - keeping")
+        recovered_ids.update(downloaded_ids)
+
+    return {
+        'recovered_ids': recovered_ids,
+        'no_data_ids': no_data_ids,
+        'discarded_ids': discarded_ids,
+        'had_real_error': had_real_error,
+    }
 
 
 def get_downloaded_tile_ids(download_dir, date_to_run):
@@ -226,7 +349,16 @@ def main():
     if already_backfilled_ids:
         logger.info(f"Found {len(already_backfilled_ids):,} IDs already captured by a previous backfill run")
 
-    missing_ids = region_ids - ids_in_merged_file - already_backfilled_ids
+    no_data_path = no_data_ids_path(dynamic_world_data_dir, REGION, date_to_run)
+    known_no_data = load_no_data_ids(no_data_path)
+    known_no_data_ids = set(known_no_data.keys())
+    if known_no_data_ids:
+        logger.info(
+            f"Excluding {len(known_no_data_ids):,} IDs already confirmed no-data "
+            f"(will get one final check by download_region_last_attempts.py later this month)"
+        )
+
+    missing_ids = region_ids - ids_in_merged_file - already_backfilled_ids - known_no_data_ids
 
     if not missing_ids:
         logger.info(f"✅ No missing IDs left for {REGION} / {date_to_run} - nothing to backfill")
@@ -264,66 +396,30 @@ def main():
     downloader = EarthEngineDownloader(ee_project=project)
 
     # ========== DOWNLOAD IN BATCHES ==========
-    missing_id_list = sorted(missing_ids)
-    batches = [missing_id_list[i:i + BATCH_SIZE] for i in range(0, len(missing_id_list), BATCH_SIZE)]
-    logger.info(f"Requesting {len(missing_id_list):,} lakes in {len(batches)} batch(es) of up to {BATCH_SIZE}")
-
     run_label = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    total_recovered = 0
-    total_discarded = 0
+    result = download_id_batches(
+        downloader=downloader,
+        gdf_ids=gdf_missing,
+        id_list=sorted(missing_ids),
+        date_to_run=date_to_run,
+        current_download_dir=current_download_dir,
+        run_label=run_label,
+        file_prefix='missing_backfill',
+    )
 
-    for batch_idx, batch_ids in enumerate(batches):
-        logger.info(f"\n{'=' * 80}")
-        logger.info(f"Batch {batch_idx + 1}/{len(batches)}: {len(batch_ids)} lakes")
-        logger.info(f"{'=' * 80}")
+    total_recovered = len(result['recovered_ids'])
+    total_discarded = len(result['discarded_ids'])
+    total_no_data = len(result['no_data_ids'])
 
-        batch_id_set = set(batch_ids)
-        gdf_batch = gdf_missing[gdf_missing['id_geohash'].isin(batch_id_set)]
-        outfile = current_download_dir / f'DW_{date_to_run}_missing_backfill_{run_label}_{batch_idx}.nc'
+    if result['no_data_ids']:
+        mark_no_data(known_no_data, result['no_data_ids'], final=False)
+        save_no_data_ids(no_data_path, known_no_data)
 
-        n_features = len(gdf_batch)
-        max_total_requests = min(100, n_features) if n_features > 500 else 500
-
-        try:
-            ds_dl = downloader.download_dw_monthly(
-                gdf=gdf_batch,
-                max_total_requests=max_total_requests,
-                n_parallel=1,
-                date_list=[date_to_run],
-                save_to_file=outfile
-            )
-        except Exception as e:
-            logger.error(f"Batch {batch_idx} failed: {e}")
-            continue
-
-        if ds_dl is None:
-            logger.warning(f"Batch {batch_idx}: no data returned")
-            continue
-
-        downloaded_ids = normalize_id_set(ds_dl['id_geohash'].values.tolist())
-        completion_pct = len(downloaded_ids) / len(batch_id_set) if batch_id_set else 1.0
-
-        ds_dl.close()
-        del ds_dl
-        gc.collect()
-
-        if completion_pct < COMPLETION_THRESHOLD:
-            logger.warning(
-                f"Batch {batch_idx}: only {len(downloaded_ids)}/{len(batch_id_set)} lakes came back "
-                f"({completion_pct:.2%}, below {COMPLETION_THRESHOLD:.0%} threshold) - discarding, will retry next run")
-            try:
-                outfile.unlink()
-            except Exception as e:
-                logger.warning(f"Could not remove incomplete batch file {outfile}: {e}")
-            total_discarded += len(batch_id_set)
-            continue
-
-        logger.info(
-            f"✅ Batch {batch_idx}: {len(downloaded_ids)}/{len(batch_id_set)} lakes "
-            f"({completion_pct:.2%}) - keeping")
-        total_recovered += len(downloaded_ids)
-
-    still_missing = len(missing_ids) - total_recovered
+    # Discarded (below-threshold) and real-error batches are still retryable
+    # by tomorrow's run; newly-confirmed no-data ones are parked for
+    # download_region_last_attempts.py instead, so they don't count as
+    # "still missing" here.
+    still_missing = len(missing_ids) - total_recovered - total_no_data
 
     logger.info(f"\n{'=' * 80}")
     logger.info(f"BACKFILL SUMMARY for {REGION} / {date_to_run}")
@@ -331,14 +427,17 @@ def main():
     logger.info(f"Missing before this run: {len(missing_ids):,}")
     logger.info(f"Recovered this run: {total_recovered:,}")
     logger.info(f"Discarded (below threshold, will retry next run): {total_discarded:,}")
-    logger.info(f"Still missing: {still_missing:,}")
+    logger.info(f"Confirmed no data (parked for last-attempts check after day 15): {total_no_data:,}")
+    logger.info(f"Still missing (retryable): {still_missing:,}")
+    if result['had_real_error']:
+        logger.warning("At least one batch failed with a real (non-no-data) error this run - see log above")
     logger.info("Run the regular merge job again to fold these into the merged file.")
 
     if still_missing > 0:
         logger.error(f"❌ {still_missing:,} lakes still missing for {REGION} / {date_to_run} - run again to retry")
         return 1
 
-    logger.info(f"✅ All missing lakes recovered for {REGION} / {date_to_run}")
+    logger.info(f"✅ No retryable lakes left for {REGION} / {date_to_run}")
     return 0
 
 
