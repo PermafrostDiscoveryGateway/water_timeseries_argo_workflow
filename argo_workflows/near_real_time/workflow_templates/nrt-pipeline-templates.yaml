@@ -333,12 +333,15 @@ spec:
       backoff:
         duration: "2m"
         factor: "2"
-    # Shares the same semaphore pool as download-region - see comment there.
+    # Its own semaphore pool, separate from download-concurrency - a region
+    # that already finished downloading+merging shouldn't sit queued behind
+    # other regions' still-active download retries just to run what is, most
+    # days, a fast no-op (see nrt-pipeline-semaphores ConfigMap comment).
     synchronization:
       semaphores:
         - configMapKeyRef:
             name: nrt-pipeline-semaphores
-            key: download-concurrency
+            key: last-attempts-concurrency
     inputs:
       parameters:
       - name: region_name
@@ -568,6 +571,7 @@ spec:
           dynamic_world_data=/data/water_timeseries/dynamic_world_data
           dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          region_lake_polygons_dir=/data/water_timeseries/region_lake_polygons
           output_dir=/data/water_timeseries/output
           EOF
 
@@ -734,12 +738,12 @@ spec:
     inputs:
       parameters:
       - name: region_name
-    retryStrategy:
-      limit: "3"
-      retryPolicy: "OnFailure"
-      backoff:
-        duration: "2m"
-        factor: "2"
+    # No retryStrategy here on purpose: merge_region.py fails almost
+    # exclusively because the region's downloads are genuinely below the
+    # completion threshold, not because of a transient error - retrying the
+    # same check a few minutes later won't find new data that wasn't there
+    # a moment ago. Recovery is merge-and-backfill-region-loop's job (go
+    # fetch more data via backfill, then re-merge), not this step's.
     metadata:
       labels:
         long-running-job: "true"
@@ -811,6 +815,7 @@ spec:
           dynamic_world_data=/data/water_timeseries/dynamic_world_data
           dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          region_lake_polygons_dir=/data/water_timeseries/region_lake_polygons
           output_dir=/data/water_timeseries/output
           region_name=${REGION_NAME}
           EOF
@@ -855,7 +860,7 @@ spec:
       - name: attempt
         value: "1"
       - name: max-attempts
-        value: "5"
+        value: "2"
     steps:
     - - name: merge
         template: merge-region
@@ -922,11 +927,11 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
-          memory: "8Gi"
+          memory: "12Gi"
           cpu: "2"
           ephemeral-storage: "8Gi"
         limits:
-          memory: "12Gi"
+          memory: "20Gi"
           cpu: "2"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
@@ -1038,7 +1043,7 @@ spec:
       - name: n_jobs
         value: ""
       - name: max-backfill-attempts
-        value: "5"
+        value: "2"
     steps:
     - - name: download
         template: download-region-with-fallback

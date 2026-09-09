@@ -274,49 +274,30 @@ def _get_historical_valid_ids(dynamic_world_data_dir: str = None):
     return valid_ids
 
 
-_VECTOR_COORDS_CACHE = {}
+_REGION_IDS_CACHE = {}
 
 
-def _get_vector_coords(vector_lake_file: str) -> pd.DataFrame:
-    """Load id_geohash/x/y once per script run instead of re-reading the
-    global vector file (millions of lake polygons) and recomputing centroids
-    for ALL of them on every single region's verification call. This was a
-    major OOM contributor for large regions (e.g. CANADA1-4) verified after
-    several other regions had already run earlier in the same process -- the
-    geometry objects from repeated gpd.read_parquet() calls were never being
-    freed in time. Only lightweight (id, x, y) values are cached; the actual
-    geometry column is dropped right after the one-time centroid computation.
+def _get_region_ids(region: str, region_lake_polygons_dir: str) -> List[str]:
+    """Load a region's lake IDs from the pre-split, region-scoped parquet file
+    instead of the global vector file (millions of lake polygons).
+
+    This used to load and compute centroids over every lake worldwide, then
+    filter down to one region's bounding box - a major OOM contributor for
+    large regions (e.g. CANADA1-4) verified after several other regions had
+    already run earlier in the same process, since the geometry objects from
+    repeated gpd.read_parquet() calls were never being freed in time. The
+    region-scoped file needs no bounding-box filtering (or geometry/centroids
+    at all) since it's already exactly this region's lakes - only id_geohash
+    is read, and the per-region result is cached for the rest of this run.
     """
-    if vector_lake_file in _VECTOR_COORDS_CACHE:
-        return _VECTOR_COORDS_CACHE[vector_lake_file]
+    if region in _REGION_IDS_CACHE:
+        return _REGION_IDS_CACHE[region]
 
-    import geopandas as gpd
-    gdf = gpd.read_parquet(vector_lake_file)
+    region_lake_file = Path(region_lake_polygons_dir) / f"{region}_lake_polygons.parquet"
+    ids = pd.read_parquet(region_lake_file, columns=['id_geohash'])['id_geohash'].tolist()
 
-    geom_type = gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None
-    if geom_type in ['Polygon', 'MultiPolygon']:
-        centroids = gdf.geometry.centroid
-        x_coords = centroids.x
-        y_coords = centroids.y
-    elif geom_type == 'Point':
-        x_coords = gdf.geometry.x
-        y_coords = gdf.geometry.y
-    else:
-        rep_points = gdf.geometry.representative_point()
-        x_coords = rep_points.x
-        y_coords = rep_points.y
-
-    coords_df = pd.DataFrame({
-        'id_geohash': gdf['id_geohash'].values,
-        'x': x_coords.values,
-        'y': y_coords.values,
-    })
-
-    del gdf, x_coords, y_coords
-    gc.collect()
-
-    _VECTOR_COORDS_CACHE[vector_lake_file] = coords_df
-    return coords_df
+    _REGION_IDS_CACHE[region] = ids
+    return ids
 
 
 def verify_region_data_vectorized(
@@ -354,7 +335,7 @@ def verify_region_data_vectorized(
             ds.close()
             return {'success': False, 'date_present': False, 'error': f'Date {date_to_check} not found'}
 
-        # Get region IDs from vector file
+        # Get region IDs from the pre-split, region-scoped vector file
         from utils.region_boundaries import get_region_boundaries
         region_boundaries = get_region_boundaries()
 
@@ -362,24 +343,17 @@ def verify_region_data_vectorized(
             ds.close()
             return {'success': False, 'error': f'Region {region} not found in boundaries'}
 
-        vector_lake_file = os.environ.get('vector_lake_file')
-        if not vector_lake_file or not Path(vector_lake_file).exists():
+        region_lake_polygons_dir = os.environ.get('region_lake_polygons_dir')
+        if not region_lake_polygons_dir:
             ds.close()
-            return {'success': False, 'error': 'Vector lake file not found'}
+            return {'success': False, 'error': 'region_lake_polygons_dir not set in environment'}
 
-        coords_df = _get_vector_coords(vector_lake_file)
+        region_lake_file = Path(region_lake_polygons_dir) / f"{region}_lake_polygons.parquet"
+        if not region_lake_file.exists():
+            ds.close()
+            return {'success': False, 'error': f'Region lake polygons file not found: {region_lake_file}'}
 
-        bounds = region_boundaries[region]
-        x_min_start = bounds['X_MIN_START']
-        x_min_end = bounds['X_MIN_END']
-        y_min_start = bounds['Y_MIN_START']
-        y_min_end = bounds['Y_MIN_END']
-
-        # Filter by bounding box
-        mask = (coords_df['x'] >= x_min_start) & (coords_df['x'] <= x_min_end) & \
-               (coords_df['y'] >= y_min_start) & (coords_df['y'] <= y_min_end)
-
-        region_ids = coords_df.loc[mask, 'id_geohash'].tolist()
+        region_ids = _get_region_ids(region, region_lake_polygons_dir)
 
         if not region_ids:
             ds.close()

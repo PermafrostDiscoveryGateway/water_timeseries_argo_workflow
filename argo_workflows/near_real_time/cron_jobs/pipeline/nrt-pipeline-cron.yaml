@@ -66,9 +66,14 @@ spec:
             {"region_name": "TEST",     "id_chunk_size": "",     "save_interval": "", "n_jobs": ""}
           ]
       # How many merge -> backfill rounds to try before giving up and moving
-      # on with whatever completeness was reached.
+      # on with whatever completeness was reached. Kept low on purpose: a
+      # region still short of the threshold after one backfill round is more
+      # likely waiting on data that just isn't there yet (or isn't there at
+      # all) than on something a same-day retry will fix - further attempts
+      # happen tomorrow, when download-region has had a full day to make
+      # progress and download-region-last-attempts (after day 15) can weigh in.
       - name: max-backfill-attempts
-        value: "5"
+        value: "2"
 
     templates:
     - name: main
