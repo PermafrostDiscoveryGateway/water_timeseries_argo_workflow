@@ -11,9 +11,9 @@ Usage:
 from merge_recent_downloads import (
     _configure_dask_for_low_memory,
     process_region_fast,
-    combine_region_files,
     verify_combined_file_optimized,
 )
+from utils.helper_functions import combine_region_files
 import sys
 import re
 import os

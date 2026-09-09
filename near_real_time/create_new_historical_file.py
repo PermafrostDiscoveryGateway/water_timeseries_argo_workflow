@@ -1,4 +1,7 @@
-from utils.helper_functions import verify_merged_netcdf, enable_memory_tracking, log_memory_usage
+from utils.helper_functions import (
+    verify_merged_netcdf, enable_memory_tracking, log_memory_usage,
+    combine_region_files, _get_id_chunk_size,
+)
 from utils.date_gate import is_test_run, most_recent_summer_month
 import sys
 from loguru import logger
@@ -19,16 +22,6 @@ from typing import List, Dict, Any
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
-
-
-def _get_id_chunk_size(default: int = 2000) -> int:
-    """Read the lake_chunk_size env var (already wired into every Argo workflow pod)
-    so NetCDFs are opened as dask-backed, id_geohash-chunked datasets instead of
-    fully into memory as numpy arrays."""
-    try:
-        return int(os.environ.get('lake_chunk_size', default))
-    except (TypeError, ValueError):
-        return default
 
 
 def _configure_dask_for_low_memory():
@@ -298,170 +291,6 @@ def wait_for_regions_to_complete(
 
         # Wait before checking again
         time.sleep(check_interval_seconds)
-
-
-def combine_region_files(
-        region_files: List[str],
-        output_file: str,
-        env_path: str = None
-) -> Dict[str, Any]:
-    """
-    Combine multiple region NetCDF files into a single combined file.
-    Memory-optimized version.
-    """
-    logger.info(f"\n{'=' * 80}")
-    logger.info("COMBINING REGION FILES")
-    logger.info(f"{'=' * 80}")
-    logger.info(f"Number of files to combine: {len(region_files)}")
-    logger.info(f"Output file: {output_file}")
-
-    if not region_files:
-        logger.error("No region files to combine")
-        return {'success': False, 'error': 'No region files to combine'}
-
-    # Verify all files exist
-    missing_files = [f for f in region_files if not Path(f).exists()]
-    if missing_files:
-        logger.error(f"Missing files: {missing_files}")
-        return {'success': False, 'error': f'Missing files: {missing_files}'}
-
-    try:
-        id_chunk = _get_id_chunk_size()
-        logger.info(f"Loading region datasets (dask-chunked, id_geohash={id_chunk})...")
-
-        # Open all datasets lazily with dask
-        datasets = []
-        file_info = []
-
-        # Respect the operator-configured chunk size (lake_chunk_size). This
-        # used to be artificially capped at 500 regardless of that setting,
-        # which for ~4M IDs meant ~8,000 tiny compressed chunks per variable
-        # instead of ~200 -- the dominant cost of these combine/merge writes.
-        # The pod has generous headroom (32-48Gi) for this, so honor it.
-        combine_chunk = id_chunk
-
-        for file_path in region_files:
-            try:
-                # Open with smaller chunks to reduce memory pressure
-                ds = xr.open_dataset(
-                    file_path,
-                    chunks={'id_geohash': combine_chunk, 'date': -1}
-                )
-                id_count = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
-                date_count = len(ds['date']) if 'date' in ds.dims else 0
-                file_size_gb = Path(file_path).stat().st_size / (1024 ** 3)
-
-                file_info.append({
-                    'file': file_path,
-                    'id_count': id_count,
-                    'date_count': date_count,
-                    'file_size_gb': round(file_size_gb, 4)
-                })
-
-                datasets.append(ds)
-
-            except Exception as e:
-                logger.error(f"Error opening {file_path}: {e}")
-                for ds in datasets:
-                    try:
-                        ds.close()
-                    except:
-                        pass
-                return {'success': False, 'error': f'Error opening {file_path}: {e}'}
-
-        logger.info("\nFiles to combine:")
-        for info in file_info:
-            logger.info(
-                f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB"
-            )
-
-        logger.info("Combining datasets lazily...")
-        if not datasets:
-            logger.error("No datasets to combine")
-            return {'success': False, 'error': 'No datasets to combine'}
-
-        # Use concat with dask to avoid loading everything into memory
-        combined = xr.concat(datasets, dim='id_geohash')
-
-        # Close the original datasets to free memory
-        for ds in datasets:
-            try:
-                ds.close()
-            except:
-                pass
-        datasets = None
-        gc.collect()
-
-        # Remove duplicates. xarray's DataArray has no .unique()/.drop_duplicates()
-        # dask-aware shortcut in this environment, so fall back to plain numpy on
-        # the (lightweight, 1-D) id_geohash coordinate values.
-        logger.info("Removing duplicate IDs...")
-
-        id_values = combined['id_geohash'].values
-        _, unique_idx = np.unique(id_values, return_index=True)
-
-        if len(unique_idx) < len(id_values):
-            removed_count = len(id_values) - len(unique_idx)
-            logger.info(f"Removed {removed_count} duplicate IDs")
-            combined = combined.isel(id_geohash=np.sort(unique_idx))
-
-        # Sort by IDs and date
-        logger.info("Sorting combined dataset...")
-        combined = combined.sortby(['id_geohash', 'date'])
-
-        # Persist to disk with chunked writing to avoid OOM
-        logger.info(f"Writing combined file to {output_file}")
-
-        # Use encoding with compression
-        # Chunk sizes must not exceed the actual dimension sizes (netCDF4 rejects that)
-        n_ids = combined.sizes['id_geohash']
-        n_dates = combined.sizes['date']
-        encoding = {}
-        for var in combined.data_vars:
-            encoding[var] = {
-                'zlib': True,
-                'complevel': 4,
-                'shuffle': True,
-                'chunksizes': (min(id_chunk, 500, n_ids), n_dates)  # Chunk for writing
-            }
-
-        # Write in chunks to avoid memory issues
-        # Use compute with chunked writing
-        combined.to_netcdf(
-            output_file,
-            encoding=encoding,
-            unlimited_dims=['date']  # Allow date dimension to grow
-        )
-
-        # Get final file size
-        file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
-
-        # Clean up
-        combined.close()
-        gc.collect()
-
-        result = {
-            'success': True,
-            'file_path': output_file,
-            'id_count': len(unique_ids),
-            'date_count': len(combined['date']) if 'date' in combined.dims else 0,
-            'file_size_gb': round(file_size_gb, 4),
-            'files_combined': len(file_info),
-            'file_info': file_info
-        }
-
-        logger.info(f"✅ Combined file created successfully!")
-        logger.info(f"  File: {output_file}")
-        logger.info(f"  IDs: {result['id_count']:,}")
-        logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error combining files: {e}")
-        import traceback
-        traceback.print_exc()
-        return {'success': False, 'error': str(e)}
 
 
 def merge_historical_file(

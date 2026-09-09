@@ -1,4 +1,6 @@
-from utils.helper_functions import verify_downloads_complete, merge_new_results
+from utils.helper_functions import (
+    verify_downloads_complete, merge_new_results, combine_region_files, _get_id_chunk_size,
+)
 from utils.date_gate import is_test_run, most_recent_summer_month
 import sys
 from loguru import logger
@@ -18,15 +20,6 @@ from typing import List, Dict, Any
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
-
-
-def _get_id_chunk_size(default: int = 2000) -> int:
-    """Read the lake_chunk_size env var so NetCDFs are opened as dask-backed,
-    id_geohash-chunked datasets instead of fully into memory as numpy arrays."""
-    try:
-        return int(os.environ.get('lake_chunk_size', default))
-    except (TypeError, ValueError):
-        return default
 
 
 def _configure_dask_for_low_memory():
@@ -535,147 +528,6 @@ def verify_region_data_vectorized(
         traceback.print_exc()
         return {'success': False, 'error': str(e)}
 
-
-# =============================================================================
-# COMBINE REGION FILES
-# =============================================================================
-def combine_region_files(
-        region_files: List[str],
-        output_file: str,
-        env_path: str = None
-) -> Dict[str, Any]:
-    """
-    Combine multiple region NetCDF files into a single combined file.
-    """
-    logger.info(f"\n{'=' * 80}")
-    logger.info("COMBINING REGION FILES")
-    logger.info(f"{'=' * 80}")
-    logger.info(f"Number of files to combine: {len(region_files)}")
-    logger.info(f"Output file: {output_file}")
-
-    if not region_files:
-        logger.error("No region files to combine")
-        return {'success': False, 'error': 'No region files to combine'}
-
-    # Verify all files exist
-    missing_files = [f for f in region_files if not Path(f).exists()]
-    if missing_files:
-        logger.error(f"Missing files: {missing_files}")
-        return {'success': False, 'error': f'Missing files: {missing_files}'}
-
-    try:
-        id_chunk = _get_id_chunk_size()
-        # Respect the operator-configured chunk size -- see merge_new_results
-        # for why the previous 500 cap was overriding it unnecessarily.
-        combine_chunk = id_chunk
-
-        logger.info(f"Loading region datasets (dask-chunked, id_geohash={combine_chunk})...")
-        datasets = []
-        file_info = []
-
-        for file_path in region_files:
-            try:
-                ds = xr.open_dataset(file_path, chunks={'id_geohash': combine_chunk, 'date': -1})
-                id_count = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
-                date_count = len(ds['date']) if 'date' in ds.dims else 0
-                file_size_gb = Path(file_path).stat().st_size / (1024 ** 3)
-
-                file_info.append({
-                    'file': file_path,
-                    'id_count': id_count,
-                    'date_count': date_count,
-                    'file_size_gb': round(file_size_gb, 4)
-                })
-
-                datasets.append(ds)
-
-            except Exception as e:
-                logger.error(f"Error opening {file_path}: {e}")
-                for ds in datasets:
-                    try:
-                        ds.close()
-                    except:
-                        pass
-                return {'success': False, 'error': f'Error opening {file_path}: {e}'}
-
-        logger.info("\nFiles to combine:")
-        for info in file_info:
-            logger.info(
-                f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB")
-
-        if not datasets:
-            logger.error("No datasets to combine")
-            return {'success': False, 'error': 'No datasets to combine'}
-
-        logger.info("Combining datasets lazily...")
-        combined = xr.concat(datasets, dim='id_geohash')
-
-        for ds in datasets:
-            try:
-                ds.close()
-            except Exception:
-                pass
-        datasets = None
-        gc.collect()
-
-        # Remove duplicates in a single pass instead of after every file.
-        # Plain numpy on the id_geohash coordinate values (see merge_new_results
-        # for why: no .unique()/.drop_duplicates() dask-aware shortcut here).
-        logger.info("Removing duplicate IDs...")
-        id_values = combined['id_geohash'].values
-        _, unique_idx = np.unique(id_values, return_index=True)
-        if len(unique_idx) < len(id_values):
-            removed_count = len(id_values) - len(unique_idx)
-            logger.info(f"Removed {removed_count} duplicate IDs")
-            combined = combined.isel(id_geohash=np.sort(unique_idx))
-
-        combined = combined.sortby(['id_geohash', 'date'])
-
-        logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
-
-        logger.info(f"Writing combined file to {output_file}")
-
-        n_ids = combined.sizes['id_geohash']
-        n_dates = combined.sizes['date']
-        encoding = {}
-        for var in combined.data_vars:
-            encoding[var] = {
-                'zlib': True,
-                'complevel': 4,
-                'shuffle': True,
-                'chunksizes': (min(id_chunk, 500, n_ids), n_dates)
-            }
-
-        combined.to_netcdf(output_file, encoding=encoding, unlimited_dims=['date'])
-
-        file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
-
-        combined.close()
-        gc.collect()
-
-        result = {
-            'success': True,
-            'file_path': output_file,
-            'id_count': len(combined['id_geohash']),
-            'date_count': len(combined['date']),
-            'file_size_gb': round(file_size_gb, 4),
-            'files_combined': len(file_info),
-            'file_info': file_info
-        }
-
-        logger.info(f"✅ Combined file created successfully!")
-        logger.info(f"  File: {output_file}")
-        logger.info(f"  IDs: {result['id_count']:,}")
-        logger.info(f"  Dates: {result['date_count']}")
-        logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error combining files: {e}")
-        import traceback
-        traceback.print_exc()
-        return {'success': False, 'error': str(e)}
 
 
 # =============================================================================
