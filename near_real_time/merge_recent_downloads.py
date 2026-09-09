@@ -1,10 +1,14 @@
-from utils.helper_functions import verify_downloads_complete, merge_new_results
+from utils.helper_functions import (
+    verify_downloads_complete, merge_new_results, combine_region_files, _get_id_chunk_size,
+)
+from utils.date_gate import is_test_run, most_recent_summer_month
 import sys
 from loguru import logger
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
 import glob
+import dask
 import pandas as pd
 from pathlib import Path
 import xarray as xr
@@ -17,13 +21,24 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+
+def _configure_dask_for_low_memory():
+    """Bound the default in-process dask scheduler so large regions (e.g. the
+    CANADA1-4 split, which has far more per-tile download files than smaller
+    regions) don't materialize every chunk in memory at once and get
+    OOM-killed. See create_new_historical_file.py for the same pattern."""
+    num_workers = int(os.environ.get('dask_num_workers', 2))
+    dask.config.set(scheduler='threads', num_workers=num_workers)
+    dask.config.set({'array.slicing.split_large_chunks': True})
+    logger.info(f"Dask configured: threaded scheduler capped at {num_workers} concurrent workers")
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 # Threshold for considering a download/merge "complete" (0.99 = 99%)
-COMPLETION_THRESHOLD = 0.99
+COMPLETION_THRESHOLD = 0.98
 # Threshold for considering a merge "acceptable" even with missing data
-ACCEPTABLE_MERGE_THRESHOLD = 0.99
+ACCEPTABLE_MERGE_THRESHOLD = 0.98
 
 
 # =============================================================================
@@ -93,34 +108,61 @@ def merge_new_results(
     logger.info(f"Found {len(downloaded_files)} downloaded files for {date_to_merge}")
 
     try:
-        # Combine all downloaded files into a single dataset
-        logger.info("Combining downloaded files...")
-        combined = None
+        # Combine all downloaded files into a single dataset.
+        # Memory-optimized: open each file dask-backed (chunks=) instead of
+        # eagerly, collect them into a list, and do ONE final concat + ONE
+        # final dedup pass -- concatenating and deduping inside the loop (the
+        # previous approach) re-materializes the entire accumulated array on
+        # every iteration, which is effectively O(n^2) and OOMs for regions
+        # with many per-tile download files (e.g. CANADA1-4).
+        logger.info("Combining downloaded files (dask-chunked)...")
+        id_chunk = _get_id_chunk_size()
+        # Respect the operator-configured chunk size instead of capping it --
+        # the pod has generous memory headroom (32-48Gi) and small chunks mean
+        # many more individually-compressed writes, which is slow.
+        combine_chunk = id_chunk
+
+        datasets = []
         failed_files = []
 
         for nc_file in downloaded_files:
             try:
-                ds = xr.open_dataset(nc_file)
+                ds = xr.open_dataset(nc_file, chunks={'id_geohash': combine_chunk, 'date': -1})
                 if len(ds['id_geohash']) > 0:
-                    if combined is None:
-                        combined = ds
-                    else:
-                        # Concatenate along id_geohash dimension
-                        combined = xr.concat([combined, ds], dim='id_geohash')
-                        # Remove duplicate IDs
-                        _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
-                        if len(unique_idx) < len(combined['id_geohash']):
-                            combined = combined.isel(id_geohash=np.sort(unique_idx))
+                    datasets.append(ds)
                 else:
                     logger.warning(f"File {nc_file} has no IDs, skipping")
+                    ds.close()
                     failed_files.append(nc_file)
             except Exception as e:
                 logger.error(f"Error opening {nc_file}: {e}")
                 failed_files.append(nc_file)
 
-        if combined is None:
+        if not datasets:
             logger.error("No valid data to merge")
             return {'success': False, 'error': 'No valid data to merge'}
+
+        logger.info(f"Concatenating {len(datasets)} datasets lazily...")
+        combined = xr.concat(datasets, dim='id_geohash')
+
+        for ds in datasets:
+            try:
+                ds.close()
+            except Exception:
+                pass
+        datasets = None
+        gc.collect()
+
+        # Remove duplicate IDs in a single pass (not per-file). xarray has no
+        # .unique()/.drop_duplicates() dask-aware shortcut here, so use plain
+        # numpy on the (lightweight, 1-D) id_geohash coordinate values.
+        logger.info("Removing duplicate IDs...")
+        id_values = combined['id_geohash'].values
+        _, unique_idx = np.unique(id_values, return_index=True)
+        if len(unique_idx) < len(id_values):
+            removed_count = len(id_values) - len(unique_idx)
+            logger.info(f"Removed {removed_count} duplicate IDs")
+            combined = combined.isel(id_geohash=np.sort(unique_idx))
 
         logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
 
@@ -129,19 +171,23 @@ def merge_new_results(
             # Sort by date
             combined = combined.sortby('date')
 
-        # Write to NetCDF with compression
+        # Write to NetCDF with compression, chunked so the writer doesn't
+        # need to materialize the whole array in memory at once
         logger.info(f"Writing merged data to {merged_file_path}")
 
+        n_ids = combined.sizes['id_geohash']
+        n_dates = combined.sizes['date']
         encoding = {}
         for var in combined.data_vars:
             encoding[var] = {
                 'zlib': True,
                 'complevel': 4,
-                'shuffle': True
+                'shuffle': True,
+                'chunksizes': (min(id_chunk, 500, n_ids), n_dates)
             }
 
         # Write to file
-        combined.to_netcdf(merged_file_path, encoding=encoding)
+        combined.to_netcdf(merged_file_path, encoding=encoding, unlimited_dims=['date'])
 
         # Get file size
         file_size_gb = Path(merged_file_path).stat().st_size / (1024 ** 3)
@@ -181,6 +227,72 @@ def merge_new_results(
 # =============================================================================
 # FAST VECTORIZED VERIFICATION
 # =============================================================================
+_HISTORICAL_VALID_IDS_CACHE = {}
+
+
+def _get_historical_valid_ids(dynamic_world_data_dir: str = None):
+    """
+    Load the id_geohash set from the most recent historical NetCDF file.
+
+    download_near_real_time_region_dates() (utils/helper_functions.py) only
+    downloads lakes that are already present in this historical baseline,
+    even when they fall inside a region's bounding box. Verification must
+    restrict its "expected IDs" to this same set, otherwise it counts lakes
+    that were never eligible for download as "missing".
+    """
+    if dynamic_world_data_dir is None:
+        dynamic_world_data_dir = os.environ.get('dynamic_world_data')
+
+    if not dynamic_world_data_dir:
+        return None
+
+    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
+    if not all_dynamic_world_files:
+        return None
+
+    historical_file = max(all_dynamic_world_files, key=os.path.getmtime)
+
+    if historical_file in _HISTORICAL_VALID_IDS_CACHE:
+        return _HISTORICAL_VALID_IDS_CACHE[historical_file]
+
+    try:
+        ds_historical = xr.open_dataset(historical_file)
+        valid_ids = set(ds_historical['id_geohash'].values)
+        ds_historical.close()
+    except Exception as e:
+        logger.warning(f"Could not load historical valid IDs from {historical_file}: {e}")
+        return None
+
+    _HISTORICAL_VALID_IDS_CACHE[historical_file] = valid_ids
+    return valid_ids
+
+
+_REGION_IDS_CACHE = {}
+
+
+def _get_region_ids(region: str, region_lake_polygons_dir: str) -> List[str]:
+    """Load a region's lake IDs from the pre-split, region-scoped parquet file
+    instead of the global vector file (millions of lake polygons).
+
+    This used to load and compute centroids over every lake worldwide, then
+    filter down to one region's bounding box - a major OOM contributor for
+    large regions (e.g. CANADA1-4) verified after several other regions had
+    already run earlier in the same process, since the geometry objects from
+    repeated gpd.read_parquet() calls were never being freed in time. The
+    region-scoped file needs no bounding-box filtering (or geometry/centroids
+    at all) since it's already exactly this region's lakes - only id_geohash
+    is read, and the per-region result is cached for the rest of this run.
+    """
+    if region in _REGION_IDS_CACHE:
+        return _REGION_IDS_CACHE[region]
+
+    region_lake_file = Path(region_lake_polygons_dir) / f"{region}_lake_polygons.parquet"
+    ids = pd.read_parquet(region_lake_file, columns=['id_geohash'])['id_geohash'].tolist()
+
+    _REGION_IDS_CACHE[region] = ids
+    return ids
+
+
 def verify_region_data_vectorized(
         region: str,
         date_to_check: str,
@@ -205,7 +317,7 @@ def verify_region_data_vectorized(
         return {'success': False, 'error': 'File not found', 'file_exists': False}
 
     try:
-        ds = xr.open_dataset(file_path)
+        ds = xr.open_dataset(file_path, chunks={'id_geohash': _get_id_chunk_size(), 'date': -1})
 
         # Check date presence
         dates_in_file = pd.to_datetime(ds['date'].values)
@@ -216,7 +328,7 @@ def verify_region_data_vectorized(
             ds.close()
             return {'success': False, 'date_present': False, 'error': f'Date {date_to_check} not found'}
 
-        # Get region IDs from vector file
+        # Get region IDs from the pre-split, region-scoped vector file
         from utils.region_boundaries import get_region_boundaries
         region_boundaries = get_region_boundaries()
 
@@ -224,45 +336,41 @@ def verify_region_data_vectorized(
             ds.close()
             return {'success': False, 'error': f'Region {region} not found in boundaries'}
 
-        vector_lake_file = os.environ.get('vector_lake_file')
-        if not vector_lake_file or not Path(vector_lake_file).exists():
+        region_lake_polygons_dir = os.environ.get('region_lake_polygons_dir')
+        if not region_lake_polygons_dir:
             ds.close()
-            return {'success': False, 'error': 'Vector lake file not found'}
+            return {'success': False, 'error': 'region_lake_polygons_dir not set in environment'}
 
-        import geopandas as gpd
-        gdf = gpd.read_parquet(vector_lake_file)
+        region_lake_file = Path(region_lake_polygons_dir) / f"{region}_lake_polygons.parquet"
+        if not region_lake_file.exists():
+            ds.close()
+            return {'success': False, 'error': f'Region lake polygons file not found: {region_lake_file}'}
 
-        bounds = region_boundaries[region]
-        x_min_start = bounds['X_MIN_START']
-        x_min_end = bounds['X_MIN_END']
-        y_min_start = bounds['Y_MIN_START']
-        y_min_end = bounds['Y_MIN_END']
-
-        # Handle geometry types
-        geom_type = gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None
-
-        if geom_type in ['Polygon', 'MultiPolygon']:
-            centroids = gdf.geometry.centroid
-            x_coords = centroids.x
-            y_coords = centroids.y
-        elif geom_type == 'Point':
-            x_coords = gdf.geometry.x
-            y_coords = gdf.geometry.y
-        else:
-            rep_points = gdf.geometry.representative_point()
-            x_coords = rep_points.x
-            y_coords = rep_points.y
-
-        # Filter by bounding box
-        mask = (x_coords >= x_min_start) & (x_coords <= x_min_end) & \
-               (y_coords >= y_min_start) & (y_coords <= y_min_end)
-
-        gdf_subset = gdf[mask]
-        region_ids = gdf_subset['id_geohash'].values.tolist()
+        region_ids = _get_region_ids(region, region_lake_polygons_dir)
 
         if not region_ids:
             ds.close()
             return {'success': False, 'error': f'No IDs found for region {region}'}
+
+        # Restrict to IDs that were actually eligible for download (present in
+        # the historical baseline dataset). The download step applies this
+        # same filter, so bounding-box lakes outside the baseline are never
+        # fetched and shouldn't be counted as "missing" here.
+        historical_valid_ids = _get_historical_valid_ids()
+        if historical_valid_ids is not None:
+            original_count = len(region_ids)
+            region_ids = [id_val for id_val in region_ids if id_val in historical_valid_ids]
+            excluded_count = original_count - len(region_ids)
+            if excluded_count > 0:
+                logger.debug(
+                    f"Excluded {excluded_count:,} bounding-box IDs not in historical baseline for {region}")
+        else:
+            logger.warning(
+                "Could not load historical valid IDs; verification may overcount expected IDs")
+
+        if not region_ids:
+            ds.close()
+            return {'success': False, 'error': f'No downloadable IDs found for region {region} (after historical-baseline filter)'}
 
         total_region_ids = len(region_ids)
         logger.info(f"Region {region} has {total_region_ids:,} IDs")
@@ -420,136 +528,6 @@ def verify_region_data_vectorized(
         traceback.print_exc()
         return {'success': False, 'error': str(e)}
 
-
-# =============================================================================
-# COMBINE REGION FILES
-# =============================================================================
-def combine_region_files(
-        region_files: List[str],
-        output_file: str,
-        env_path: str = None
-) -> Dict[str, Any]:
-    """
-    Combine multiple region NetCDF files into a single combined file.
-    """
-    logger.info(f"\n{'=' * 80}")
-    logger.info("COMBINING REGION FILES")
-    logger.info(f"{'=' * 80}")
-    logger.info(f"Number of files to combine: {len(region_files)}")
-    logger.info(f"Output file: {output_file}")
-
-    if not region_files:
-        logger.error("No region files to combine")
-        return {'success': False, 'error': 'No region files to combine'}
-
-    # Verify all files exist
-    missing_files = [f for f in region_files if not Path(f).exists()]
-    if missing_files:
-        logger.error(f"Missing files: {missing_files}")
-        return {'success': False, 'error': f'Missing files: {missing_files}'}
-
-    try:
-        logger.info("Loading region datasets...")
-        datasets = []
-        file_info = []
-
-        for file_path in region_files:
-            try:
-                ds = xr.open_dataset(file_path)
-                id_count = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
-                date_count = len(ds['date']) if 'date' in ds.dims else 0
-                file_size_gb = Path(file_path).stat().st_size / (1024 ** 3)
-
-                file_info.append({
-                    'file': file_path,
-                    'id_count': id_count,
-                    'date_count': date_count,
-                    'file_size_gb': round(file_size_gb, 4)
-                })
-
-                datasets.append(ds)
-
-            except Exception as e:
-                logger.error(f"Error opening {file_path}: {e}")
-                for ds in datasets:
-                    try:
-                        ds.close()
-                    except:
-                        pass
-                return {'success': False, 'error': f'Error opening {file_path}: {e}'}
-
-        logger.info("\nFiles to combine:")
-        for info in file_info:
-            logger.info(
-                f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB")
-
-        logger.info("Combining datasets...")
-        combined = None
-
-        for ds in datasets:
-            if combined is None:
-                combined = ds
-            else:
-                combined = xr.concat([combined, ds], dim='id_geohash')
-                _, unique_idx = np.unique(combined['id_geohash'].values, return_index=True)
-                if len(unique_idx) < len(combined['id_geohash']):
-                    removed_count = len(combined['id_geohash']) - len(unique_idx)
-                    logger.info(f"Removed {removed_count} duplicate IDs")
-                    combined = combined.isel(id_geohash=np.sort(unique_idx))
-
-        if combined is None:
-            logger.error("No datasets to combine")
-            return {'success': False, 'error': 'No datasets to combine'}
-
-        combined = combined.sortby(['id_geohash', 'date'])
-
-        logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
-
-        logger.info(f"Writing combined file to {output_file}")
-
-        encoding = {}
-        for var in combined.data_vars:
-            encoding[var] = {
-                'zlib': True,
-                'complevel': 4,
-                'shuffle': True
-            }
-
-        combined.to_netcdf(output_file, encoding=encoding)
-
-        file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
-
-        for ds in datasets:
-            try:
-                ds.close()
-            except:
-                pass
-        combined.close()
-        gc.collect()
-
-        result = {
-            'success': True,
-            'file_path': output_file,
-            'id_count': len(combined['id_geohash']),
-            'date_count': len(combined['date']),
-            'file_size_gb': round(file_size_gb, 4),
-            'files_combined': len(datasets),
-            'file_info': file_info
-        }
-
-        logger.info(f"✅ Combined file created successfully!")
-        logger.info(f"  File: {output_file}")
-        logger.info(f"  IDs: {result['id_count']:,}")
-        logger.info(f"  Dates: {result['date_count']}")
-        logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error combining files: {e}")
-        import traceback
-        traceback.print_exc()
-        return {'success': False, 'error': str(e)}
 
 
 # =============================================================================
@@ -847,6 +825,7 @@ def process_region_fast(
 # =============================================================================
 def main():
     logger.debug(f"Beginning historical run for ALL regions (fast mode)")
+    _configure_dask_for_low_memory()
     env_path = None
     if len(sys.argv) > 1:
         env_path = sys.argv[1]
@@ -860,6 +839,9 @@ def main():
     import utils.region_boundaries
     boundaries = utils.region_boundaries.get_region_boundaries()
     all_regions = list(boundaries.keys())
+    test_run = os.environ.get("test_run")
+    if test_run and test_run.lower() == 'true':
+        all_regions = list(utils.region_boundaries.get_small_regions().keys())
     logger.info(f"Available regions: {all_regions}")
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
@@ -870,11 +852,19 @@ def main():
 
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
+    target_month = None
 
-    if TODAY_MONTH - 1 in summer_months:
+    if is_test_run():
+        SHOULD_RUN = True
+        target_month = most_recent_summer_month(TODAY)
+        logger.debug(f"test_run=True - bypassing the summer-month/day-of-month gate, using {target_month.strftime('%Y-%m')}")
+    elif TODAY_MONTH - 1 in summer_months:
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 3:
             SHOULD_RUN = True
+            # Last complete (previous) month, computed this way so it also
+            # handles the January wraparound correctly.
+            target_month = TODAY.replace(day=1) - timedelta(days=1)
             logger.debug(f"Should run: {SHOULD_RUN}")
 
     if not SHOULD_RUN:
@@ -882,7 +872,7 @@ def main():
         return
 
     # ========== Prepare date to run ==========
-    date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
+    date_to_run = target_month.strftime("%Y-%m")
     logger.info(f"Processing date: {date_to_run}")
 
     # ========== Process ALL regions (FAST - no verification) ==========

@@ -1,0 +1,105 @@
+# WebDAV-based upload endpoint, reachable over plain HTTPS through the
+# cluster's existing Traefik ingress (the same path other apps like mlflow,
+# superset, etc. use) instead of tunneling through `kubectl exec`/
+# `port-forward`. This avoids the API server's streaming-proxy timeouts that
+# repeatedly broke tar/rsync-over-kubectl-exec transfers.
+#
+# Uses `rclone serve webdav` directly (no chown-heavy startup wrapper like
+# the bytemark/webdav image has, which crash-loops on a PVC containing stray
+# files from earlier interrupted transfers). The PVC is mounted at /data,
+# matching every other pod in this repo, so the DAV root maps 1:1 onto
+# /data — e.g. PUTting to .../water_timeseries/foo.nc lands at
+# /data/water_timeseries/foo.nc.
+#
+# Prerequisite (create once, not committed to git):
+#   kubectl create secret generic webdav-upload-creds -n argo \
+#     --from-literal=username=<pick-a-username> \
+#     --from-literal=password=<pick-a-strong-password>
+#
+# Usage once deployed:
+#   curl -u <username>:<password> -T localfile.nc \
+#     https://water-timeseries-upload.software-dev.ncsa.illinois.edu/localfile.nc
+#
+# Teardown when done (don't leave a write-enabled endpoint running longer
+# than needed):
+#   kubectl delete -f storage_setup/webdav-upload-server.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webdav-upload-server
+  namespace: argo
+  labels:
+    app: webdav-upload-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webdav-upload-server
+  template:
+    metadata:
+      labels:
+        app: webdav-upload-server
+    spec:
+      containers:
+      - name: webdav
+        image: rclone/rclone
+        command: ["rclone", "serve", "webdav", "/data", "--addr", ":80", "--user", "$(USERNAME)", "--pass", "$(PASSWORD)"]
+        ports:
+        - containerPort: 80
+        env:
+        - name: USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: webdav-upload-creds
+              key: username
+        - name: PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: webdav-upload-creds
+              key: password
+        volumeMounts:
+        - name: argo-workflow-volume
+          mountPath: /data
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: argo-workflow-volume
+        persistentVolumeClaim:
+          claimName: argo-workflows-share
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webdav-upload-server
+  namespace: argo
+spec:
+  selector:
+    app: webdav-upload-server
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webdav-upload-server
+  namespace: argo
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: water-timeseries-upload.software-dev.ncsa.illinois.edu
+    http:
+      paths:
+      - path: /
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: webdav-upload-server
+            port:
+              number: 80

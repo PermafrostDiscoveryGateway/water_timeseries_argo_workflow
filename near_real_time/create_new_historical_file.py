@@ -1,4 +1,8 @@
-from utils.helper_functions import verify_merged_netcdf, enable_memory_tracking, log_memory_usage
+from utils.helper_functions import (
+    verify_merged_netcdf, enable_memory_tracking, log_memory_usage,
+    combine_region_files, _get_id_chunk_size,
+)
+from utils.date_gate import is_test_run, most_recent_summer_month
 import sys
 from loguru import logger
 from datetime import datetime
@@ -18,16 +22,6 @@ from typing import List, Dict, Any
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
-
-
-def _get_id_chunk_size(default: int = 2000) -> int:
-    """Read the lake_chunk_size env var (already wired into every Argo workflow pod)
-    so NetCDFs are opened as dask-backed, id_geohash-chunked datasets instead of
-    fully into memory as numpy arrays."""
-    try:
-        return int(os.environ.get('lake_chunk_size', default))
-    except (TypeError, ValueError):
-        return default
 
 
 def _configure_dask_for_low_memory():
@@ -299,173 +293,6 @@ def wait_for_regions_to_complete(
         time.sleep(check_interval_seconds)
 
 
-def combine_region_files(
-        region_files: List[str],
-        output_file: str,
-        env_path: str = None
-) -> Dict[str, Any]:
-    """
-    Combine multiple region NetCDF files into a single combined file.
-    Memory-optimized version.
-    """
-    logger.info(f"\n{'=' * 80}")
-    logger.info("COMBINING REGION FILES")
-    logger.info(f"{'=' * 80}")
-    logger.info(f"Number of files to combine: {len(region_files)}")
-    logger.info(f"Output file: {output_file}")
-
-    if not region_files:
-        logger.error("No region files to combine")
-        return {'success': False, 'error': 'No region files to combine'}
-
-    # Verify all files exist
-    missing_files = [f for f in region_files if not Path(f).exists()]
-    if missing_files:
-        logger.error(f"Missing files: {missing_files}")
-        return {'success': False, 'error': f'Missing files: {missing_files}'}
-
-    try:
-        id_chunk = _get_id_chunk_size()
-        logger.info(f"Loading region datasets (dask-chunked, id_geohash={id_chunk})...")
-
-        # Open all datasets lazily with dask
-        datasets = []
-        file_info = []
-
-        # Use a smaller chunk size for the combine operation
-        combine_chunk = min(id_chunk, 500)  # Smaller chunks for combining
-
-        for file_path in region_files:
-            try:
-                # Open with smaller chunks to reduce memory pressure
-                ds = xr.open_dataset(
-                    file_path,
-                    chunks={'id_geohash': combine_chunk, 'date': -1}
-                )
-                id_count = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
-                date_count = len(ds['date']) if 'date' in ds.dims else 0
-                file_size_gb = Path(file_path).stat().st_size / (1024 ** 3)
-
-                file_info.append({
-                    'file': file_path,
-                    'id_count': id_count,
-                    'date_count': date_count,
-                    'file_size_gb': round(file_size_gb, 4)
-                })
-
-                datasets.append(ds)
-
-            except Exception as e:
-                logger.error(f"Error opening {file_path}: {e}")
-                for ds in datasets:
-                    try:
-                        ds.close()
-                    except:
-                        pass
-                return {'success': False, 'error': f'Error opening {file_path}: {e}'}
-
-        logger.info("\nFiles to combine:")
-        for info in file_info:
-            logger.info(
-                f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB"
-            )
-
-        logger.info("Combining datasets lazily...")
-        if not datasets:
-            logger.error("No datasets to combine")
-            return {'success': False, 'error': 'No datasets to combine'}
-
-        # Use concat with dask to avoid loading everything into memory
-        combined = xr.concat(datasets, dim='id_geohash', combine='nested')
-
-        # Close the original datasets to free memory
-        for ds in datasets:
-            try:
-                ds.close()
-            except:
-                pass
-        datasets = None
-        gc.collect()
-
-        # Remove duplicates using dask operations (lazy)
-        # Instead of loading all IDs into memory, use dask's unique operation
-        logger.info("Removing duplicate IDs...")
-
-        # Get unique IDs using dask - this is still memory intensive but less so
-        # because dask can chunk the operation
-        unique_ids = combined['id_geohash'].unique().compute()
-
-        if len(unique_ids) < len(combined['id_geohash']):
-            removed_count = len(combined['id_geohash']) - len(unique_ids)
-            logger.info(f"Removed {removed_count} duplicate IDs")
-
-            # Use where and drop to filter - this is more memory efficient
-            mask = combined['id_geohash'].isin(unique_ids)
-            # Note: This still loads data, but dask handles it in chunks
-
-            # Alternative: Use groupby first to avoid loading all IDs
-            # This is a more memory-efficient way to deduplicate
-            combined = combined.drop_duplicates(dim='id_geohash')
-
-        # Sort by IDs and date
-        logger.info("Sorting combined dataset...")
-        combined = combined.sortby(['id_geohash', 'date'])
-
-        # Persist to disk with chunked writing to avoid OOM
-        logger.info(f"Writing combined file to {output_file}")
-
-        # Use encoding with compression
-        # Chunk sizes must not exceed the actual dimension sizes (netCDF4 rejects that)
-        n_ids = combined.sizes['id_geohash']
-        n_dates = combined.sizes['date']
-        encoding = {}
-        for var in combined.data_vars:
-            encoding[var] = {
-                'zlib': True,
-                'complevel': 4,
-                'shuffle': True,
-                'chunksizes': (min(id_chunk, 500, n_ids), n_dates)  # Chunk for writing
-            }
-
-        # Write in chunks to avoid memory issues
-        # Use compute with chunked writing
-        combined.to_netcdf(
-            output_file,
-            encoding=encoding,
-            unlimited_dims=['date']  # Allow date dimension to grow
-        )
-
-        # Get final file size
-        file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
-
-        # Clean up
-        combined.close()
-        gc.collect()
-
-        result = {
-            'success': True,
-            'file_path': output_file,
-            'id_count': len(unique_ids),
-            'date_count': len(combined['date']) if 'date' in combined.dims else 0,
-            'file_size_gb': round(file_size_gb, 4),
-            'files_combined': len(file_info),
-            'file_info': file_info
-        }
-
-        logger.info(f"✅ Combined file created successfully!")
-        logger.info(f"  File: {output_file}")
-        logger.info(f"  IDs: {result['id_count']:,}")
-        logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error combining files: {e}")
-        import traceback
-        traceback.print_exc()
-        return {'success': False, 'error': str(e)}
-
-
 def merge_historical_file(
         historical_file: str,
         combined_file: str,
@@ -483,8 +310,10 @@ def merge_historical_file(
     if id_chunk is None:
         id_chunk = _get_id_chunk_size()
 
-    # Use smaller chunks for merging
-    merge_chunk = min(id_chunk, 500)
+    # Respect the operator-configured chunk size -- see combine_region_files
+    # for why the previous hardcoded 500 cap was overriding it and making
+    # this write far slower than necessary given the pod's memory headroom.
+    merge_chunk = id_chunk
 
     try:
         # Open files with dask and chunking
@@ -660,6 +489,9 @@ def main():
     import utils.region_boundaries
     boundaries = utils.region_boundaries.get_region_boundaries()
     all_regions = list(boundaries.keys())
+    test_run = os.environ.get("test_run")
+    if test_run and test_run.lower() == 'true':
+        all_regions = list(utils.region_boundaries.get_small_regions().keys())
     logger.info(f"Available regions: {all_regions}")
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
@@ -670,11 +502,17 @@ def main():
 
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
+    target_month = None
 
-    if TODAY_MONTH - 1 in summer_months:
+    if is_test_run():
+        SHOULD_RUN = True
+        target_month = most_recent_summer_month(TODAY)
+        logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
+    elif TODAY_MONTH - 1 in summer_months:
         TODAY_DAY = TODAY.day
         if TODAY_DAY > 3:
             SHOULD_RUN = True
+            target_month = datetime(TODAY.year, TODAY_MONTH - 1, 1)
             logger.debug(f"Should run: {SHOULD_RUN}")
 
     if not SHOULD_RUN:
@@ -682,7 +520,7 @@ def main():
         return
 
     # ========== Prepare date to run ==========
-    date_to_run = datetime(TODAY.year, TODAY_MONTH - 1, 1).strftime("%Y-%m")
+    date_to_run = target_month.strftime("%Y-%m")
     logger.info(f"Processing date: {date_to_run}")
 
     # ========== STEP 1: Wait for region merges to complete ==========
@@ -745,13 +583,15 @@ def main():
     logger.info("STEP 3: Merging combined file with historical data")
     logger.info("=" * 80)
 
-    all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
-
-    # Find the most recent .nc file (excluding the merge directory)
-    # Use the helper from your earlier code
+    # Find the most recent dynamic_world_historical_*.nc file (excluding the merge
+    # directory). Matching on this filename pattern -- rather than every *.nc file
+    # in the directory -- matters because dynamic_world_data_dir also holds
+    # unrelated files like lakes_dw_V2d_compressed.nc (used by process_NRT.py);
+    # whichever of those happens to have the newest mtime would otherwise get
+    # picked as the "historical" baseline instead of the real one.
     from pathlib import Path
     def find_most_recent_nc_file(directory):
-        nc_files = list(Path(directory).glob("*.nc"))
+        nc_files = list(Path(directory).glob("dynamic_world_historical_*.nc"))
         if not nc_files:
             return None
         return max(nc_files, key=lambda f: f.stat().st_mtime)

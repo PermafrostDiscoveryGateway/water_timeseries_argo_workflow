@@ -575,6 +575,13 @@ def generate_expected_dates(
     return dates
 
 
+# Threshold for accepting a single grid tile's download as "complete" even
+# when a few requested lakes never come back (chronic per-feature GEE
+# errors). Matches COMPLETION_THRESHOLD/ACCEPTABLE_MERGE_THRESHOLD in
+# near_real_time/merge_recent_downloads.py.
+TILE_COMPLETION_THRESHOLD = 0.98
+
+
 def download_near_real_time_region_dates(
         region: str = "TEST",
         run_start_label: str = None,
@@ -668,8 +675,8 @@ def download_near_real_time_region_dates(
         logger.info("No dates to process")
         return {'success': True, 'dates_processed': [], 'message': 'No dates to process'}
 
-    vector_lake_file = os.environ['vector_lake_file']
-    path_lake_vector = vector_lake_file
+    region_lake_polygons_dir = os.environ['region_lake_polygons_dir']
+    path_lake_vector = Path(region_lake_polygons_dir) / f"{REGION_NAME}_lake_polygons.parquet"
 
     # Track results for all dates
     all_results = {}
@@ -682,14 +689,16 @@ def download_near_real_time_region_dates(
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         return {'success': False, 'error': 'No .nc files found'}
 
-    original_historical_file = max(all_dynamic_world_files, key=os.path.getctime)
+    original_historical_file = max(all_dynamic_world_files, key=os.path.getmtime)
     logger.info("Loading original historical dataset to get valid IDs...")
     ds_original = xr.open_dataset(original_historical_file)
     original_valid_ids = set(ds_original['id_geohash'].values)
     ds_original.close()
     logger.info(f"Found {len(original_valid_ids)} valid IDs in original historical dataset")
 
-    # Load GDF once for the region (same for all dates)
+    # Load the pre-split, region-scoped lake vector file (id_geohash + full geometry
+    # for just this region) instead of the multi-GB global vector file.
+    logger.info(f"Loading pre-split lake vector file for {REGION_NAME}: {path_lake_vector}")
     gdf = gpd.read_parquet(path_lake_vector)
     log_memory_usage("After loading lake vectors")
 
@@ -850,12 +859,50 @@ def download_near_real_time_region_dates(
                 ds_dl = downloader.download_dw_monthly(
                     gdf=gdf_subset,
                     max_total_requests=max_total_requests,
-                    n_parallel=2,
+                    n_parallel=1,
                     date_list=[ANALYSIS_DATE],
                     save_to_file=outfile_download
                 )
 
                 if ds_dl is not None:
+                    # ========== VERIFY ALL REQUESTED LAKES CAME BACK ==========
+                    # download_dw_monthly can return a non-None dataset that's
+                    # missing some of the requested lakes (e.g. per-feature GEE
+                    # errors/timeouts within the tile). Without this check the
+                    # tile is marked "successful" and, since the output file
+                    # now exists with content, the skip-if-exists check above
+                    # means it is never retried again.
+                    downloaded_ids = set(ds_dl['id_geohash'].values.tolist())
+                    expected_ids = set(id_list)
+                    missing_in_tile = expected_ids - downloaded_ids
+                    tile_completion_pct = len(downloaded_ids) / len(expected_ids) if expected_ids else 1.0
+
+                    # A small residual of chronically-unavailable lakes (GEE
+                    # errors that never clear) should not be retried forever.
+                    # Accept >=98% per tile, matching the region-level
+                    # COMPLETION_THRESHOLD/ACCEPTABLE_MERGE_THRESHOLD used
+                    # downstream in merge_recent_downloads.py.
+                    if missing_in_tile and tile_completion_pct < TILE_COMPLETION_THRESHOLD:
+                        print(
+                            f'WARNING: Grid {bbox_west} {bbox_south} returned {len(downloaded_ids)}/{len(expected_ids)} '
+                            f'requested lakes ({len(missing_in_tile)} missing, {tile_completion_pct:.2%} complete, '
+                            f'below {TILE_COMPLETION_THRESHOLD:.0%} threshold) - treating as failed so it is retried')
+                        ds_dl.close()
+                        del ds_dl
+                        try:
+                            outfile_download.unlink()
+                        except Exception as e:
+                            logger.warning(f"Could not remove incomplete file {outfile_download}: {e}")
+                        date_results['failed_bbox_downloads'] += 1
+                        with open(outfile_downloads_failed_file, 'a') as f:
+                            f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+                        continue
+                    elif missing_in_tile:
+                        print(
+                            f'NOTE: Grid {bbox_west} {bbox_south} returned {len(downloaded_ids)}/{len(expected_ids)} '
+                            f'requested lakes ({tile_completion_pct:.2%} complete, >= {TILE_COMPLETION_THRESHOLD:.0%} '
+                            f'threshold) - accepting as complete')
+
                     download_successful = True
                     if should_overwrite:
                         print(f'Successfully re-downloaded data for {bbox_west} {bbox_south} (overwrote empty file)')
@@ -1062,6 +1109,156 @@ def get_ids_for_region_from_vector_file(region: str, env_path: str = None) -> Li
         import traceback
         traceback.print_exc()
         return []
+
+
+def _get_id_chunk_size(default: int = 2000) -> int:
+    """Read the lake_chunk_size env var (already wired into every Argo workflow pod)
+    so NetCDFs are opened as dask-backed, id_geohash-chunked datasets instead of
+    fully into memory as numpy arrays."""
+    try:
+        return int(os.environ.get('lake_chunk_size', default))
+    except (TypeError, ValueError):
+        return default
+
+
+def combine_region_files(
+        region_files: List[str],
+        output_file: str,
+        env_path: str = None
+) -> Dict[str, Any]:
+    """
+    Combine multiple region NetCDF files into a single combined file.
+    """
+    logger.info(f"\n{'=' * 80}")
+    logger.info("COMBINING REGION FILES")
+    logger.info(f"{'=' * 80}")
+    logger.info(f"Number of files to combine: {len(region_files)}")
+    logger.info(f"Output file: {output_file}")
+
+    if not region_files:
+        logger.error("No region files to combine")
+        return {'success': False, 'error': 'No region files to combine'}
+
+    # Verify all files exist
+    missing_files = [f for f in region_files if not Path(f).exists()]
+    if missing_files:
+        logger.error(f"Missing files: {missing_files}")
+        return {'success': False, 'error': f'Missing files: {missing_files}'}
+
+    try:
+        id_chunk = _get_id_chunk_size()
+        # Respect the operator-configured chunk size -- see merge_new_results
+        # for why the previous 500 cap was overriding it unnecessarily.
+        combine_chunk = id_chunk
+
+        logger.info(f"Loading region datasets (dask-chunked, id_geohash={combine_chunk})...")
+        datasets = []
+        file_info = []
+
+        for file_path in region_files:
+            try:
+                ds = xr.open_dataset(file_path, chunks={'id_geohash': combine_chunk, 'date': -1})
+                id_count = len(ds['id_geohash']) if 'id_geohash' in ds.dims else 0
+                date_count = len(ds['date']) if 'date' in ds.dims else 0
+                file_size_gb = Path(file_path).stat().st_size / (1024 ** 3)
+
+                file_info.append({
+                    'file': file_path,
+                    'id_count': id_count,
+                    'date_count': date_count,
+                    'file_size_gb': round(file_size_gb, 4)
+                })
+
+                datasets.append(ds)
+
+            except Exception as e:
+                logger.error(f"Error opening {file_path}: {e}")
+                for ds in datasets:
+                    try:
+                        ds.close()
+                    except:
+                        pass
+                return {'success': False, 'error': f'Error opening {file_path}: {e}'}
+
+        logger.info("\nFiles to combine:")
+        for info in file_info:
+            logger.info(
+                f"  {Path(info['file']).name}: {info['id_count']:,} IDs, {info['date_count']} dates, {info['file_size_gb']:.4f} GB")
+
+        if not datasets:
+            logger.error("No datasets to combine")
+            return {'success': False, 'error': 'No datasets to combine'}
+
+        logger.info("Combining datasets lazily...")
+        combined = xr.concat(datasets, dim='id_geohash')
+
+        for ds in datasets:
+            try:
+                ds.close()
+            except Exception:
+                pass
+        datasets = None
+        gc.collect()
+
+        # Remove duplicates in a single pass instead of after every file.
+        # Plain numpy on the id_geohash coordinate values (no .unique()/
+        # .drop_duplicates() dask-aware shortcut here).
+        logger.info("Removing duplicate IDs...")
+        id_values = combined['id_geohash'].values
+        _, unique_idx = np.unique(id_values, return_index=True)
+        if len(unique_idx) < len(id_values):
+            removed_count = len(id_values) - len(unique_idx)
+            logger.info(f"Removed {removed_count} duplicate IDs")
+            combined = combined.isel(id_geohash=np.sort(unique_idx))
+
+        combined = combined.sortby(['id_geohash', 'date'])
+
+        logger.info(f"Combined dataset has {len(combined['id_geohash'])} IDs and {len(combined['date'])} dates")
+
+        logger.info(f"Writing combined file to {output_file}")
+
+        n_ids = combined.sizes['id_geohash']
+        n_dates = combined.sizes['date']
+        encoding = {}
+        for var in combined.data_vars:
+            encoding[var] = {
+                'zlib': True,
+                'complevel': 4,
+                'shuffle': True,
+                'chunksizes': (min(id_chunk, 500, n_ids), n_dates)
+            }
+
+        combined.to_netcdf(output_file, encoding=encoding, unlimited_dims=['date'])
+
+        file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
+
+        result = {
+            'success': True,
+            'file_path': output_file,
+            'id_count': len(combined['id_geohash']),
+            'date_count': len(combined['date']),
+            'file_size_gb': round(file_size_gb, 4),
+            'files_combined': len(file_info),
+            'file_info': file_info
+        }
+
+        combined.close()
+        gc.collect()
+
+        logger.info(f"✅ Combined file created successfully!")
+        logger.info(f"  File: {output_file}")
+        logger.info(f"  IDs: {result['id_count']:,}")
+        logger.info(f"  Dates: {result['date_count']}")
+        logger.info(f"  Size: {result['file_size_gb']:.4f} GB")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error combining files: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+
 
 def merge_new_results(
         region: str = 'TEST',
@@ -1582,10 +1779,11 @@ def process_region_date_new_fast_NRT(
         merge_dir = Path(dynamic_world_data_dir) / 'merge'
         nc_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
         historical_file = max(nc_files, key=os.path.getmtime)
+        logger.debug(f"Using historical file {historical_file}")
         new_data_file = merge_dir / f"dw_{region}_{analysis_date}.nc"
-        vector_lake_file = os.environ.get('vector_lake_file')
+        region_lake_polygons_dir = os.environ.get('region_lake_polygons_dir')
 
-        # 2. Get region boundaries
+        # 2. Validate the region name
         from utils.region_boundaries import get_region_boundaries
         region_boundaries = get_region_boundaries()
 
@@ -1593,37 +1791,21 @@ def process_region_date_new_fast_NRT(
             logger.error(f"❌ Region {region} not found in boundaries!")
             return {'success': False, 'error': f'Region {region} not found in boundaries'}
 
-        bounds = region_boundaries[region]
-        logger.info(f"📍 Region boundaries for {region}:")
-        logger.info(f"   X_MIN_START: {bounds['X_MIN_START']}")
-        logger.info(f"   X_MIN_END: {bounds['X_MIN_END']}")
-        logger.info(f"   Y_MIN_START: {bounds['Y_MIN_START']}")
-        logger.info(f"   Y_MIN_END: {bounds['Y_MIN_END']}")
+        # 3. Load region IDs from the pre-split, region-scoped lake vector file.
+        # Only id_geohash is needed here - region_ids_list is only used below to
+        # select IDs out of the historical/analysis NetCDF files, so there's no
+        # need to load geometry (or the full global vector file) at all.
+        if not region_lake_polygons_dir:
+            logger.error("❌ region_lake_polygons_dir not set in environment")
+            return {'success': False, 'error': 'region_lake_polygons_dir not set in environment'}
 
-        # 3. Load vector file and filter by region boundaries
-        logger.info(f"Loading vector file and filtering for region {region}...")
+        region_lake_file = Path(region_lake_polygons_dir) / f"{region}_lake_polygons.parquet"
+        if not region_lake_file.exists():
+            logger.error(f"❌ Region lake polygons file not found: {region_lake_file}")
+            return {'success': False, 'error': f'Region lake polygons file not found: {region_lake_file}'}
 
-        if not vector_lake_file or not Path(vector_lake_file).exists():
-            logger.error(f"❌ Vector file not found: {vector_lake_file}")
-            return {'success': False, 'error': 'Vector file not found'}
-
-        gdf = gpd.read_parquet(vector_lake_file)
-
-        # Handle Polygon geometries - convert to centroids for filtering
-        if gdf.geometry.geom_type.iloc[0] in ['Polygon', 'MultiPolygon']:
-            logger.info("Converting Polygon geometries to centroids for spatial filtering")
-            gdf['centroid'] = gdf.geometry.centroid
-            gdf = gdf.set_geometry('centroid')
-
-        # Filter by region boundaries
-        region_ids = gdf[
-            (gdf.geometry.x >= bounds['X_MIN_START']) &
-            (gdf.geometry.x <= bounds['X_MIN_END']) &
-            (gdf.geometry.y >= bounds['Y_MIN_START']) &
-            (gdf.geometry.y <= bounds['Y_MIN_END'])
-            ]['id_geohash'].values
-
-        region_ids_list = list(region_ids)
+        logger.info(f"Loading region IDs for {region} from {region_lake_file}...")
+        region_ids_list = list(pd.read_parquet(region_lake_file, columns=['id_geohash'])['id_geohash'].values)
         original_total_ids = len(region_ids_list)  # Store original total
         logger.info(f"📍 {region} has {original_total_ids:,} IDs in vector file")
 
