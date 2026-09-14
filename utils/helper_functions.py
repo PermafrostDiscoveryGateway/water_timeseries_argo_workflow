@@ -2067,7 +2067,8 @@ def process_region_date_new_fast_NRT(
                     dataset=dwds,
                     analysis_date=analysis_date_str,
                     object_id=chunk_ids,  # <-- PASS THE LIST!
-                    keep_nans=False
+                    keep_nans=False,
+                    n_jobs=n_jobs,
                 )
 
                 if breaks_df is not None and not breaks_df.empty:
