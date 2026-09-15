@@ -905,9 +905,10 @@ spec:
   # process-region: run NRT processing for one region
   # ============================================================
   - name: process-region
-    # Only one process-region pod runs at a time, cluster-wide - it's the
-    # heaviest single stage in the pipeline, and nothing else gates how many
-    # regions could otherwise land in this step simultaneously once their
+    # At most process-concurrency (nrt-pipeline-semaphores ConfigMap)
+    # process-region pods run at a time, cluster-wide - it's the heaviest
+    # single stage in the pipeline, and nothing else gates how many regions
+    # could otherwise land in this step simultaneously once their
     # downloads/merges finish around the same time.
     synchronization:
       semaphores:
@@ -938,11 +939,11 @@ spec:
       resources:
         requests:
           memory: "12Gi"
-          cpu: "2"
+          cpu: "4"
           ephemeral-storage: "8Gi"
         limits:
           memory: "20Gi"
-          cpu: "2"
+          cpu: "4"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
