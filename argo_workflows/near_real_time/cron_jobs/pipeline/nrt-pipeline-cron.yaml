@@ -110,6 +110,16 @@ spec:
             name: nrt-pipeline-templates
             template: create-historical-zarr-archive
 
+        # Builds the NRT dashboard's PMTiles archive for the month, from the
+        # same combined breakpoint zarr - independent of create-historical-file
+        # below (that one merges the raw Dynamic World record, not breakpoints),
+        # so it only needs to wait on create-historical-zarr-archive too.
+        - name: create-nrt-pmtiles
+          depends: "create-historical-zarr-archive"
+          templateRef:
+            name: nrt-pipeline-templates
+            template: create-nrt-pmtiles
+
         # Runs last, after the combined NRT zarr archive has been created/updated.
         - name: create-historical-file
           depends: "create-historical-zarr-archive"
