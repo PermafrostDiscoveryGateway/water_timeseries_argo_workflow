@@ -738,6 +738,14 @@ spec:
     inputs:
       parameters:
       - name: region_name
+      # When "true", merge_region.py accepts whatever completeness the
+      # region currently has instead of requiring COMPLETION_THRESHOLD /
+      # ACCEPTABLE_MERGE_THRESHOLD (0.98) to be met. Only meant to be set on
+      # the last-resort merge after download-region-last-attempts has
+      # already exhausted its retries - see merge-after-last-attempts-force
+      # in region-pipeline.
+      - name: force
+        value: "false"
     # No retryStrategy here on purpose: merge_region.py fails almost
     # exclusively because the region's downloads are genuinely below the
     # completion threshold, not because of a transient error - retrying the
@@ -772,11 +780,12 @@ spec:
           set -x
           STAGE="merge_region"
           REGION_NAME="{{inputs.parameters.region_name}}"
+          FORCE_MERGE="{{inputs.parameters.force}}"
 
           mkdir -p /tmp
           exec > >(tee -a /tmp/workflow_output.log) 2>&1
 
-          echo "=== STARTING NRT PIPELINE STAGE: $STAGE / $REGION_NAME (attempt {{retries}}) ==="
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE / $REGION_NAME (attempt {{retries}}, force=$FORCE_MERGE) ==="
           echo "Timestamp: $(date)"
 
           WORKFLOW_NAME="{{workflow.name}}"
@@ -818,6 +827,7 @@ spec:
           region_lake_polygons_dir=/data/water_timeseries/region_lake_polygons
           output_dir=/data/water_timeseries/output
           region_name=${REGION_NAME}
+          force_merge=${FORCE_MERGE}
           EOF
 
           cd /app
@@ -1079,6 +1089,24 @@ spec:
           parameters:
           - name: region_name
             value: "{{inputs.parameters.region_name}}"
+      # last-attempts already tried everything it can (including the day-15+
+      # parked-ID retries) and still couldn't push this region over the
+      # completion threshold. At this point the missing tiles/lakes almost
+      # always just aren't in Dynamic World for this month (persistent
+      # cloud/ice masking, no data, etc) rather than a transient failure, so
+      # a plain retry-and-hope merge (merge-after-last-attempts above) would
+      # just fail again the same way. Force a best-effort merge instead of
+      # leaving the region with no merged file - and therefore 0 IDs - at
+      # process time.
+      - name: merge-after-last-attempts-force
+        template: merge-region
+        when: "{{steps.last-attempts.outputs.parameters.recovered}} == false"
+        arguments:
+          parameters:
+          - name: region_name
+            value: "{{inputs.parameters.region_name}}"
+          - name: force
+            value: "true"
     - - name: process
         template: process-region
         arguments:

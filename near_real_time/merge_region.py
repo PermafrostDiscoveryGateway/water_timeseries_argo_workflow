@@ -70,13 +70,15 @@ def main():
         return 0
 
     date_to_run = target_month.strftime("%Y-%m")
-    logger.info(f"Merging {REGION} for {date_to_run}")
+    force = os.environ.get("force_merge", "false").lower() == "true"
+    logger.info(f"Merging {REGION} for {date_to_run}" + (" (forced - accepting current completeness)" if force else ""))
 
     result = process_region_fast(
         region=REGION,
         date_to_run=date_to_run,
         env_path=env_path,
-        dynamic_world_data_dir=dynamic_world_data_dir
+        dynamic_world_data_dir=dynamic_world_data_dir,
+        force=force
     )
 
     logger.info("\n" + "=" * 80)
@@ -84,7 +86,9 @@ def main():
     logger.info("=" * 80)
 
     if result.get('success', False):
-        if result.get('partial', False):
+        if result.get('forced', False):
+            logger.info(f"⚠️ {REGION} merged with forced best-effort completeness: {result.get('reason')}")
+        elif result.get('partial', False):
             logger.info(f"⚠️ {REGION} merged partially (acceptable): {result.get('reason')}")
         else:
             logger.info(f"✅ {REGION} merged successfully: {result.get('reason')}")

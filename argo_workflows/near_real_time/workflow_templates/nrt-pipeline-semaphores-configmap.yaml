@@ -25,4 +25,4 @@ data:
   # around the same time could all launch process-region simultaneously.
   # Keep at 1 on a smaller cluster; raise only if node capacity allows more
   # than one to run comfortably at once.
-  process-concurrency: "1"
+  process-concurrency: "2"

@@ -664,10 +664,20 @@ def process_region_fast(
         region: str,
         date_to_run: str,
         env_path: str = None,
-        dynamic_world_data_dir: str = None
+        dynamic_world_data_dir: str = None,
+        force: bool = False
 ) -> Dict[str, Any]:
     """
     Fast process a single region: verify downloads, merge (with verification).
+
+    force: skip the completion-threshold gates and merge with whatever data is
+    currently downloaded. Intended for the last-resort merge that runs after
+    download-region-last-attempts has already exhausted its retries - at that
+    point, a region still below COMPLETION_THRESHOLD/ACCEPTABLE_MERGE_THRESHOLD
+    almost always means the missing tiles/lakes simply aren't in Dynamic World
+    for this month (e.g. persistent cloud/ice masking), not a transient
+    failure, so continuing to withhold the region from processing entirely
+    gains nothing.
     """
     logger.info(f"\n{'=' * 80}")
     logger.info(f"PROCESSING REGION: {region} (FAST MODE)")
@@ -700,10 +710,15 @@ def process_region_fast(
             logger.info(f"  ✅ Downloads {percent_downloaded:.2%} complete (>= {COMPLETION_THRESHOLD:.0%} threshold)")
 
     if not complete:
-        logger.warning(f"⚠️ Downloads not complete for {region} - skipping")
-        result['success'] = False
-        result['reason'] = 'Downloads incomplete'
-        return result
+        if not force:
+            logger.warning(f"⚠️ Downloads not complete for {region} - skipping")
+            result['success'] = False
+            result['reason'] = 'Downloads incomplete'
+            return result
+        logger.warning(
+            f"⚠️ Downloads not complete for {region} - forcing merge anyway "
+            f"(retries exhausted; treating this as the region's ceiling for this run)"
+        )
 
     # Step 2: Check if already merged and verify it's complete
     merged_file_path = os.path.join(dynamic_world_data_dir, 'merge', f"dw_{region}_{date_to_run}.nc")
@@ -746,8 +761,9 @@ def process_region_fast(
                 f"  ⚠️ Existing merge is incomplete: {missing_count} IDs missing ({completion_pct:.2%} complete)")
             logger.warning(f"     Error: {error_msg}")
 
-            # If it's below threshold, re-merge
-            if completion_pct < ACCEPTABLE_MERGE_THRESHOLD:
+            # If it's below threshold, re-merge (unless forced, in which case
+            # there's nothing a re-merge would fix - accept what's there)
+            if completion_pct < ACCEPTABLE_MERGE_THRESHOLD and not force:
                 logger.info(f"  🔄 Will re-merge {region} to fix incomplete data...")
             else:
                 # It's actually above threshold but verification failed for some other reason
@@ -797,12 +813,18 @@ def process_region_fast(
             f"  ⚠️ New merge verification failed: {missing_count} IDs missing ({completion_pct:.2%} complete)")
         logger.warning(f"     Error: {error_msg}")
 
-        # Check if it meets the acceptable threshold
-        if completion_pct >= ACCEPTABLE_MERGE_THRESHOLD:
-            logger.warning(
-                f"  ⚠️ Partial success: {completion_pct:.2%} complete (>= {ACCEPTABLE_MERGE_THRESHOLD:.0%} threshold)")
+        # Check if it meets the acceptable threshold, or was forced regardless
+        if force or completion_pct >= ACCEPTABLE_MERGE_THRESHOLD:
+            if force and completion_pct < ACCEPTABLE_MERGE_THRESHOLD:
+                logger.warning(
+                    f"  ⚠️ Forced partial success: {completion_pct:.2%} complete "
+                    f"(below {ACCEPTABLE_MERGE_THRESHOLD:.0%} threshold, but retries are exhausted)")
+            else:
+                logger.warning(
+                    f"  ⚠️ Partial success: {completion_pct:.2%} complete (>= {ACCEPTABLE_MERGE_THRESHOLD:.0%} threshold)")
             result['success'] = True
             result['partial'] = True
+            result['forced'] = force
             result['merged_file'] = merged_file_path
             result['reason'] = f'Partial merge: {completion_pct:.2%} complete'
             result['missing_ids'] = verify_result.get('missing_sample', [])

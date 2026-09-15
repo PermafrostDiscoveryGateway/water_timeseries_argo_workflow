@@ -305,7 +305,7 @@ def main():
 
     id_chunk_size = int(os.environ.get("id_chunk_size", 500))
     save_interval = int(os.environ.get("save_interval", 1))
-    n_jobs = 2  # TODO: derive from pod CPU limit instead of hardcoding
+    n_jobs = 2  # fixed at 2 for now, regardless of the pod's CPU limit or the N_JOBS env var
 
     # Define regions to process - you can customize this list
     if region_name == "ALL":
