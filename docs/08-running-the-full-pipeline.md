@@ -4,6 +4,9 @@ Once secrets, storage, and namespace/Argo setup are complete, and you've validat
 with the [testing pipeline](07-running-the-testing-pipeline.md), you can run the full pipeline
 against all production regions.
 
+Make sure the [region lake polygons have been generated](07-running-the-testing-pipeline.md#generate-the-region-lake-polygons)
+before applying the cron workflow below — the download jobs will fail without them.
+
 ## Files
 
 - Template: [`argo_workflows/near_real_time/workflow_templates/nrt-pipeline-templates.yaml`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/argo_workflows/near_real_time/workflow_templates/nrt-pipeline-templates.yaml)
