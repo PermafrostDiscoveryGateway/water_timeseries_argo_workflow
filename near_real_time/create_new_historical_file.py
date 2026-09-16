@@ -470,6 +470,29 @@ def merge_historical_file(
         return {'success': False, 'error': str(e)}
 
 
+def get_all_regions() -> List[str]:
+    """Regions expected to have merge output for this run (small set for test_run)."""
+    import utils.region_boundaries
+    boundaries = utils.region_boundaries.get_region_boundaries()
+    all_regions = list(boundaries.keys())
+    test_run = os.environ.get("test_run")
+    if test_run and test_run.lower() == 'true':
+        all_regions = list(utils.region_boundaries.get_small_regions().keys())
+    return all_regions
+
+
+def get_target_month_to_run(today: datetime = None) -> "datetime | None":
+    """Same summer-season/day-of-month gate as main(). None means nothing to do yet."""
+    summer_months = [6, 7, 8, 9]
+    today = today or datetime.now()
+
+    if is_test_run():
+        return most_recent_summer_month(today)
+    if today.month - 1 in summer_months and today.day > 3:
+        return datetime(today.year, today.month - 1, 1)
+    return None
+
+
 def main():
     logger.debug(f"Beginning historical run for ALL regions (fast mode)")
     enable_memory_tracking()
@@ -486,36 +509,14 @@ def main():
         logger.info("Loading environment from default .env file")
 
     # ========== Get all regions ==========
-    import utils.region_boundaries
-    boundaries = utils.region_boundaries.get_region_boundaries()
-    all_regions = list(boundaries.keys())
-    test_run = os.environ.get("test_run")
-    if test_run and test_run.lower() == 'true':
-        all_regions = list(utils.region_boundaries.get_small_regions().keys())
+    all_regions = get_all_regions()
     logger.info(f"Available regions: {all_regions}")
 
     dynamic_world_data_dir = os.environ['dynamic_world_data']
 
     # ========== Determine if we should run ==========
-    SHOULD_RUN = False
-    summer_months = [6, 7, 8, 9]
-
-    TODAY = datetime.now()
-    TODAY_MONTH = TODAY.month
-    target_month = None
-
-    if is_test_run():
-        SHOULD_RUN = True
-        target_month = most_recent_summer_month(TODAY)
-        logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
-    elif TODAY_MONTH - 1 in summer_months:
-        TODAY_DAY = TODAY.day
-        if TODAY_DAY > 3:
-            SHOULD_RUN = True
-            target_month = datetime(TODAY.year, TODAY_MONTH - 1, 1)
-            logger.debug(f"Should run: {SHOULD_RUN}")
-
-    if not SHOULD_RUN:
+    target_month = get_target_month_to_run()
+    if target_month is None:
         logger.debug(f"Too early in the month to run downloads - exiting")
         return
 

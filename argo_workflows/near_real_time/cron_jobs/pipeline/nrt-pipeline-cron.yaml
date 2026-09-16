@@ -103,16 +103,30 @@ spec:
               value: "{{workflow.parameters.max-backfill-attempts}}"
           withParam: "{{workflow.parameters.regions}}"
 
-        # Only runs once every region's full pipeline has finished.
+        # Only runs once every region's full pipeline (including process) has finished,
+        # since it combines each region's breakpoint output.
         - name: create-historical-zarr-archive
           depends: "regions"
           templateRef:
             name: nrt-pipeline-templates
             template: create-historical-zarr-archive
 
-        # Runs last, after the combined NRT zarr archive has been created/updated.
+        # Decoupled from create-historical-zarr-archive/regions on purpose: this only
+        # needs every region's *merge* output (dw_{region}_{date}.nc), not process, so
+        # it doesn't need to wait behind the (much slower) process step. It has no
+        # `depends`, so it starts as soon as the workflow does and polls on its own,
+        # on a cheap pod, until every region's merge file for the target month shows
+        # up (or merge_wait_minutes is exceeded) - see wait-for-region-merges.
+        - name: wait-for-region-merges
+          templateRef:
+            name: nrt-pipeline-templates
+            template: wait-for-region-merges
+
+        # Only starts once wait-for-region-merges confirms merges are ready, so the
+        # much heavier create-new-historical-file pod isn't sitting reserved for
+        # however long the region pipelines take.
         - name: create-historical-file
-          depends: "create-historical-zarr-archive"
+          depends: "wait-for-region-merges"
           templateRef:
             name: nrt-pipeline-templates
             template: create-new-historical-file

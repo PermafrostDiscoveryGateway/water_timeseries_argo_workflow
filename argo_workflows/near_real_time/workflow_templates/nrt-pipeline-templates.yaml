@@ -1125,7 +1125,15 @@ spec:
   # create-new-historical-file: consolidate the month once all
   # regions have been processed
   # ============================================================
-  - name: create-new-historical-file
+  # ============================================================
+  # wait-for-region-merges: cheap pre-check for create-new-historical-file.
+  # Polls for every region's merge output using the same logic
+  # create_new_historical_file.py runs internally, but on a small, low-cost
+  # pod - so the much heavier create-new-historical-file pod (14-20Gi memory
+  # request) only gets scheduled once merges are actually ready, instead of
+  # sitting reserved the whole time regions are still downloading/merging.
+  # ============================================================
+  - name: wait-for-region-merges
     metadata:
       labels:
         long-running-job: "true"
@@ -1140,12 +1148,80 @@ spec:
       imagePullPolicy: Always
       resources:
         requests:
+          memory: "1Gi"
+          cpu: "250m"
+          ephemeral-storage: "1Gi"
+        limits:
+          memory: "2Gi"
+          cpu: "500m"
+          ephemeral-storage: "2Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="wait_for_region_merges"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE ==="
+          echo "Timestamp: $(date)"
+
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          dynamic_world_data=/data/water_timeseries/dynamic_world_data
+          merge_wait_minutes=2880
+          EOF
+
+          cd /app
+          SCRIPT_EXIT_CODE=0
+          python -u /app/near_real_time/wait_for_region_merges.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
+
+          echo "{\"stage\":\"$STAGE\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      volumeMounts:
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  - name: create-new-historical-file
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      imagePullPolicy: Always
+      resources:
+        # Merging is I/O- and memory-bound (opening/combining large netCDF files),
+        # not CPU-bound, so this only needs 1 CPU - kept well below the memory
+        # request since the netCDF combine can still hold a lot in memory at once.
+        requests:
           memory: "14Gi"
-          cpu: "2"
+          cpu: "1"
           ephemeral-storage: "8Gi"
         limits:
           memory: "20Gi"
-          cpu: "2"
+          cpu: "1"
           ephemeral-storage: "16Gi"
       command: ["bash", "-c"]
       args:
@@ -1197,6 +1273,10 @@ spec:
           dynamic_world_downloads=/data/water_timeseries/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           output_dir=/data/water_timeseries/output
+          # The heavy lifting of waiting for merges happens in the cheap
+          # wait-for-region-merges step this depends on, so this is just a short
+          # safety-margin recheck, not the primary wait.
+          merge_wait_minutes=60
           EOF
 
           cd /app
