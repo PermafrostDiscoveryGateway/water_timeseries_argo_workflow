@@ -937,9 +937,13 @@ spec:
       image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
       imagePullPolicy: Always
       resources:
+        # Observed actual usage for n_jobs=2 regions is ~2 cores, well under the old
+        # 4-core request - that gap was blocking more concurrent process-region pods
+        # from fitting on nodes that had plenty of real headroom. Request matches
+        # typical use; limit stays at 4 so n_jobs=4 regions can still burst that high.
         requests:
           memory: "12Gi"
-          cpu: "4"
+          cpu: "2"
           ephemeral-storage: "8Gi"
         limits:
           memory: "20Gi"

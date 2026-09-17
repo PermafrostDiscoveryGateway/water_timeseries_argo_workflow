@@ -24,5 +24,9 @@ data:
   # gating them - without this, several regions finishing their download+merge
   # around the same time could all launch process-region simultaneously.
   # Keep at 1 on a smaller cluster; raise only if node capacity allows more
-  # than one to run comfortably at once.
-  process-concurrency: "2"
+  # than one to run comfortably at once. This is a shared, multi-tenant
+  # cluster (other unrelated workloads run on the same worker nodes), so
+  # check actual free CPU/memory per node before raising this further -
+  # raised to 3 on 2026-09-16 after confirming per-pod CPU usage (~2 cores)
+  # was well under the old 4-core request, freeing real headroom for a 3rd.
+  process-concurrency: "3"
