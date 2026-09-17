@@ -1,0 +1,42 @@
+site_name: water-timeseries-argo-workflow
+site_description: Argo Workflows for running the water time series / lake drainage pipeline on GKE
+site_url: https://PermafrostDiscoveryGateway.github.io/water-timeseries-argo-workflow/
+repo_url: https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow
+repo_name: PermafrostDiscoveryGateway/water-timeseries-argo-workflow
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: blue
+      accent: light blue
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tasklist
+  - pymdownx.highlight
+  - toc:
+      permalink: "🔗"
+
+nav:
+  - Home: index.md
+  - 1. Create Namespace: 01-create-namespace.md
+  - 2. Install Argo: 02-install-argo.md
+  - 3. Whitelist & Port Forward: 03-whitelist-and-port-forward.md
+  - 4. Setting Up Secrets: 04-setting-up-secrets.md
+  - 5. Filestore Setup & Testing: 05-filestore-setup-and-testing.md
+  - 6. How the Pipeline Works: 06-how-the-pipeline-works.md
+  - 7. Running the Testing Pipeline: 07-running-the-testing-pipeline.md
+  - 8. Running the Full Pipeline: 08-running-the-full-pipeline.md
+  - 9. Data Access: 09-data-access.md
