@@ -11,6 +11,7 @@ import xarray as xr
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import region_boundaries
 
 
 def inspect_zarr(zarr_path: str, show_data: bool = True, max_rows: int = 10):
@@ -172,17 +173,19 @@ def inspect_zarr(zarr_path: str, show_data: bool = True, max_rows: int = 10):
 def main():
     """Main entry point."""
 
-    # TODO have it intelligently find new inputs and print out analysis on all of them
+    show_data = False
+    path_to_output = sys.argv[1]
+    if len(sys.argv) > 2:
+        show_data = True
+    all_regions = region_boundaries.get_region_boundaries()
+    zarr_dataset_paths =[]
+    for region in all_regions:
+        zarr_dataset = f"{path_to_output}/{region}/breakpoint_zarr/breakpoints_2026-07.zarr"
+        if os.path.exists(zarr_dataset):
+            zarr_dataset_paths.append(zarr_dataset)
 
-
-    show_data = True
-    zarr_path = sys.argv[1]
-
-    if len(sys.argv) > 2 and sys.argv[2] == '--no-data':
-        show_data = False
-
-    inspect_zarr(zarr_path, show_data=show_data)
-
+    for zarr_dataset in zarr_dataset_paths:
+        inspect_zarr(zarr_dataset, show_data=show_data)
 
 
 if __name__ == "__main__":
