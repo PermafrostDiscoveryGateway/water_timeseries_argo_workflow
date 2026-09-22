@@ -1,6 +1,28 @@
 import pandas as pd
 from datetime import datetime
 
+try:
+    from water_timeseries.utils.earthengine import NoDynamicWorldDataError
+except ImportError:
+    # Older water-timeseries images signal no data with a plain ValueError
+    NoDynamicWorldDataError = None
+
+# Message used by water-timeseries when Earth Engine confirms there is no Dynamic World data
+NO_DATA_MESSAGE = "No data was extracted"
+
+
+def is_no_data_error(exc):
+    """
+    Return True if exc means Earth Engine confirmed there is no Dynamic World data.
+
+    Anything else (Earth Engine errors, network errors, bad input) is a real
+    failure and should be retried or investigated, not treated as missing data.
+    """
+    if NoDynamicWorldDataError is not None and isinstance(exc, NoDynamicWorldDataError):
+        return True
+    return isinstance(exc, ValueError) and NO_DATA_MESSAGE in str(exc)
+
+
 
 def find_missing_summer_dates(existing_dates, current_date=None):
     """

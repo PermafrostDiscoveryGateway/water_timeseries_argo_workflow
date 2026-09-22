@@ -41,6 +41,7 @@ if str(project_root) not in sys.path:
 
 from utils.region_boundaries import get_region_boundaries
 from utils.date_gate import is_test_run, most_recent_summer_month
+from utils.download_utils import is_no_data_error
 
 # Accept a batch as complete if this fraction of its requested lakes come
 # back. Matches TILE_COMPLETION_THRESHOLD in utils/helper_functions.py and
@@ -162,7 +163,7 @@ def download_id_batches(downloader, gdf_ids, id_list, date_to_run, current_downl
             recovered_ids: set of IDs successfully downloaded (>= completion_threshold per batch)
             no_data_ids: set of IDs whose batch came back as a confirmed-empty DW collection
             discarded_ids: set of IDs whose batch came back below completion_threshold (retryable)
-            had_real_error: True if any batch raised something other than the no-data ValueError
+            had_real_error: True if any batch raised something other than a confirmed no-data error
     """
     recovered_ids = set()
     no_data_ids = set()
@@ -192,17 +193,13 @@ def download_id_batches(downloader, gdf_ids, id_list, date_to_run, current_downl
                 date_list=[date_to_run],
                 save_to_file=outfile
             )
-        except ValueError as e:
-            if "No data was extracted" in str(e):
+        except Exception as e:
+            if is_no_data_error(e):
                 logger.warning(f"Batch {batch_idx}: confirmed no data for {len(batch_id_set)} lakes")
                 no_data_ids.update(batch_id_set)
             else:
-                logger.error(f"Batch {batch_idx} failed: {e}")
+                logger.error(f"Batch {batch_idx} failed with a real error ({type(e).__name__}): {e}")
                 had_real_error = True
-            continue
-        except Exception as e:
-            logger.error(f"Batch {batch_idx} failed: {e}")
-            had_real_error = True
             continue
 
         downloaded_ids = normalize_id_set(ds_dl['id_geohash'].values.tolist())
