@@ -8,6 +8,7 @@ import os
 import glob
 from typing import List, Optional, Dict, Any
 import zarr
+from concurrent.futures import ProcessPoolExecutor
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -3287,6 +3288,34 @@ def process_region_date_new_fast_historical_safe(
         }
 
 
+def _zarr_write_worker(ds: xr.Dataset, zarr_path: Path, to_zarr_kwargs: Dict[str, Any]) -> None:
+    """Runs in a fresh subprocess. Isolates zarr's writes from whatever asyncio
+    event loop state exists in the parent process (e.g. a debugger-injected
+    loop), which otherwise triggers "Future attached to a different loop"
+    RuntimeErrors from zarr's internal async write path."""
+    ds.to_zarr(zarr_path, **to_zarr_kwargs)
+    ds.close()
+
+
+def _running_under_debugger() -> bool:
+    """True when a debugger (e.g. PyCharm/pydevd) is attached to this process."""
+    return sys.gettrace() is not None or 'pydevd' in sys.modules
+
+
+def write_zarr_isolated(ds: xr.Dataset, zarr_path: Path, **to_zarr_kwargs: Any) -> None:
+    """Write a Dataset to Zarr, routing through a dedicated subprocess only when
+    a debugger is attached (see _zarr_write_worker). Spawning a subprocess here
+    re-imports this module's heavy dependencies (geemap, earthengine, dask), so
+    outside of debugging we just call to_zarr() directly to avoid that overhead
+    on every write, including in production cron runs."""
+    if not _running_under_debugger():
+        ds.to_zarr(zarr_path, **to_zarr_kwargs)
+        return
+
+    with ProcessPoolExecutor(max_workers=1) as executor:
+        executor.submit(_zarr_write_worker, ds, Path(zarr_path), to_zarr_kwargs).result()
+
+
 def create_final_zarr_from_incremental(
         incremental_file: Path,
         zarr_path: Path,
@@ -3336,7 +3365,9 @@ def create_final_zarr_from_incremental(
             'analysis_source': analysis_source,
             'total_ids': total_ids
         })
-        empty_ds.to_zarr(zarr_path, mode='w')
+        # Write in a subprocess to avoid zarr's async loop colliding with any
+        # event loop injected into this process by a debugger.
+        write_zarr_isolated(empty_ds, zarr_path, mode='w')
         empty_ds.close()
         return {
             'success': True,
@@ -3374,7 +3405,9 @@ def create_final_zarr_from_incremental(
                 'analysis_source': analysis_source,
                 'total_ids': total_ids
             })
-            empty_ds.to_zarr(zarr_path, mode='w')
+            # Write in a subprocess to avoid zarr's async loop colliding with any
+            # event loop injected into this process by a debugger.
+            write_zarr_isolated(empty_ds, zarr_path, mode='w')
             empty_ds.close()
             return {
                 'success': True,
@@ -3450,7 +3483,9 @@ def create_final_zarr_from_incremental(
         })
 
         # Write to Zarr
-        ds_breaks.to_zarr(zarr_path, mode='w', consolidated=True)
+        # Write in a subprocess to avoid zarr's async loop colliding with any
+        # event loop injected into this process by a debugger.
+        write_zarr_isolated(ds_breaks, zarr_path, mode='w', consolidated=True)
         logger.info(f"   ✅ Zarr saved successfully")
 
         # Optional: Save Parquet backup
@@ -3524,7 +3559,9 @@ def create_final_zarr_from_incremental_2(
             'analysis_source': analysis_source,
             'total_ids': total_ids
         })
-        empty_ds.to_zarr(zarr_path, mode='w')
+        # Write in a subprocess to avoid zarr's async loop colliding with any
+        # event loop injected into this process by a debugger.
+        write_zarr_isolated(empty_ds, zarr_path, mode='w')
         empty_ds.close()
         return {
             'success': True,
@@ -3559,7 +3596,9 @@ def create_final_zarr_from_incremental_2(
                 'analysis_source': analysis_source,
                 'total_ids': total_ids
             })
-            empty_ds.to_zarr(zarr_path, mode='w')
+            # Write in a subprocess to avoid zarr's async loop colliding with any
+            # event loop injected into this process by a debugger.
+            write_zarr_isolated(empty_ds, zarr_path, mode='w')
             empty_ds.close()
             return {
                 'success': True,
@@ -3584,7 +3623,9 @@ def create_final_zarr_from_incremental_2(
             'breakpoints_found': len(breaks_merged)
         })
 
-        ds_breaks.to_zarr(zarr_path, mode='w')
+        # Write in a subprocess to avoid zarr's async loop colliding with any
+        # event loop injected into this process by a debugger.
+        write_zarr_isolated(ds_breaks, zarr_path, mode='w')
         logger.info(f"   ✅ Zarr saved successfully")
 
         # Optional: Save Parquet backup
