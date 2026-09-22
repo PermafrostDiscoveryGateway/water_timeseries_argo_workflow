@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - 50-clean-up-debug-directory
+      - 56-add-pmtiles-generation-to-argo-workflow
   workflow_dispatch:
     inputs:
       tag:
