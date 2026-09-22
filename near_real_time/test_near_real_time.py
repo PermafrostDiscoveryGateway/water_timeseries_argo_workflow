@@ -1,25 +1,11 @@
+import os
+import sys
 import download_region
 import merge_recent_downloads
 from google_cloud_utils import upload_to_cloud
 import process_NRT
 import create_new_historical_file
 from loguru import logger
-
-def load_env_file(env_path):
-    """Load environment variables from a .env file"""
-    env_vars = {}
-    with open(env_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                key, value = line.split('=', 1)
-                env_vars[key] = value
-    return env_vars
-
-
-import subprocess
-import sys
-import os
 
 
 def load_env_file(env_path):
