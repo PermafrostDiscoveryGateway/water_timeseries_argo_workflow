@@ -1403,6 +1403,85 @@ spec:
         mountPath: /data
 
   # ============================================================
+  # create-nrt-pmtiles: same as the main pipeline's step (reads the
+  # combined breakpoint zarr create-historical-zarr-archive writes), but
+  # writes the drain-breaks table and PMTiles under /data/water_timeseries/test
+  # so a test run never replaces the archive the dashboard reads.
+  # ============================================================
+  - name: create-nrt-pmtiles
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:56-add-pmtiles-generation-to-argo-workflow
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "8Gi"
+          cpu: "2"
+          ephemeral-storage: "8Gi"
+        limits:
+          memory: "14Gi"
+          cpu: "2"
+          ephemeral-storage: "16Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="create_nrt_pmtiles"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING NRT PIPELINE STAGE: $STAGE ==="
+          echo "Timestamp: $(date)"
+
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}_test"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          base_dir=/data/water_timeseries
+          combined_zarr_datasets=/data/water_timeseries/combined_zarr_datasets
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          nrt_precomputed_dir=/data/water_timeseries/test/precomputed_nrt
+          nrt_pmtiles_output_dir=/data/water_timeseries/test/nrt_tiles
+          drain_threshold=-0.25
+          nrt_poly_max_zoom=14
+          EOF
+
+          cd /app
+          SCRIPT_EXIT_CODE=0
+          python -u /app/near_real_time/create_nrt_pmtiles.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
+
+          echo "{\"stage\":\"$STAGE\",\"exit_code\":$SCRIPT_EXIT_CODE,\"timestamp\":\"$(date -u +%FT%TZ)\",\"workflow\":\"{{workflow.name}}\"}" >> /data/water_timeseries/checkpoint/nrt_pipeline_log.jsonl
+
+          echo "=== $STAGE completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: lake-drainage-volume
+        mountPath: /data
+
+  # ============================================================
   # upload: dry-run only. Logs what would be synced to GCS without
   # actually uploading anything - this is the test pipeline.
   # ============================================================

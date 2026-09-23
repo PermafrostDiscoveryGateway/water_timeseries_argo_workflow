@@ -102,6 +102,15 @@ spec:
             name: nrt-pipeline-templates-test
             template: create-historical-zarr-archive
 
+        # Builds the month's PMTiles archive from the same combined breakpoint
+        # zarr (into /data/water_timeseries/test/nrt_tiles for the test
+        # pipeline), so it only needs to wait on create-historical-zarr-archive.
+        - name: create-nrt-pmtiles
+          depends: "create-historical-zarr-archive"
+          templateRef:
+            name: nrt-pipeline-templates-test
+            template: create-nrt-pmtiles
+
         # Decoupled from create-historical-zarr-archive/regions on purpose: this only
         # needs every region's *merge* output (dw_{region}_{date}.nc), not process, so
         # it doesn't need to wait behind the (much slower) process step. It has no
