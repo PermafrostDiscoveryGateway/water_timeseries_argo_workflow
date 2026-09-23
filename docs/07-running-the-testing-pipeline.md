@@ -66,6 +66,28 @@ argo submit -n argo --from cronworkflow/nrt-pipeline-cron-test
 You can follow progress and inspect logs for each step in the Argo UI (see
 [6. How the pipeline works](06-how-the-pipeline-works.md#following-jobs)).
 
+## Running the test pipeline locally with snakemake
+
+[`snakemake/Snakefile`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/snakemake/Snakefile)
+runs the same steps as the test cron workflow on your own machine, against one explicit month
+instead of "today". Local paths, regions and the Python interpreter are set in
+[`snakemake/config.yaml`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/snakemake/config.yaml).
+
+```bash
+snakemake -s snakemake/Snakefile --cores 2 --config target_date=2025-08
+```
+
+`target_date` (`YYYY-MM`) is written into every stage's `.env` and picked up by
+`utils.date_gate.most_recent_summer_month()`. It differs from the Argo test pipeline in two ways:
+
+- Each download step (the full download, its missing-ID fallback, and the single backfill after
+  a failed merge) runs once, with no retries.
+- The day-15+ `download-region-last-attempts` step is skipped, so each region always gets the
+  forced best-effort merge before processing.
+
+Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
+that directory (or use `--forcerun`) to re-run a month.
+
 ## Prerequisites
 
 Before running the test pipeline, make sure you've completed:

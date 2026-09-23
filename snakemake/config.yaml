@@ -1,0 +1,48 @@
+# Local snakemake version of the nrt-pipeline-cron-test Argo workflow.
+# Override any value on the command line, e.g.:
+#   snakemake -s snakemake/Snakefile --cores 2 --config target_date=2025-08
+
+# Month to run the whole pipeline against (YYYY-MM). Passed to every stage as
+# `target_date`, which utils.date_gate.most_recent_summer_month() returns in
+# place of the "most recent complete summer month" a test run normally uses.
+target_date: "2025-08"
+
+# Must stay in sync with utils.region_boundaries.get_small_regions(): with
+# test_run=True, wait-for-region-merges / create-new-historical-file expect
+# merge output for exactly that set of regions.
+regions:
+  TEST:     {id_chunk_size: "", save_interval: "", n_jobs: ""}
+  EURASIA3: {id_chunk_size: "", save_interval: "", n_jobs: ""}
+
+# Python used to run the near_real_time/ scripts (needs water_timeseries,
+# earthengine-api, etc. - e.g. the pixi/uv env you normally run them in).
+python: "python"
+
+# Local equivalents of the /data/water_timeseries paths in
+# nrt-pipeline-templates-test.yaml. Relative paths are resolved against the
+# repo root.
+paths:
+  base_dir: "data"
+  dynamic_world_data: "data/dynamic_world_test"
+  vector_lake_file: "data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
+  region_lake_polygons_dir: "data/region_lake_polygons"
+  output_dir: "data/output_test"
+  combined_zarr_datasets: "data/combined_zarr_datasets"
+  # Snakemake's own bookkeeping: per-stage .env files, logs, done-markers.
+  work_dir: "data/snakemake_work"
+
+# Same GCP / Earth Engine settings the Argo pods export. Local Earth Engine
+# auth (`earthengine authenticate`) is used as-is.
+earth_engine:
+  project: "pdg-project-406720"
+  EE_CLOUD_PROJECT: "pdg-wg-workflow"
+  EE_PROJECT: "pdg-project-406720"
+  vector_dataset_file_url: "pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
+  bucket_path: "pdg-storage-default/water_timeseries_v2/data/input"
+
+# The merge -> backfill -> re-merge round in merge-and-backfill-region-loop.
+# Downloads are only tried once here, so this is a single backfill between
+# the first and second merge (equivalent to max-backfill-attempts: 2).
+backfill_after_failed_merge: true
+
+merge_wait_minutes: 5

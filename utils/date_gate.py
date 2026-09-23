@@ -7,7 +7,12 @@
 # current month is never a candidate - even in-season it's still in
 # progress and won't have data yet - so this always targets the most recent
 # *complete* summer month, starting the search at last month.
+#
+# A test run can also be pinned to one specific month by setting
+# `target_date=YYYY-MM` in the .env (used by the local snakemake test
+# pipeline), instead of whatever month "today" happens to resolve to.
 import os
+import re
 from datetime import datetime
 
 SUMMER_MONTHS = [6, 7, 8, 9]
@@ -15,6 +20,16 @@ SUMMER_MONTHS = [6, 7, 8, 9]
 
 def is_test_run() -> bool:
     return os.environ.get("test_run", "False").lower() in ("true", "1", "yes")
+
+
+def target_date_override() -> "datetime | None":
+    """Explicit `target_date=YYYY-MM` from the env, or None if unset."""
+    value = os.environ.get("target_date", "").strip()
+    if not value:
+        return None
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value):
+        raise ValueError(f"target_date must be YYYY-MM, got {value!r}")
+    return datetime.strptime(value, "%Y-%m")
 
 
 def should_run_last_attempts(today: datetime = None, min_day: int = 15) -> bool:
@@ -34,6 +49,9 @@ def should_run_last_attempts(today: datetime = None, min_day: int = 15) -> bool:
 
 
 def most_recent_summer_month(today: datetime = None) -> datetime:
+    override = target_date_override()
+    if override is not None:
+        return override
     if today is None:
         today = datetime.now()
     year, month = today.year, today.month
