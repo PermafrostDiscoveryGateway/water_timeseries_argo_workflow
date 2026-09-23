@@ -14,8 +14,25 @@ regions:
   TEST:     {id_chunk_size: "", save_interval: "", n_jobs: ""}
   EURASIA3: {id_chunk_size: "", save_interval: "", n_jobs: ""}
 
-# Python used to run the near_real_time/ scripts (needs water_timeseries,
-# earthengine-api, etc. - e.g. the pixi/uv env you normally run them in).
+# Python environment for the near_real_time/ scripts. With build: true,
+# snakemake builds it with uv the same way the Docker image is built:
+#   1. base: water-timeseries-v2 (the ghcr.io/.../water-timeseries-v2 base image)
+#   2. extras: envs/requirements-extra.txt (this repo's Dockerfile layer)
+# It's only rebuilt when base_package, python_version or the extras file
+# change, and a rebuild doesn't re-run pipeline steps that already finished.
+# With build: false, `python` below is used as-is.
+environment:
+  build: true
+  uv: "uv"
+  path: "snakemake/.venv"
+  python_version: "3.12"
+  # Anything `uv pip install` accepts. The image tag ncsa-water-timeseries is
+  # built from the branch of the same name. For a local checkout instead:
+  #   base_package: "-e ../water-timeseries-v2"
+  base_package: "water-timeseries @ git+https://github.com/PermafrostDiscoveryGateway/water-timeseries-v2.git@ncsa-water-timeseries"
+  extra_requirements: "snakemake/envs/requirements-extra.txt"
+
+# Only used when environment.build is false.
 python: "../water-timeseries-v2/.venv/bin/python"
 
 # Local equivalents of the /data/water_timeseries paths in

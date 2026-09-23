@@ -85,6 +85,14 @@ snakemake -s snakemake/Snakefile --cores 2 --config target_date=2025-08
 - The day-15+ `download-region-last-attempts` step is skipped, so each region always gets the
   forced best-effort merge before processing.
 
+The first run builds the Python environment the scripts run in (`snakemake/.venv`), with uv, the
+same way the Docker image is built: first water-timeseries-v2 (by default the
+`ncsa-water-timeseries` branch the base image is built from), then this repo's extra
+dependencies from `snakemake/envs/requirements-extra.txt` (keep that in sync with the
+`Dockerfile`). It's rebuilt only when `environment` settings in the config or that file change, and
+a rebuild doesn't re-run steps that already finished. Set `environment.build: false` to use an
+existing interpreter (`python:`) instead.
+
 Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
 that directory (or use `--forcerun`) to re-run a month.
 

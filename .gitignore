@@ -211,3 +211,4 @@ __marimo__/
 
 # Snakemake local test pipeline state
 .snakemake/
+snakemake/.venv/
