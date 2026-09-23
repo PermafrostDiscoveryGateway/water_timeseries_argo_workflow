@@ -25,6 +25,7 @@ from water_timeseries.dataset import DWDataset
 from water_timeseries.breakpoint import NRTBreakpoint, BeastBreakpoint
 import datetime
 from utils.region_boundaries import get_region_boundaries
+from utils.download_utils import is_no_data_error
 import json
 
 import dask
@@ -718,11 +719,17 @@ def download_near_real_time_region_dates(
         date_results = {
             'analysis_date': ANALYSIS_DATE,
             'success_bbox_downloads': 0,
+            # failed = no_data + error + incomplete; no-data tiles still count as failed so
+            # completion checks downstream are unchanged, but are tracked separately
             'failed_bbox_downloads': 0,
+            'no_data_bbox_downloads': 0,
+            'error_bbox_downloads': 0,
+            'incomplete_bbox_downloads': 0,
             'skipped_bbox_downloads': 0,
             'overwritten_bbox_downloads': 0,
             'expected_downloads': 0,
             'grid_tiles_processed': [],
+            'no_data_grid_tiles': [],
             'successful': False
         }
 
@@ -763,6 +770,7 @@ def download_near_real_time_region_dates(
         outfile_downloads_failed_file = current_download_dir / f'grid_tiles_download_failed_{date_run_label}.txt'
         outfile_downloads_success_file = current_download_dir / f'grid_tiles_download_success_{date_run_label}.txt'
         outfile_downloads_overwritten_file = current_download_dir / f'grid_tiles_download_overwritten_{date_run_label}.txt'
+        outfile_downloads_no_data_file = current_download_dir / f'grid_tiles_download_no_data_{date_run_label}.txt'
 
         # Track expected grid tiles
         expected_grid_tiles = []
@@ -894,6 +902,7 @@ def download_near_real_time_region_dates(
                         except Exception as e:
                             logger.warning(f"Could not remove incomplete file {outfile_download}: {e}")
                         date_results['failed_bbox_downloads'] += 1
+                        date_results['incomplete_bbox_downloads'] += 1
                         with open(outfile_downloads_failed_file, 'a') as f:
                             f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
                         continue
@@ -915,24 +924,30 @@ def download_near_real_time_region_dates(
                         f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
                     date_results['grid_tiles_processed'].append(grid_coords)
                 else:
-                    print(f'WARNING: No data available for {bbox_west} {bbox_south} on {ANALYSIS_DATE}')
+                    # Only happens with no_download=True, which is never set here
+                    logger.error(f"Download returned no dataset for {bbox_west} {bbox_south} on {ANALYSIS_DATE}")
                     date_results['failed_bbox_downloads'] += 1
+                    date_results['error_bbox_downloads'] += 1
                     with open(outfile_downloads_failed_file, 'a') as f:
                         f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
 
-            except ValueError as e:
-                if "No data was extracted" in str(e):
-                    print(f'WARNING: No data available for {bbox_west} {bbox_south} on {ANALYSIS_DATE}')
-                else:
-                    logger.error(f"Download error for {bbox_west} {bbox_south}: {e}")
-                date_results['failed_bbox_downloads'] += 1
-                with open(outfile_downloads_failed_file, 'a') as f:
-                    f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
             except Exception as e:
-                logger.error(f"Unexpected error downloading {bbox_west} {bbox_south}: {e}")
+                # Still counted as failed (and written to the failed file) so the date is
+                # retried and completion checks are unchanged; no-data tiles are also
+                # recorded separately so they can be told apart from real errors.
                 date_results['failed_bbox_downloads'] += 1
                 with open(outfile_downloads_failed_file, 'a') as f:
                     f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+                if is_no_data_error(e):
+                    logger.warning(f"Confirmed no Dynamic World data for {bbox_west} {bbox_south} on {ANALYSIS_DATE}")
+                    date_results['no_data_bbox_downloads'] += 1
+                    date_results['no_data_grid_tiles'].append(grid_coords)
+                    with open(outfile_downloads_no_data_file, 'a') as f:
+                        f.write(f"{ANALYSIS_DATE}_{grid_coords}\n")
+                else:
+                    logger.error(
+                        f"Download error for {bbox_west} {bbox_south} on {ANALYSIS_DATE} ({type(e).__name__}): {e}")
+                    date_results['error_bbox_downloads'] += 1
 
             # Clean up
             if 'ds_dl' in locals() and ds_dl is not None:
@@ -949,6 +964,10 @@ def download_near_real_time_region_dates(
             'expected_downloads': date_results['expected_downloads'],
             'successful_downloads': date_results['success_bbox_downloads'],
             'failed_downloads': date_results['failed_bbox_downloads'],
+            'no_data_downloads': date_results['no_data_bbox_downloads'],
+            'error_downloads': date_results['error_bbox_downloads'],
+            'incomplete_downloads': date_results['incomplete_bbox_downloads'],
+            'no_data_grid_tiles': date_results['no_data_grid_tiles'],
             'skipped_downloads': date_results['skipped_bbox_downloads'],
             'overwritten_downloads': date_results['overwritten_bbox_downloads'],
             'expected_grid_tiles': expected_grid_tiles,
@@ -972,16 +991,22 @@ def download_near_real_time_region_dates(
             completion_file = current_download_dir / f'download_complete_{date_run_label}.partial'
             with open(completion_file, 'w') as f:
                 f.write(
-                    f"Downloads completed with {date_results['failed_bbox_downloads']} failures out of {date_results['expected_downloads']}\n")
+                    f"Downloads completed with {date_results['failed_bbox_downloads']} failures out of {date_results['expected_downloads']} "
+                    f"({date_results['no_data_bbox_downloads']} confirmed no data, {date_results['error_bbox_downloads']} errors, "
+                    f"{date_results['incomplete_bbox_downloads']} incomplete)\n")
                 f.write(f"Timestamp: {datetime.datetime.now().isoformat()}\n")
             logger.warning(
-                f"⚠️ Downloads completed with {date_results['failed_bbox_downloads']} failures for {ANALYSIS_DATE}")
+                f"⚠️ Downloads completed with {date_results['failed_bbox_downloads']} failures for {ANALYSIS_DATE} "
+                f"({date_results['no_data_bbox_downloads']} confirmed no data, {date_results['error_bbox_downloads']} errors, "
+                f"{date_results['incomplete_bbox_downloads']} incomplete)")
             overall_success = False
 
         date_end = datetime.datetime.now()
         logger.debug(f"Finished download for date {ANALYSIS_DATE} in {date_end - date_start}")
         logger.info(f"Downloads for {ANALYSIS_DATE}: {date_results['success_bbox_downloads']} successful, "
-                    f"{date_results['failed_bbox_downloads']} failed, "
+                    f"{date_results['failed_bbox_downloads']} failed "
+                    f"({date_results['no_data_bbox_downloads']} no data, {date_results['error_bbox_downloads']} errors, "
+                    f"{date_results['incomplete_bbox_downloads']} incomplete), "
                     f"{date_results['skipped_bbox_downloads']} skipped, "
                     f"{date_results['overwritten_bbox_downloads']} overwritten")
 
@@ -1000,7 +1025,9 @@ def download_near_real_time_region_dates(
     for date, results in all_results.items():
         status = "✅ SUCCESS" if results['successful'] else "⚠️ PARTIAL"
         logger.info(f"{date}: {status} - {results['success_bbox_downloads']} successful, "
-                    f"{results['failed_bbox_downloads']} failed, "
+                    f"{results['failed_bbox_downloads']} failed "
+                    f"({results['no_data_bbox_downloads']} no data, {results['error_bbox_downloads']} errors, "
+                    f"{results['incomplete_bbox_downloads']} incomplete), "
                     f"{results['skipped_bbox_downloads']} skipped, "
                     f"{results['overwritten_bbox_downloads']} overwritten")
 
@@ -1014,6 +1041,8 @@ def download_near_real_time_region_dates(
         'total_dates': len(all_results),
         'successful_dates': successful_dates,
         'failed_dates': failed_dates,
+        # True if any tile failed for a reason other than confirmed no data
+        'had_real_error': any(r['error_bbox_downloads'] > 0 for r in all_results.values()),
         'dates_to_download': [d.strftime("%Y-%m") for d in dates_to_download]
     }
 
