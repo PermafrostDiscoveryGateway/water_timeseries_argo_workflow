@@ -1,0 +1,320 @@
+# Local snakemake version of the nrt-pipeline-cron-test Argo workflow
+# (argo_workflows/near_real_time/cron_jobs/pipeline/nrt-pipeline-cron-test.yaml
+# + workflow_templates/nrt-pipeline-templates-test.yaml), pinned to one
+# explicit month (config `target_date`) instead of "today".
+#
+# Per region (region-pipeline in the Argo templates):
+#   download (download-region-with-fallback)
+#     -> merge (+ one backfill/re-merge if it fails)  (merge-and-backfill-region-loop)
+#     -> force merge                                  (merge-after-last-attempts-force)
+#     -> process                                      (process-region)
+# Then, across all regions:
+#   wait-for-region-merges -> create-new-historical-file
+#   create-historical-zarr-archive (after every region's process)
+#
+# Differences from the Argo test pipeline:
+#   - Every download step (download-region, download-missing-region fallback,
+#     backfill) is tried exactly once - no retryStrategy.
+#   - download-region-last-attempts (the day-15+ parked-ID retry) is skipped,
+#     so the pipeline always takes the Argo `recovered == false` branch and
+#     force-merges each region.
+#
+# The Python environment for the scripts is built by the build_env rule (uv),
+# the same way the Docker image is: water-timeseries-v2 first, then this
+# repo's extras - see `environment` in config.yaml.
+#
+# Usage (from the repo root):
+#   snakemake -s snakemake/Snakefile --cores 2
+#   snakemake -s snakemake/Snakefile --cores 2 --config target_date=2025-07
+
+import json
+import os
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+configfile: os.path.join(workflow.basedir, "config.yaml")
+
+REPO_ROOT = Path(workflow.basedir).parent.resolve()
+TARGET_DATE = str(config["target_date"])
+REGIONS = list(config["regions"].keys())
+EE = config["earth_engine"]
+
+
+def _abs(p):
+    p = Path(p)
+    return str(p if p.is_absolute() else REPO_ROOT / p)
+
+
+ENV_CFG = config["environment"]
+if ENV_CFG["build"]:
+    ENV_DIR = _abs(ENV_CFG["path"])
+    PYTHON = os.path.join(ENV_DIR, "bin", "python")
+    ENV_MARKER = os.path.join(ENV_DIR, ".snakemake-env.json")
+    # ancient(): (re)building the env never makes finished steps re-run.
+    ENV_INPUT = [ancient(ENV_MARKER)]
+else:
+    # A bare name ("python") is looked up on PATH; anything with a slash is a path.
+    PYTHON = _abs(config["python"]) if "/" in config["python"] else config["python"]
+    ENV_INPUT = []
+
+
+PATHS = {k: _abs(v) for k, v in config["paths"].items()}
+WORK = os.path.join(PATHS["work_dir"], TARGET_DATE)
+MARK = os.path.join(WORK, "markers")
+LOGS = os.path.join(WORK, "logs")
+PIPELINE_LOG = os.path.join(WORK, "nrt_pipeline_log.jsonl")
+
+wildcard_constraints:
+    region="|".join(REGIONS),
+
+
+def write_env(stage, region=None, extra=None):
+    """Same .env keys the Argo pods write to /data/scratch/<stage>/<region>/.env."""
+    env = {
+        "project": EE["project"],
+        "vector_dataset_file_url": EE["vector_dataset_file_url"],
+        "bucket_path": EE["bucket_path"],
+        "base_dir": PATHS["base_dir"],
+        "dynamic_world_dir": PATHS["dynamic_world_data"],
+        "dynamic_world_data": PATHS["dynamic_world_data"],
+        "dynamic_world_downloads": os.path.join(PATHS["dynamic_world_data"], "downloads"),
+        "vector_lake_file": PATHS["vector_lake_file"],
+        "region_lake_polygons_dir": PATHS["region_lake_polygons_dir"],
+        "output_dir": PATHS["output_dir"],
+        "combined_zarr_datasets": PATHS["combined_zarr_datasets"],
+        "test_run": "True",
+        "target_date": TARGET_DATE,
+    }
+    if region:
+        env["region_name"] = region
+    env.update({k: v for k, v in (extra or {}).items() if v not in ("", None)})
+
+    env_dir = Path(WORK) / "scratch" / stage / (region or "")
+    env_dir.mkdir(parents=True, exist_ok=True)
+    env_path = env_dir / ".env"
+    env_path.write_text("".join(f"{k}={v}\n" for k, v in env.items()))
+    return str(env_path)
+
+
+def run_stage(stage, script, region=None, extra=None):
+    """Run one near_real_time/ script once; return its exit code (never raises)."""
+    env_path = write_env(stage, region, extra)
+    log_path = Path(LOGS) / (f"{stage}_{region}.log" if region else f"{stage}.log")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temp_dir = os.path.join(PATHS["base_dir"], "temp_netcdf")
+    dask_dir = os.path.join(PATHS["base_dir"], "dask_work_space")
+    for d in (temp_dir, dask_dir, PATHS["output_dir"], PATHS["dynamic_world_data"]):
+        os.makedirs(d, exist_ok=True)
+
+    proc_env = dict(os.environ)
+    proc_env.update({
+        "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get("PYTHONPATH")])),
+        "PYTHONUNBUFFERED": "1",
+        "OMP_NUM_THREADS": "1",
+        "lake_chunk_size": "20000",
+        "EE_CLOUD_PROJECT": EE["EE_CLOUD_PROJECT"],
+        "EE_PROJECT": EE["EE_PROJECT"],
+        "TMPDIR": temp_dir,
+        "TEMP": temp_dir,
+        "TMP": temp_dir,
+        "DASK_TEMPORARY_DIRECTORY": dask_dir,
+        "DASK_DISTRIBUTED__WORKER__MEMORY__TARGET": "0.7",
+        "DASK_DISTRIBUTED__WORKER__MEMORY__SPILL": "0.8",
+        "DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE": "0.95",
+        "DASK_SCHEDULER": "threads",
+    })
+
+    cmd = [PYTHON, "-u", str(REPO_ROOT / "near_real_time" / script), env_path]
+    with open(log_path, "a") as log:
+        log.write(f"=== {stage} / {region or '-'} / {TARGET_DATE} - {datetime.now()} ===\n")
+        log.flush()
+        exit_code = subprocess.run(cmd, cwd=REPO_ROOT, env=proc_env,
+                                   stdout=log, stderr=subprocess.STDOUT).returncode
+        log.write(f"=== {stage} / {region or '-'} completed with exit code: {exit_code} ===\n")
+
+    record = {"stage": stage, "region": region, "target_date": TARGET_DATE,
+              "exit_code": exit_code,
+              "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    with open(PIPELINE_LOG, "a") as f:
+        f.write(json.dumps(record) + "\n")
+    print(f"[{stage}{' / ' + region if region else ''}] exit code {exit_code} (log: {log_path})")
+    return exit_code
+
+
+def mark_done(path, **status):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps({"target_date": TARGET_DATE, **status}, indent=2) + "\n")
+
+
+rule all:
+    input:
+        os.path.join(MARK, "create_historical_zarr_archive.done"),
+        os.path.join(MARK, "create_new_historical_file.done"),
+
+
+if ENV_CFG["build"]:
+    # Same two layers as the Docker image: water-timeseries-v2 (the base
+    # image), then this repo's extra dependencies (Dockerfile's uv pip install).
+    # Installed as two separate steps on purpose, so the extras win where they
+    # conflict with the base (geemap==0.37.2) exactly as they do in the image.
+    rule build_env:
+        input:
+            extras=_abs(ENV_CFG["extra_requirements"]),
+        output:
+            ENV_MARKER,
+        params:
+            base=ENV_CFG["base_package"],
+            python_version=str(ENV_CFG["python_version"]),
+        log:
+            os.path.join(PATHS["work_dir"], "build_env.log"),
+        run:
+            import shlex
+            import shutil
+
+            uv = ENV_CFG["uv"]
+            # "-e ../water-timeseries-v2" is flags + a path; "pkg @ git+..." is
+            # one requirement that has to stay a single argument.
+            base = shlex.split(params.base) if params.base.startswith("-") else [params.base]
+            shutil.rmtree(ENV_DIR, ignore_errors=True)
+            steps = [
+                [uv, "venv", "--python", params.python_version, ENV_DIR],
+                # The water-timeseries-v2 Dockerfile installs h3 first as well.
+                [uv, "pip", "install", "--python", PYTHON, "h3>=4.0.0"],
+                [uv, "pip", "install", "--python", PYTHON, *base],
+                [uv, "pip", "install", "--python", PYTHON, "-r", input.extras],
+            ]
+            Path(log[0]).parent.mkdir(parents=True, exist_ok=True)
+            with open(log[0], "w") as f:
+                for cmd in steps:
+                    f.write(f"$ {shlex.join(cmd)}\n")
+                    f.flush()
+                    subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, check=True)
+                f.write("$ pip freeze\n")
+                freeze = subprocess.run([uv, "pip", "freeze", "--python", PYTHON],
+                                        capture_output=True, text=True, check=True).stdout
+                f.write(freeze)
+            Path(output[0]).write_text(json.dumps({
+                "python_version": params.python_version,
+                "base_package": params.base,
+                "extra_requirements": input.extras,
+                "built": datetime.now().isoformat(timespec="seconds"),
+                "packages": freeze.splitlines(),
+            }, indent=2) + "\n")
+
+
+# download-region-with-fallback: one attempt at the full per-tile download;
+# if that fails, one attempt at the targeted missing-ID download. Never fails
+# the region - like the Argo region-pipeline (continueOn failed/error), merge
+# decides whether there's enough data.
+rule download:
+    input:
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "{region}", "download.done"),
+    retries: 0
+    run:
+        download = run_stage("download", "download_region.py", wildcards.region)
+        missing = None
+        if download != 0:
+            missing = run_stage("download_missing", "download_region_missing_ids.py", wildcards.region)
+        mark_done(output[0], download=download, download_missing=missing)
+
+
+# merge-and-backfill-region-loop: merge; if the region is still below the
+# completion threshold, backfill once and re-merge. Never fails the region -
+# the force merge below is what has to succeed.
+rule merge_and_backfill:
+    input:
+        os.path.join(MARK, "{region}", "download.done"),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "{region}", "merge_and_backfill.done"),
+    retries: 0
+    run:
+        status = {"merge": run_stage("merge_region", "merge_region.py", wildcards.region)}
+        if status["merge"] != 0 and config["backfill_after_failed_merge"]:
+            status["backfill"] = run_stage("backfill", "download_region_missing_ids.py", wildcards.region)
+            status["merge_after_backfill"] = run_stage("merge_region", "merge_region.py", wildcards.region)
+        mark_done(output[0], **status)
+
+
+# download-region-last-attempts is skipped, i.e. always "recovered == false",
+# so this is merge-after-last-attempts-force: best-effort merge accepting
+# whatever completeness the region has.
+rule force_merge:
+    input:
+        os.path.join(MARK, "{region}", "merge_and_backfill.done"),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "{region}", "merge.done"),
+    run:
+        code = run_stage("merge_region_force", "merge_region.py", wildcards.region,
+                         extra={"force_merge": "true"})
+        if code != 0:
+            raise RuntimeError(f"force merge failed for {wildcards.region} (exit {code})")
+        mark_done(output[0], merge_force=code)
+
+
+rule process:
+    input:
+        os.path.join(MARK, "{region}", "merge.done"),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "{region}", "process.done"),
+    run:
+        params = config["regions"][wildcards.region] or {}
+        code = run_stage("process", "process_NRT.py", wildcards.region, extra={
+            "id_chunk_size": params.get("id_chunk_size"),
+            "save_interval": params.get("save_interval"),
+            "n_jobs": params.get("n_jobs"),
+        })
+        if code != 0:
+            raise RuntimeError(f"process failed for {wildcards.region} (exit {code})")
+        mark_done(output[0], process=code)
+
+
+rule create_historical_zarr_archive:
+    input:
+        expand(os.path.join(MARK, "{region}", "process.done"), region=REGIONS),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "create_historical_zarr_archive.done"),
+    run:
+        code = run_stage("create_historical_zarr_archive",
+                         "combine_results_into_zarr_historical_archive.py",
+                         extra={"combine_all": "True"})
+        if code != 0:
+            raise RuntimeError(f"create_historical_zarr_archive failed (exit {code})")
+        mark_done(output[0], exit_code=code)
+
+
+# In Argo this starts with the workflow and polls; here snakemake already
+# orders it after every region's merge, so it's just a quick confirmation.
+rule wait_for_region_merges:
+    input:
+        expand(os.path.join(MARK, "{region}", "merge.done"), region=REGIONS),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "wait_for_region_merges.done"),
+    run:
+        code = run_stage("wait_for_region_merges", "wait_for_region_merges.py",
+                         extra={"merge_wait_minutes": config["merge_wait_minutes"]})
+        if code != 0:
+            raise RuntimeError(f"wait_for_region_merges timed out (exit {code})")
+        mark_done(output[0], exit_code=code)
+
+
+rule create_new_historical_file:
+    input:
+        os.path.join(MARK, "wait_for_region_merges.done"),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "create_new_historical_file.done"),
+    run:
+        code = run_stage("create_new_historical_file", "create_new_historical_file.py",
+                         extra={"merge_wait_minutes": config["merge_wait_minutes"]})
+        if code != 0:
+            raise RuntimeError(f"create_new_historical_file failed (exit {code})")
+        mark_done(output[0], exit_code=code)
