@@ -12,6 +12,10 @@ This script:
 3. Calls ``build_pmtiles_nrt_monthly`` in-process to build
    ``nrt_<month>_drainage.pmtiles`` -- no separate CLI/container step needed,
    which also makes this runnable locally against a small test zarr.
+4. Builds into a local scratch dir (``nrt_pmtiles_build_dir``) and only copies
+   the finished archive to ``nrt_pmtiles_output_dir``. Tippecanoe's final pass
+   re-reads its whole tile store in random order; on the NFS-backed PVC that
+   ran at ~50 KB/s and took hours, on local disk it takes minutes.
 
 Note: the ``water_timeseries.utils.pmtiles_build.build_pmtiles_nrt_monthly``
 on this branch (``ncsa-water-timeseries``) only builds the ``drained``/
@@ -119,6 +123,22 @@ def merge_drained_rows(df, target_month, drain_threshold, breaks_file):
     return drained
 
 
+def publish_pmtiles(local_path, output_dir):
+    """Copy a locally built archive into output_dir, then remove the local copy.
+
+    Copies to a temporary name and renames it into place, so the dashboard
+    never sees a half-written nrt_<month>_drainage.pmtiles.
+    """
+    local_path = Path(local_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final_path = output_dir / local_path.name
+    partial_path = final_path.with_name(final_path.name + ".partial")
+    shutil.copyfile(local_path, partial_path)
+    os.replace(partial_path, final_path)
+    local_path.unlink()
+    return final_path
+
+
 def main():
     logger.debug("Building NRT PMTiles archive from combined breakpoint zarr")
 
@@ -135,6 +155,7 @@ def main():
     vector_lake_file = os.environ["vector_lake_file"]
     nrt_precomputed_dir = Path(os.environ["nrt_precomputed_dir"])
     nrt_pmtiles_output_dir = Path(os.environ["nrt_pmtiles_output_dir"])
+    nrt_pmtiles_build_dir = Path(os.environ.get("nrt_pmtiles_build_dir", "/tmp/nrt_pmtiles_build"))
     drain_threshold = float(os.environ.get("drain_threshold", DRAIN_THRESHOLD))
     poly_max_zoom = int(os.environ.get("nrt_poly_max_zoom", 14))
 
@@ -168,14 +189,15 @@ def main():
     outputs = build_pmtiles_nrt_monthly(
         breaks_parquet=breaks_file,
         geometry_parquet=vector_lake_file,
-        output_dir=nrt_pmtiles_output_dir,
+        output_dir=nrt_pmtiles_build_dir,
         months=[target_month],
         poly_max_zoom=poly_max_zoom,
         drain_threshold=drain_threshold,
     )
 
-    for month, path in outputs.items():
-        logger.success(f"[{month}] wrote {path}")
+    for month, local_path in list(outputs.items()):
+        outputs[month] = publish_pmtiles(local_path, nrt_pmtiles_output_dir)
+        logger.success(f"[{month}] wrote {outputs[month]}")
 
     return {
         'success': True,
