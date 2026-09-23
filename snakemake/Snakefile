@@ -34,13 +34,16 @@ configfile: os.path.join(workflow.basedir, "config.yaml")
 REPO_ROOT = Path(workflow.basedir).parent.resolve()
 TARGET_DATE = str(config["target_date"])
 REGIONS = list(config["regions"].keys())
-PYTHON = config["python"]
 EE = config["earth_engine"]
 
 
 def _abs(p):
     p = Path(p)
     return str(p if p.is_absolute() else REPO_ROOT / p)
+
+
+# A bare name ("python") is looked up on PATH; anything with a slash is a path.
+PYTHON = _abs(config["python"]) if "/" in config["python"] else config["python"]
 
 
 PATHS = {k: _abs(v) for k, v in config["paths"].items()}

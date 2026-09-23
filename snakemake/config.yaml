@@ -16,7 +16,7 @@ regions:
 
 # Python used to run the near_real_time/ scripts (needs water_timeseries,
 # earthengine-api, etc. - e.g. the pixi/uv env you normally run them in).
-python: "python"
+python: "../water-timeseries-v2/.venv/bin/python"
 
 # Local equivalents of the /data/water_timeseries paths in
 # nrt-pipeline-templates-test.yaml. Relative paths are resolved against the
