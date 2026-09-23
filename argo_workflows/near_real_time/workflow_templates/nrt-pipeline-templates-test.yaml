@@ -1373,13 +1373,17 @@ spec:
           export DASK_NUM_THREADS=$(nproc)
           export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
 
+          # Test runs keep their own combined archive, separate from the main
+          # pipeline's /data/water_timeseries/combined_zarr_datasets.
+          mkdir -p /data/water_timeseries/test/combined_zarr_datasets
+
           SCRATCH_DIR="/data/scratch/${STAGE}"
           mkdir -p "$SCRATCH_DIR"
           cat > "$SCRATCH_DIR/.env" << EOF
           project=pdg-project-406720
           base_dir=/data/water_timeseries
           output_dir=/data/water_timeseries/test/output
-          combined_zarr_datasets=/data/water_timeseries/combined_zarr_datasets
+          combined_zarr_datasets=/data/water_timeseries/test/combined_zarr_datasets
           combine_all=True
           test_run=True
           EOF
@@ -1455,7 +1459,7 @@ spec:
           cat > "$SCRATCH_DIR/.env" << EOF
           project=pdg-project-406720
           base_dir=/data/water_timeseries
-          combined_zarr_datasets=/data/water_timeseries/combined_zarr_datasets
+          combined_zarr_datasets=/data/water_timeseries/test/combined_zarr_datasets
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           nrt_precomputed_dir=/data/water_timeseries/test/precomputed_nrt
           nrt_pmtiles_output_dir=/data/water_timeseries/test/nrt_tiles
@@ -1551,7 +1555,7 @@ spec:
           dynamic_world_downloads=/data/water_timeseries/test/dynamic_world_data/downloads
           vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
           output_dir=/data/water_timeseries/test/output
-          combined_zarr_datasets=/data/water_timeseries/combined_zarr_datasets
+          combined_zarr_datasets=/data/water_timeseries/test/combined_zarr_datasets
           dry_run=True
           EOF
 
