@@ -7,8 +7,11 @@ This script:
 
 1. Opens the most recent combined zarr and pulls out the latest month's slice.
 2. Filters that slice to drained lakes (``water_residual < drain_threshold``)
-   and merges them into the running ``nrt_monthly_drain_breaks.parquet``, the
-   table ``build_pmtiles_nrt_monthly`` reads to know which lakes drained per month.
+   and merges them into the running drain-breaks table, the table
+   ``build_pmtiles_nrt_monthly`` reads to know which lakes drained per month.
+   Each run writes its own ``nrt_monthly_drain_breaks.run_on_<YYYYMMDD_HHMMSS>.parquet``
+   (UTC start time), seeded from the most recent earlier table, so every
+   run's table is kept and can be traced back to when it was written.
 3. Calls ``build_pmtiles_nrt_monthly`` in-process to build
    ``nrt_<month>_drainage.pmtiles`` -- no separate CLI/container step needed,
    which also makes this runnable locally against a small test zarr.
@@ -35,6 +38,7 @@ import sys
 import os
 import glob
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -90,13 +94,26 @@ def build_month_dataframe(ds, target_month):
     return df
 
 
-def merge_drained_rows(df, target_month, drain_threshold, breaks_file):
-    """Append this month's drained lakes into the running nrt_monthly_drain_breaks.parquet.
+def drain_breaks_path(nrt_precomputed_dir, run_time):
+    """Return the drain-breaks table a run started at run_time writes."""
+    return nrt_precomputed_dir / f"nrt_monthly_drain_breaks.run_on_{run_time:%Y%m%d_%H%M%S}.parquet"
+
+
+def find_previous_breaks_file(nrt_precomputed_dir):
+    """Return the most recently modified nrt_monthly_drain_breaks*.parquet, or None."""
+    candidates = glob.glob(str(nrt_precomputed_dir / "nrt_monthly_drain_breaks*.parquet"))
+    if not candidates:
+        return None
+    return Path(max(candidates, key=os.path.getmtime))
+
+
+def merge_drained_rows(df, target_month, drain_threshold, breaks_file, previous_file=None):
+    """Merge this month's drained lakes into previous_file's rows and write breaks_file.
 
     Mirrors water_timeseries.scripts.merge_nrt_confidence.merge_nrt_confidence:
-    back up the existing table, drop this month's existing rows (safe to
-    re-run), concat the new ones in. Uses drained_mask (water_timeseries.utils.
-    nrt_postprocessing) rather than a plain water_residual comparison, since it
+    drop this month's existing rows (safe to re-run), concat the new ones in.
+    previous_file is left untouched, so it doubles as the backup. Uses
+    drained_mask (water_timeseries.utils.nrt_postprocessing) rather than a plain water_residual comparison, since it
     also accounts for drainage_confidence when present.
     """
     drained = df[drained_mask(df, drain_threshold=drain_threshold)].copy()
@@ -108,11 +125,9 @@ def merge_drained_rows(df, target_month, drain_threshold, breaks_file):
     logger.info(f"{target_month}: {len(drained):,}/{len(df):,} lakes classified as drained (drain_threshold={drain_threshold})")
 
     breaks_file.parent.mkdir(parents=True, exist_ok=True)
-    if breaks_file.exists():
-        existing = pd.read_parquet(breaks_file)
-        backup_path = breaks_file.with_suffix(breaks_file.suffix + ".bak")
-        shutil.copy(breaks_file, backup_path)
-        logger.info(f"Backed up {breaks_file} -> {backup_path}")
+    if previous_file is not None and previous_file.exists():
+        existing = pd.read_parquet(previous_file)
+        logger.info(f"Seeding {breaks_file.name} from {previous_file.name}")
         existing = existing[existing.get("analysis_month") != target_month]
     else:
         existing = pd.DataFrame(columns=drained.columns)
@@ -158,6 +173,7 @@ def main():
     nrt_pmtiles_build_dir = Path(os.environ.get("nrt_pmtiles_build_dir", "/tmp/nrt_pmtiles_build"))
     drain_threshold = float(os.environ.get("drain_threshold", DRAIN_THRESHOLD))
     poly_max_zoom = int(os.environ.get("nrt_poly_max_zoom", 14))
+    run_time = datetime.now(timezone.utc)
 
     combined_zarr_path = get_most_recent_combined_zarr(combined_zarr_datasets)
     if not combined_zarr_path:
@@ -178,8 +194,9 @@ def main():
         logger.warning(f"No lakes with a prediction for {target_month} - nothing to build")
         return {'success': True, 'target_month': target_month, 'pmtiles': {}}
 
-    breaks_file = nrt_precomputed_dir / "nrt_monthly_drain_breaks.parquet"
-    drained = merge_drained_rows(df, target_month, drain_threshold, breaks_file)
+    previous_file = find_previous_breaks_file(nrt_precomputed_dir)
+    breaks_file = drain_breaks_path(nrt_precomputed_dir, run_time)
+    drained = merge_drained_rows(df, target_month, drain_threshold, breaks_file, previous_file)
 
     if drained.empty:
         logger.warning(f"No drained lakes for {target_month} - skipping pmtiles build "
@@ -202,6 +219,7 @@ def main():
     return {
         'success': True,
         'target_month': target_month,
+        'breaks_file': str(breaks_file),
         'pmtiles': {month: str(path) for month, path in outputs.items()},
     }
 
