@@ -1,0 +1,228 @@
+"""Turn this run's combined breakpoint zarr into the NRT month's PMTiles archive.
+
+``combined_historical_nrt_<date>.zarr`` (written by
+``combine_results_into_zarr_historical_archive.py``) carries ``NRTBreakpoint``'s
+raw per-lake output for every processed lake, for every month analyzed so far.
+This script:
+
+1. Opens the most recent combined zarr and pulls out the latest month's slice.
+2. Filters that slice to drained lakes (``water_residual < drain_threshold``)
+   and merges them into the running drain-breaks table, the table
+   ``build_pmtiles_nrt_monthly`` reads to know which lakes drained per month.
+   Each run writes its own ``nrt_monthly_drain_breaks.run_on_<YYYYMMDD_HHMMSS>.parquet``
+   (UTC start time), seeded from the most recent earlier table, so every
+   run's table is kept and can be traced back to when it was written.
+3. Calls ``build_pmtiles_nrt_monthly`` in-process to build
+   ``nrt_<month>_drainage.pmtiles`` -- no separate CLI/container step needed,
+   which also makes this runnable locally against a small test zarr.
+4. Builds into a local scratch dir (``nrt_pmtiles_build_dir``) and only copies
+   the finished archive to ``nrt_pmtiles_output_dir``. Tippecanoe's final pass
+   re-reads its whole tile store in random order; on the NFS-backed PVC that
+   ran at ~50 KB/s and took hours, on local disk it takes minutes.
+
+Note: the ``water_timeseries.utils.pmtiles_build.build_pmtiles_nrt_monthly``
+on this branch (``ncsa-water-timeseries``) only builds the ``drained``/
+``drained_points`` overlay layer -- it joins geometry from ``geometry_parquet``
+itself, so no separate geometry join is needed here. A newer ``scored`` layer
+(every non-drained lake also carrying its NRT prediction) exists on the
+``fix/drainage-confidence`` branch but is not merged in here yet; a
+non-drained lake's tooltip falls back to the shared base archive until it is.
+"""
+
+import nest_asyncio
+# See combine_results_into_zarr_historical_archive.py for why this is needed
+# before any zarr store is opened.
+nest_asyncio.apply()
+
+import sys
+import os
+import glob
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+import xarray as xr
+from dotenv import load_dotenv
+from loguru import logger
+
+from water_timeseries.utils.pmtiles_build import (
+    build_pmtiles_nrt_monthly,
+    NRT_MONTHLY_TILE_PROPERTIES,
+)
+from water_timeseries.utils.nrt_postprocessing import DRAIN_THRESHOLD, drained_mask
+
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+
+def get_most_recent_combined_zarr(combined_zarr_datasets):
+    """Return the most recently created combined_historical_nrt_*.zarr store, or None."""
+    zarr_paths = glob.glob(os.path.join(combined_zarr_datasets, "combined_historical_nrt_*.zarr"))
+    if not zarr_paths:
+        return None
+    return max(zarr_paths, key=os.path.getctime)
+
+
+def build_month_dataframe(ds, target_month):
+    """Flatten the combined zarr's (id_geohash, date) slice for target_month into a per-lake DataFrame.
+
+    The month-stacking 'date' dimension collides with NRTBreakpoint's own
+    per-lake 'date' output column, so combine_results_into_zarr_historical_archive.py
+    renames the latter to 'breakpoint_date' before stacking. Undo that here so
+    a 'date' analysis-date marker column is available, same as NRTBreakpoint's
+    own output.
+    """
+    target_date = pd.Timestamp(f"{target_month}-01")
+    if target_date not in pd.to_datetime(ds["date"].values):
+        raise ValueError(f"{target_month} not present in combined zarr (available: "
+                          f"{sorted({pd.Timestamp(d).strftime('%Y-%m') for d in ds.date.values})})")
+
+    df = ds.sel(date=target_date).to_dataframe().reset_index()
+    df = df.drop(columns=["date"])
+    if "breakpoint_date" in df.columns:
+        df = df.rename(columns={"breakpoint_date": "date"})
+    df["id_geohash"] = df["id_geohash"].astype(str)
+
+    # keep_nans=False at analysis time (see process_region_date_new_fast_NRT)
+    # means every remaining row already has a real prediction, but guard
+    # against any that slipped through with no analysis date.
+    if "date" in df.columns:
+        df = df[df["date"].notna()].copy()
+
+    return df
+
+
+def drain_breaks_path(nrt_precomputed_dir, run_time):
+    """Return the drain-breaks table a run started at run_time writes."""
+    return nrt_precomputed_dir / f"nrt_monthly_drain_breaks.run_on_{run_time:%Y%m%d_%H%M%S}.parquet"
+
+
+def find_previous_breaks_file(nrt_precomputed_dir):
+    """Return the most recently modified nrt_monthly_drain_breaks*.parquet, or None."""
+    candidates = glob.glob(str(nrt_precomputed_dir / "nrt_monthly_drain_breaks*.parquet"))
+    if not candidates:
+        return None
+    return Path(max(candidates, key=os.path.getmtime))
+
+
+def merge_drained_rows(df, target_month, drain_threshold, breaks_file, previous_file=None):
+    """Merge this month's drained lakes into previous_file's rows and write breaks_file.
+
+    Mirrors water_timeseries.scripts.merge_nrt_confidence.merge_nrt_confidence:
+    drop this month's existing rows (safe to re-run), concat the new ones in.
+    previous_file is left untouched, so it doubles as the backup. Uses
+    drained_mask (water_timeseries.utils.nrt_postprocessing) rather than a plain water_residual comparison, since it
+    also accounts for drainage_confidence when present.
+    """
+    drained = df[drained_mask(df, drain_threshold=drain_threshold)].copy()
+    drained.insert(1, "analysis_month", target_month)
+    keep_cols = [c for c in ("id_geohash", "analysis_month", *NRT_MONTHLY_TILE_PROPERTIES) if c in drained.columns]
+    keep_cols = list(dict.fromkeys(keep_cols))
+    drained = drained[keep_cols]
+
+    logger.info(f"{target_month}: {len(drained):,}/{len(df):,} lakes classified as drained (drain_threshold={drain_threshold})")
+
+    breaks_file.parent.mkdir(parents=True, exist_ok=True)
+    if previous_file is not None and previous_file.exists():
+        existing = pd.read_parquet(previous_file)
+        logger.info(f"Seeding {breaks_file.name} from {previous_file.name}")
+        existing = existing[existing.get("analysis_month") != target_month]
+    else:
+        existing = pd.DataFrame(columns=drained.columns)
+
+    merged = pd.concat([existing, drained], ignore_index=True)
+    merged.to_parquet(breaks_file, index=False)
+    logger.info(f"Wrote {len(merged):,} total rows ({len(drained):,} for {target_month}) to {breaks_file}")
+    return drained
+
+
+def publish_pmtiles(local_path, output_dir):
+    """Copy a locally built archive into output_dir, then remove the local copy.
+
+    Copies to a temporary name and renames it into place, so the dashboard
+    never sees a half-written nrt_<month>_drainage.pmtiles.
+    """
+    local_path = Path(local_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final_path = output_dir / local_path.name
+    partial_path = final_path.with_name(final_path.name + ".partial")
+    shutil.copyfile(local_path, partial_path)
+    os.replace(partial_path, final_path)
+    local_path.unlink()
+    return final_path
+
+
+def main():
+    logger.debug("Building NRT PMTiles archive from combined breakpoint zarr")
+
+    env_path = None
+    if len(sys.argv) > 1:
+        env_path = sys.argv[1]
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loading environment from: {env_path}")
+    else:
+        load_dotenv()
+        logger.info("Loading environment from default .env file")
+
+    combined_zarr_datasets = os.environ["combined_zarr_datasets"]
+    vector_lake_file = os.environ["vector_lake_file"]
+    nrt_precomputed_dir = Path(os.environ["nrt_precomputed_dir"])
+    nrt_pmtiles_output_dir = Path(os.environ["nrt_pmtiles_output_dir"])
+    nrt_pmtiles_build_dir = Path(os.environ.get("nrt_pmtiles_build_dir", "/tmp/nrt_pmtiles_build"))
+    drain_threshold = float(os.environ.get("drain_threshold", DRAIN_THRESHOLD))
+    poly_max_zoom = int(os.environ.get("nrt_poly_max_zoom", 14))
+    run_time = datetime.now(timezone.utc)
+
+    combined_zarr_path = get_most_recent_combined_zarr(combined_zarr_datasets)
+    if not combined_zarr_path:
+        logger.error(f"No combined_historical_nrt_*.zarr store found under {combined_zarr_datasets}")
+        return {'success': False, 'error': 'no combined zarr store found'}
+
+    logger.info(f"Opening {combined_zarr_path}")
+    ds = xr.open_zarr(combined_zarr_path)
+    ds["id_geohash"] = ds["id_geohash"].astype(str)
+
+    target_month = os.environ.get("nrt_pmtiles_month")
+    if not target_month:
+        target_month = pd.Timestamp(ds.date.values[-1]).strftime("%Y-%m")
+    logger.info(f"Target month: {target_month}")
+
+    df = build_month_dataframe(ds, target_month)
+    if df.empty:
+        logger.warning(f"No lakes with a prediction for {target_month} - nothing to build")
+        return {'success': True, 'target_month': target_month, 'pmtiles': {}}
+
+    previous_file = find_previous_breaks_file(nrt_precomputed_dir)
+    breaks_file = drain_breaks_path(nrt_precomputed_dir, run_time)
+    drained = merge_drained_rows(df, target_month, drain_threshold, breaks_file, previous_file)
+
+    if drained.empty:
+        logger.warning(f"No drained lakes for {target_month} - skipping pmtiles build "
+                        f"(the base archive already covers every stable lake)")
+        return {'success': True, 'target_month': target_month, 'pmtiles': {}}
+
+    outputs = build_pmtiles_nrt_monthly(
+        breaks_parquet=breaks_file,
+        geometry_parquet=vector_lake_file,
+        output_dir=nrt_pmtiles_build_dir,
+        months=[target_month],
+        poly_max_zoom=poly_max_zoom,
+        drain_threshold=drain_threshold,
+    )
+
+    for month, local_path in list(outputs.items()):
+        outputs[month] = publish_pmtiles(local_path, nrt_pmtiles_output_dir)
+        logger.success(f"[{month}] wrote {outputs[month]}")
+
+    return {
+        'success': True,
+        'target_month': target_month,
+        'breaks_file': str(breaks_file),
+        'pmtiles': {month: str(path) for month, path in outputs.items()},
+    }
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,111 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: create-nrt-pmtiles-
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  # One-off, manually-submitted run (not a CronWorkflow) that builds the NRT
+  # dashboard's PMTiles archive (nrt_<month>_drainage.pmtiles) for a single
+  # month from the most recent combined breakpoint zarr.
+  #
+  # `month` (YYYY-MM) is passed to create_nrt_pmtiles.py as nrt_pmtiles_month;
+  # override at submit time with e.g. `argo submit ... -p month=2026-08`.
+  entrypoint: main
+
+  arguments:
+    parameters:
+    - name: month
+      value: "2026-07"
+
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+
+  imagePullSecrets:
+  - name: ghcr-secret
+
+  artifactRepository:
+    pvc:
+      claimName: argo-workflows-share
+      key: artifacts
+
+  volumes:
+  - name: lake-drainage-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+
+  templates:
+  - name: main
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:56-add-pmtiles-generation-to-argo-workflow
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "8Gi"
+          cpu: "2"
+          ephemeral-storage: "8Gi"
+        limits:
+          memory: "14Gi"
+          cpu: "2"
+          ephemeral-storage: "16Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="create_nrt_pmtiles"
+          TARGET_MONTH="{{workflow.parameters.month}}"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING MANUAL JOB: $STAGE ($TARGET_MONTH) ==="
+          echo "Timestamp: $(date)"
+
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          SCRATCH_DIR="/data/scratch/${STAGE}_manual"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          base_dir=/data/water_timeseries
+          combined_zarr_datasets=/data/water_timeseries/combined_zarr_datasets
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          nrt_precomputed_dir=/data/water_timeseries/precomputed_nrt
+          nrt_pmtiles_output_dir=/data/water_timeseries/nrt_tiles
+          drain_threshold=-0.25
+          nrt_poly_max_zoom=14
+          nrt_pmtiles_month=${TARGET_MONTH}
+          MANUAL=True
+          EOF
+
+          cd /app
+          SCRIPT_EXIT_CODE=0
+          python -u /app/near_real_time/create_nrt_pmtiles.py "$SCRATCH_DIR/.env" || SCRIPT_EXIT_CODE=$?
+
+          echo "=== $STAGE completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: lake-drainage-volume
+        mountPath: /data
