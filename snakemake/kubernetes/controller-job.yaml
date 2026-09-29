@@ -1,0 +1,70 @@
+# Runs the main snakemake process for one test-pipeline run, inside the
+# cluster. It submits every rule as its own Kubernetes Job in this namespace
+# (profiles/kubernetes/config.yaml) and exits when the pipeline is done.
+#
+# Set TARGET_DATE below, then (create, not apply - it uses generateName):
+#   kubectl -n snakemake create -f snakemake/kubernetes/controller-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: snakemake-test-pipeline-
+  namespace: snakemake
+spec:
+  # A failed run is re-submitted by hand; finished markers are kept on the
+  # PVC, so a new run only re-does what didn't finish.
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: snakemake-controller
+    spec:
+      serviceAccountName: snakemake-controller
+      restartPolicy: Never
+      containers:
+        - name: snakemake
+          # Keep in sync with profiles/kubernetes/config.yaml (container-image).
+          image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:snakemake-59-adopt-the-test-pipeline-using-snakemake-kubernetes
+          imagePullPolicy: Always
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              snakemake --profile /app/snakemake/profiles/kubernetes \
+                  --config target_date="${TARGET_DATE}" \
+                  ${SNAKEMAKE_EXTRA_ARGS}
+          env:
+            # Month to run the pipeline for (YYYY-MM).
+            - name: TARGET_DATE
+              value: "2025-08"
+            # Anything else to pass to snakemake, e.g. "--unlock",
+            # "--dry-run" or "--forcerun process".
+            - name: SNAKEMAKE_EXTRA_ARGS
+              value: ""
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            # Handed on to every job pod (profile `envvars`).
+            - name: EE_CREDENTIALS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: earth-engine-creds
+                  key: credentials
+            - name: GCP_CREDENTIALS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: personal-gcp-creds
+                  key: key.json
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1"
+          volumeMounts:
+            - name: snakemake-share
+              mountPath: /data
+      volumes:
+        - name: snakemake-share
+          persistentVolumeClaim:
+            claimName: snakemake-share

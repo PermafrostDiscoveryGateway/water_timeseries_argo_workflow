@@ -96,6 +96,9 @@ existing interpreter (`python:`) instead.
 Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
 that directory (or use `--forcerun`) to re-run a month.
 
+To run the same Snakefile on a Kubernetes cluster instead, see
+[10. Running the test pipeline with snakemake on Kubernetes](10-running-the-test-pipeline-with-snakemake-on-kubernetes.md).
+
 ## Prerequisites
 
 Before running the test pipeline, make sure you've completed:

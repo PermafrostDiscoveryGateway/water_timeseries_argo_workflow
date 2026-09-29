@@ -1,0 +1,100 @@
+# Snakemake profile for running the test pipeline on Kubernetes with
+# snakemake-executor-plugin-kubernetes. Used by the controller Job
+# (kubernetes/controller-job.yaml), which runs inside the cluster:
+#
+#   snakemake --profile /app/snakemake/profiles/kubernetes --config target_date=2025-08
+#
+# Every rule becomes its own Kubernetes Job in the `snakemake` namespace,
+# running the same image as the controller, with the snakemake-share PVC
+# mounted at /data.
+
+snakefile: /app/snakemake/Snakefile
+configfile: /app/snakemake/config-kubernetes.yaml
+# Snakemake's own state (.snakemake/: locks, metadata) goes on the PVC too,
+# so it survives the controller pod.
+directory: /data/water_timeseries/snakemake_run
+
+executor: kubernetes
+jobs: 20
+# Keep in sync with the image in kubernetes/controller-job.yaml.
+container-image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:snakemake-59-adopt-the-test-pipeline-using-snakemake-kubernetes
+kubernetes-namespace: snakemake
+# Has the ghcr-secret image pull secret and no API access.
+kubernetes-service-account-name: snakemake-job
+kubernetes-persistent-volumes:
+  - snakemake-share:/data
+# Set to true to keep finished/failed job pods around for `kubectl logs`.
+kubernetes-omit-job-cleanup: false
+
+# The PVC is a real shared filesystem for the controller and every job, and
+# the workflow sources are baked into the image at the same path everywhere,
+# so nothing needs to be staged through a storage provider.
+shared-fs-usage:
+  - persistence
+  - input-output
+  - sources
+  - source-cache
+  - software-deployment
+  - storage-local-copies
+# NFS can take a moment to show a file another pod just wrote.
+latency-wait: 60
+
+# Regions are independent (like the Argo region-pipeline): one failing
+# doesn't stop the others.
+keep-going: true
+rerun-incomplete: true
+retries: 0
+
+# Passed from the controller to every job pod (via a Kubernetes Secret the
+# plugin creates per run); the Snakefile's credential_env() writes them to
+# files. The controller gets them from the earth-engine-creds and
+# personal-gcp-creds secrets.
+envvars:
+  - EE_CREDENTIALS_JSON
+  - GCP_CREDENTIALS_JSON
+
+# Pod resource requests (threads -> cpu, mem_mb -> memory, disk_mb ->
+# ephemeral-storage), taken from the requests in
+# nrt-pipeline-templates-test.yaml. The plugin only sets requests; the
+# optional kubernetes/limitrange.yaml adds limits.
+set-threads:
+  download: 1
+  merge_and_backfill: 2
+  force_merge: 2
+  process: 2
+  create_historical_zarr_archive: 2
+  wait_for_region_merges: 1
+  create_new_historical_file: 1
+set-resources:
+  download:
+    mem_mb: 4096
+    disk_mb: 8192
+    ee_download: 1
+  # Merges (merge-region: 14Gi / 2 cpu) and may backfill, so it also takes
+  # an Earth Engine download slot.
+  merge_and_backfill:
+    mem_mb: 14336
+    disk_mb: 8192
+    ee_download: 1
+  force_merge:
+    mem_mb: 14336
+    disk_mb: 8192
+  process:
+    mem_mb: 12288
+    disk_mb: 8192
+    process_slots: 1
+  create_historical_zarr_archive:
+    mem_mb: 14336
+    disk_mb: 8192
+  wait_for_region_merges:
+    mem_mb: 1024
+    disk_mb: 1024
+  create_new_historical_file:
+    mem_mb: 14336
+    disk_mb: 8192
+
+# Same limits as the nrt-pipeline-semaphores ConfigMap: at most 3 Earth
+# Engine-downloading pods and 3 process pods at once.
+resources:
+  - ee_download=3
+  - process_slots=3

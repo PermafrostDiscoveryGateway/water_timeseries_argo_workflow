@@ -26,10 +26,15 @@
 # Usage (from the repo root):
 #   snakemake -s snakemake/Snakefile --cores 2
 #   snakemake -s snakemake/Snakefile --cores 2 --config target_date=2025-07
+#
+# On Kubernetes the same Snakefile runs with the profile in
+# profiles/kubernetes (config-kubernetes.yaml on top of config.yaml) - see
+# docs/10-running-the-test-pipeline-with-snakemake-on-kubernetes.md.
 
 import json
 import os
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -97,6 +102,39 @@ def write_env(stage, region=None, extra=None):
     return str(env_path)
 
 
+def credential_env():
+    """Earth Engine / gcloud credentials passed in as env vars.
+
+    On Kubernetes the controller hands the earth-engine-creds and
+    personal-gcp-creds secrets to every job as EE_CREDENTIALS_JSON /
+    GCP_CREDENTIALS_JSON (the profile's `envvars`); write them to files and
+    point the scripts at them, the same way the Argo pods do. Locally neither
+    is set and the usual ~/.config credentials are used as-is.
+    """
+    ee = os.environ.get("EE_CREDENTIALS_JSON")
+    gcp = os.environ.get("GCP_CREDENTIALS_JSON")
+    if not (ee or gcp):
+        return {}
+
+    home = Path(tempfile.gettempdir()) / "snakemake-home"
+    env = {"HOME": str(home)}
+    if ee:
+        ee_dir = home / ".config" / "earthengine"
+        ee_dir.mkdir(parents=True, exist_ok=True)
+        ee_file = ee_dir / "credentials"
+        ee_file.write_text(ee)
+        ee_file.chmod(0o600)
+        env.update({"EARTHENGINE_TOKEN": str(ee_file), "EE_CONFIG_DIR": str(ee_dir)})
+    if gcp:
+        gcp_dir = home / ".config" / "gcloud"
+        gcp_dir.mkdir(parents=True, exist_ok=True)
+        gcp_file = gcp_dir / "application_default_credentials.json"
+        gcp_file.write_text(gcp)
+        gcp_file.chmod(0o600)
+        env["GOOGLE_APPLICATION_CREDENTIALS"] = str(gcp_file)
+    return env
+
+
 def run_stage(stage, script, region=None, extra=None):
     """Run one near_real_time/ script once; return its exit code (never raises)."""
     env_path = write_env(stage, region, extra)
@@ -125,6 +163,7 @@ def run_stage(stage, script, region=None, extra=None):
         "DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE": "0.95",
         "DASK_SCHEDULER": "threads",
     })
+    proc_env.update(credential_env())
 
     cmd = [PYTHON, "-u", str(REPO_ROOT / "near_real_time" / script), env_path]
     with open(log_path, "a") as log:

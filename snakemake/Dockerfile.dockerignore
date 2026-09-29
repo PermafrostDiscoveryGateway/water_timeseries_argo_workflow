@@ -1,0 +1,10 @@
+# Used (instead of a root .dockerignore) when building snakemake/Dockerfile.
+# Keeps local data and environments out of the build context.
+**/.venv
+.snakemake
+.idea
+data
+output
+downloads
+historical_output
+storage_setup/debug_*

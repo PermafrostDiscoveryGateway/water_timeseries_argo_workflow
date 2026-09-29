@@ -1,0 +1,64 @@
+name: Build and Push Snakemake Image
+
+# Builds snakemake/Dockerfile (the image the snakemake-on-Kubernetes test
+# pipeline runs in) and pushes it next to the Argo image, tagged
+# snakemake-<branch> and snakemake-<short sha>.
+on:
+  push:
+    branches:
+      - main
+      - 59-adopt-the-test-pipeline-using-snakemake-kubernetes
+    paths:
+      - "snakemake/**"
+      - "near_real_time/**"
+      - "utils/**"
+      - "google_cloud_utils/**"
+      - "upload_utils/**"
+      - "historical_run/**"
+      - ".github/workflows/build_snakemake_image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push-snakemake-image:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set Docker tags (lowercase)
+        id: docker_tags
+        run: |
+          REPO_LOWER="${{ github.repository }}"
+          REPO_LOWER="${REPO_LOWER,,}"
+          REGISTRY="ghcr.io/${REPO_LOWER}"
+          TAGS="${REGISTRY}:snakemake-${{ github.ref_name }},${REGISTRY}:snakemake-${GITHUB_SHA::8}"
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "Will push to: ${TAGS}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: snakemake/Dockerfile
+          push: true
+          tags: ${{ steps.docker_tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description="Snakemake test pipeline for water timeseries analysis"
+          no-cache: true

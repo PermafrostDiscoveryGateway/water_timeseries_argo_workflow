@@ -1,0 +1,18 @@
+# Shared volume for the controller and every job pod, mounted at /data
+# (profiles/kubernetes: kubernetes-persistent-volumes). Same storage class as
+# the argo namespace's argo-workflows-share (storage_setup/ncsa-setup.yaml),
+# but a new, empty volume - it has to be seeded with the inputs (docs/10-...md).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: snakemake-share
+  namespace: snakemake
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-taiga
+  resources:
+    requests:
+      # Inputs are ~6GB (vector file + region polygons); the rest is test
+      # downloads/output. Raise if needed.
+      storage: 200Gi
