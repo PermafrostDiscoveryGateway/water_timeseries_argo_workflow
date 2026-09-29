@@ -30,6 +30,8 @@ spec:
           args:
             - |
               set -euo pipefail
+              # The profile's paths are relative to /app (see there).
+              cd /app
               snakemake --profile /app/snakemake/profiles/kubernetes \
                   --config target_date="${TARGET_DATE}" \
                   ${SNAKEMAKE_EXTRA_ARGS}

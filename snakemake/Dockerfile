@@ -12,8 +12,15 @@ FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:ncsa-water-timeserie
 COPY snakemake/envs/requirements-extra.txt /tmp/requirements-extra.txt
 RUN uv pip install -r /tmp/requirements-extra.txt
 
+# rsync for the fs storage plugin (profiles/kubernetes: default-storage-provider).
+RUN apt-get update && apt-get install -y --no-install-recommends rsync \
+    && rm -rf /var/lib/apt/lists/*
+
 # Separate layer, after the extras, so it can't change what they resolve to.
-RUN uv pip install "snakemake>=9.6,<10" snakemake-executor-plugin-kubernetes
+# pip: every job pod runs `pip install` for the storage plugin before it
+# starts, and the uv venv has none of its own.
+RUN uv pip install "snakemake>=9.6,<10" snakemake-executor-plugin-kubernetes \
+    snakemake-storage-plugin-fs pip
 
 RUN python -c "import geemap; assert hasattr(geemap, 'ee_initialize'), 'ee_initialize missing!'; print(f'geemap {geemap.__version__}')" \
     && snakemake --version

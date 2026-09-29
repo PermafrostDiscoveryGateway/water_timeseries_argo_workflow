@@ -8,11 +8,11 @@
 # running the same image as the controller, with the snakemake-share PVC
 # mounted at /data.
 
-snakefile: /app/snakemake/Snakefile
-configfile: /app/snakemake/config-kubernetes.yaml
-# Snakemake's own state (.snakemake/: locks, metadata) goes on the PVC too,
-# so it survives the controller pod.
-directory: /data/water_timeseries/snakemake_run
+# Relative to /app, where the controller runs: snakemake packs the workflow
+# sources it ships to the job pods relative to its working directory, and
+# ignores anything outside it.
+snakefile: snakemake/Snakefile
+configfile: snakemake/config-kubernetes.yaml
 
 executor: kubernetes
 jobs: 20
@@ -26,16 +26,14 @@ kubernetes-persistent-volumes:
 # Set to true to keep finished/failed job pods around for `kubectl logs`.
 kubernetes-omit-job-cleanup: false
 
-# The PVC is a real shared filesystem for the controller and every job, and
-# the workflow sources are baked into the image at the same path everywhere,
-# so nothing needs to be staged through a storage provider.
-shared-fs-usage:
-  - persistence
-  - input-output
-  - sources
-  - source-cache
-  - software-deployment
-  - storage-local-copies
+# The Kubernetes executor always assumes no shared filesystem (it overrides
+# any --shared-fs-usage), so snakemake needs a default storage provider for
+# the rules' input/output files - here just the done-markers
+# (config-kubernetes.yaml: marker_dir). The fs provider keeps them in a
+# directory on the PVC and rsyncs them in and out of each job pod. The
+# scripts' own data isn't affected: they read and write /data directly.
+default-storage-provider: fs
+default-storage-prefix: /data/water_timeseries/snakemake_storage
 # NFS can take a moment to show a file another pod just wrote.
 latency-wait: 60
 

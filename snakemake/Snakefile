@@ -40,7 +40,10 @@ from pathlib import Path
 
 configfile: os.path.join(workflow.basedir, "config.yaml")
 
-REPO_ROOT = Path(workflow.basedir).parent.resolve()
+# Where near_real_time/ etc. live. On Kubernetes the job pods run a copy of
+# the Snakefile snakemake unpacks into their working directory, while the
+# scripts are in the image at /app (config-kubernetes.yaml: repo_root).
+REPO_ROOT = Path(config.get("repo_root") or Path(workflow.basedir).parent).resolve()
 TARGET_DATE = str(config["target_date"])
 REGIONS = list(config["regions"].keys())
 EE = config["earth_engine"]
@@ -66,7 +69,14 @@ else:
 
 PATHS = {k: _abs(v) for k, v in config["paths"].items()}
 WORK = os.path.join(PATHS["work_dir"], TARGET_DATE)
-MARK = os.path.join(WORK, "markers")
+# The done-markers are the rules' only input/output files. With a
+# `marker_dir` (Kubernetes) they're relative paths, which snakemake keeps in
+# its default storage (profiles/kubernetes: default-storage-prefix) and copies
+# in and out of each job pod.
+if config.get("marker_dir"):
+    MARK = os.path.join(config["marker_dir"], TARGET_DATE)
+else:
+    MARK = os.path.join(WORK, "markers")
 LOGS = os.path.join(WORK, "logs")
 PIPELINE_LOG = os.path.join(WORK, "nrt_pipeline_log.jsonl")
 
