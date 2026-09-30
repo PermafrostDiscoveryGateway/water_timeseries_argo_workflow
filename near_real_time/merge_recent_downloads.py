@@ -1065,4 +1065,4 @@ if __name__ == "__main__":
     # sys.exit belongs here, not inside main(): main() is also called directly
     # (not via subprocess) by test_near_real_time.py, and SystemExit there
     # would kill that whole test run right after this step.
-    sys.exit(main() or 0)
+    sys.exit(1 if main() else 0)
