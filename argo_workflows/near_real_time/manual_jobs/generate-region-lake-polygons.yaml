@@ -1,0 +1,103 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: generate-region-lake-polygons-
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  # One-off, manually-submitted run (not a CronWorkflow) that splits the full
+  # global lake vector file into small per-region files (id_geohash + full
+  # lake geometry, pre-filtered to each region's bounding box) under
+  # region_lake_polygons_dir. Run this whenever the vector file or the region
+  # boundaries in utils/region_boundaries.py change - the near-real-time
+  # download/process jobs read these regional files instead of the multi-GB
+  # global vector file.
+  entrypoint: main
+
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+
+  imagePullSecrets:
+  - name: ghcr-secret
+
+  artifactRepository:
+    pvc:
+      claimName: argo-workflows-share
+      key: artifacts
+
+  volumes:
+  - name: lake-drainage-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+
+  templates:
+  - name: main
+    metadata:
+      labels:
+        long-running-job: "true"
+    outputs:
+      artifacts:
+      - name: workflow-output
+        path: /tmp/workflow_output.log
+        archive:
+          none: {}
+    container:
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      imagePullPolicy: Always
+      resources:
+        requests:
+          memory: "14Gi"
+          cpu: "2"
+          ephemeral-storage: "8Gi"
+        limits:
+          memory: "20Gi"
+          cpu: "2"
+          ephemeral-storage: "16Gi"
+      command: ["bash", "-c"]
+      args:
+        - |
+          set -e
+          set -x
+          STAGE="generate_region_lake_polygons"
+
+          mkdir -p /tmp
+          exec > >(tee -a /tmp/workflow_output.log) 2>&1
+
+          echo "=== STARTING MANUAL JOB: $STAGE ==="
+          echo "Timestamp: $(date)"
+
+          WORKFLOW_NAME="{{workflow.name}}"
+          DEBUG_DIR="/data/water_timeseries/debug/debug_${WORKFLOW_NAME}_$(date +%Y%m%d_%H%M%S)_${STAGE}"
+          mkdir -p "$DEBUG_DIR"
+          exec > >(tee -a "$DEBUG_DIR/script_output.log") 2>&1
+
+          export PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+          mkdir -p /data/water_timeseries/region_lake_polygons
+
+          SCRATCH_DIR="/data/scratch/${STAGE}"
+          mkdir -p "$SCRATCH_DIR"
+          cat > "$SCRATCH_DIR/.env" << EOF
+          project=pdg-project-406720
+          base_dir=/data/water_timeseries
+          vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+          region_lake_polygons_dir=/data/water_timeseries/region_lake_polygons
+          MANUAL=True
+          EOF
+
+          cd /app
+          python -u /app/utils/generate_region_lake_polygons.py "$SCRATCH_DIR/.env"
+          SCRIPT_EXIT_CODE=$?
+
+          echo "=== $STAGE completed with exit code: $SCRIPT_EXIT_CODE ==="
+          sync
+          exit $SCRIPT_EXIT_CODE
+      env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: OMP_NUM_THREADS
+        value: "1"
+      volumeMounts:
+      - name: lake-drainage-volume
+        mountPath: /data
