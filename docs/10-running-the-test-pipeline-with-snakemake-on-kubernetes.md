@@ -51,6 +51,7 @@ The files involved:
 | `snakemake/Dockerfile` | The image |
 | `.github/workflows/build_snakemake_image.yml` | Builds and pushes the image |
 | `snakemake/kubernetes/*.yaml` | Namespace, PVC, service accounts/RBAC, LimitRange, inspector pod, polygon job, controller job |
+| `snakemake/kubernetes/seed-from-argo.sh` | Copies the inputs from the Argo volume onto the new one |
 
 ## Differences from the Argo test pipeline
 
@@ -262,7 +263,7 @@ The pipeline expects these inputs on the volume, at the same paths as on the Arg
 | `/data/water_timeseries/region_lake_polygons/` | Per-region lake polygons (~2.5GB), see [7. Running the testing pipeline](07-running-the-testing-pipeline.md#generate-the-region-lake-polygons) |
 | `/data/water_timeseries/test/dynamic_world_data/*.nc` | The test run's baseline netCDF files: `lakes_dw_V2d_compressed.nc` (used by `process_NRT.py`) and the latest `dynamic_world_historical_*.nc` (used by `create_new_historical_file.py`) |
 
-Start the inspector pod in the `snakemake` namespace and create the directories:
+Start the inspector pod in the `snakemake` namespace:
 
 ```bash
 kubectl apply -f snakemake/kubernetes/inspector.yaml
@@ -272,40 +273,62 @@ kubectl apply -f snakemake/kubernetes/inspector.yaml
 kubectl -n snakemake wait --for=condition=Ready pod/snakemake-inspector --timeout=120s
 ```
 
+**Option A — copy from the Argo volume** (recommended, if `argo-workflows-share` is on this
+cluster). The inputs are taken from these places on the Argo volume:
+
+| On the Argo volume | Copied to |
+|--------------------|-----------|
+| `input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet` | same path |
+| `region_lake_polygons/` | same path |
+| `test/dynamic_world_data/dynamic_world_historical_2026-06.nc` | same path (the test baseline) |
+| `dynamic_world_data/lakes_dw_V2d_compressed.nc` | `test/dynamic_world_data/` (it isn't in the Argo test directory) |
+
+A volume can't be mounted in two namespaces, so the copy goes from an inspector pod in `argo`
+straight to the one in `snakemake`, over the cluster network. Streaming it through your machine
+with `kubectl exec ... | kubectl exec ...` works in principle, but for ~14GB it's slow and the
+Rancher connection tends to time out partway.
+
+Make sure the Python inspector is running in `argo`
+([9. Data access](09-data-access.md)). The script needs `python3` and GNU `tar` in it:
+
+```bash
+kubectl -n argo get pod pvc-inspector-python
+```
+
+```bash
+kubectl -n argo apply -f storage_setup/python-inspector.yaml
+```
+
+Then run the copy. It takes a few minutes, prints progress, and checks both ends' exit codes:
+
+```bash
+snakemake/kubernetes/seed-from-argo.sh
+```
+
+The Argo volume is only read from. To use a different baseline, e.g. a newer
+`dynamic_world_historical_*.nc` from the Argo test directory, set `BASELINE=<file name>` in front
+of the command. `tar` keeps the files' modification times, which matters because
+`create_new_historical_file.py` picks the newest `dynamic_world_historical_*.nc` as its baseline.
+
+Check that the sizes match the Argo copies:
+
+```bash
+kubectl -n snakemake exec snakemake-inspector -- sh -c 'cd /data/water_timeseries; ls -l input test/dynamic_world_data; ls region_lake_polygons'
+```
+
+```bash
+kubectl -n argo exec pvc-inspector-python -- sh -c 'cd /data/water_timeseries; ls -l input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet test/dynamic_world_data/*.nc dynamic_world_data/lakes_dw_V2d_compressed.nc; ls region_lake_polygons'
+```
+
+**Option B — upload from your machine / from GCS.** This goes through your machine, so it's
+slower and can time out on large files; re-run a command if it does. First create the
+directories:
+
 ```bash
 kubectl -n snakemake exec snakemake-inspector -- mkdir -p /data/water_timeseries/input /data/water_timeseries/test/dynamic_world_data
 ```
 
-**Option A — copy from the Argo volume** (if `argo-workflows-share` is on this cluster and
-already has them). Start the light inspector in `argo`
-([9. Data access](09-data-access.md)):
-
-```bash
-kubectl -n argo apply -f storage_setup/light_inspector.yaml
-```
-
-```bash
-kubectl -n argo wait --for=condition=Ready pod/pvc-inspector-light --timeout=120s
-```
-
-Then stream the files from one volume to the other through your machine. Nothing is written to
-your local disk.
-
-```bash
-kubectl -n argo exec pvc-inspector-light -- tar cf - -C /data/water_timeseries input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet region_lake_polygons \
-  | kubectl -n snakemake exec -i snakemake-inspector -- tar xf - -C /data/water_timeseries
-```
-
-```bash
-kubectl -n argo exec pvc-inspector-light -- sh -c 'cd /data/water_timeseries/test/dynamic_world_data && tar cf - *.nc' \
-  | kubectl -n snakemake exec -i snakemake-inspector -- tar xf - -C /data/water_timeseries/test/dynamic_world_data
-```
-
-`tar` keeps the files' modification times. That matters because `create_new_historical_file.py`
-picks the newest `dynamic_world_historical_*.nc` as its baseline.
-
-**Option B — upload from your machine / from GCS.** The vector file can be streamed straight from
-the bucket:
+The vector file can be streamed straight from the bucket:
 
 ```bash
 gcloud storage cat gs://pdg-storage-default/water_timeseries_v2/data/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet \

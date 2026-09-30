@@ -335,6 +335,18 @@ rule create_historical_zarr_archive:
     output:
         os.path.join(MARK, "create_historical_zarr_archive.done"),
     run:
+        # The script skips any region zarr modified in the last 2 minutes as
+        # "still writing" (STALE_THRESHOLD_SECONDS). Snakemake starts this
+        # right after the last process step, so wait until they've settled.
+        import glob
+        import time
+        zarr_files = glob.glob(os.path.join(PATHS["output_dir"], "*", "breakpoint_zarr",
+                                            f"breakpoints_{TARGET_DATE}.zarr", "**"), recursive=True)
+        if zarr_files:
+            age = time.time() - max(os.path.getmtime(f) for f in zarr_files)
+            if age < 150:
+                print(f"Waiting {150 - age:.0f}s for the region zarrs to settle")
+                time.sleep(150 - age)
         code = run_stage("create_historical_zarr_archive",
                          "combine_results_into_zarr_historical_archive.py",
                          extra={"combine_all": "True"})

@@ -3647,6 +3647,15 @@ def create_final_zarr_from_incremental(
         # Save to Zarr
         logger.info(f"💾 Saving {len(breaks_merged):,} records to Zarr: {zarr_path}")
 
+        # Zarr can't store pandas' nullable integer dtypes: water-timeseries
+        # returns drainage_confidence as Int64, and to_zarr fails with
+        # "Cannot interpret 'Int64Dtype()' as a data type". Store them as plain
+        # int64, with missing values as -1 (water-timeseries' "not evaluated").
+        for col in breaks_merged.columns:
+            dtype = breaks_merged[col].dtype
+            if isinstance(dtype, pd.api.extensions.ExtensionDtype) and pd.api.types.is_integer_dtype(dtype):
+                breaks_merged[col] = breaks_merged[col].fillna(-1).astype('int64')
+
         # Convert to xarray dataset
         ds_breaks = breaks_merged.to_xarray()
 
