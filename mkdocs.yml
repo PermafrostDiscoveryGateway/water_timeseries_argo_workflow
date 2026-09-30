@@ -40,3 +40,4 @@ nav:
   - 7. Running the Testing Pipeline: 07-running-the-testing-pipeline.md
   - 8. Running the Full Pipeline: 08-running-the-full-pipeline.md
   - 9. Data Access: 09-data-access.md
+  - 10. Snakemake Test Pipeline on Kubernetes: 10-running-the-test-pipeline-with-snakemake-on-kubernetes.md
