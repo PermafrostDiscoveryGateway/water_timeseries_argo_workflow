@@ -96,6 +96,18 @@ existing interpreter (`python:`) instead.
 Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
 that directory (or use `--forcerun`) to re-run a month.
 
+Re-running `process` this way doesn't recompute it from scratch. It resumes from
+`<output_dir>/<region>/breakpoint_<target_date>/incremental_results_<target_date>.parquet`,
+skips every lake already in that file, and then rewrites the final zarr. For a real recompute,
+add `--config recompute_process=true`. The process step then deletes
+`<output_dir>/<region>/breakpoint_<target_date>/` and
+`<output_dir>/<region>/breakpoint_zarr/breakpoints_<target_date>.zarr` for each region before it
+runs:
+
+```bash
+snakemake -s snakemake/Snakefile --cores 2 --forcerun process --config recompute_process=true
+```
+
 To run the same Snakefile on a Kubernetes cluster instead, see
 [10. Running the test pipeline with snakemake on Kubernetes](10-running-the-test-pipeline-with-snakemake-on-kubernetes.md).
 

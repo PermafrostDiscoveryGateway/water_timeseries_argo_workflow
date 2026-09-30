@@ -1768,6 +1768,55 @@ def debug_historical_dates(historical_file_path: str) -> None:
     print("=" * 80)
 
 
+def clear_process_outputs(
+        region: str,
+        analysis_date: str,
+        output_dir: str = None,
+) -> List[str]:
+    """
+    Delete what process_region_date_new_fast_NRT wrote for one region and month,
+    so the next run recomputes every lake instead of resuming.
+
+    Removes <output_dir>/<region>/breakpoint_<analysis_date>/ (incremental,
+    intermediate and drain parquets) and
+    <output_dir>/<region>/breakpoint_zarr/breakpoints_<analysis_date>.zarr.
+
+    Args:
+        region: Region name
+        analysis_date: Date in "YYYY-MM" format
+        output_dir: Output root; defaults to the `output_dir` env var
+
+    Returns:
+        list: Paths that were deleted
+    """
+    import shutil
+
+    output_dir = output_dir or os.environ.get('output_dir')
+    if not output_dir:
+        raise ValueError("output_dir not given and not set in environment")
+
+    region_dir = Path(output_dir) / region
+    targets = [
+        region_dir / f'breakpoint_{analysis_date}',
+        region_dir / 'breakpoint_zarr' / f'breakpoints_{analysis_date}.zarr',
+    ]
+
+    removed = []
+    for target in targets:
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.exists():
+            target.unlink()
+        else:
+            continue
+        removed.append(str(target))
+        logger.info(f"🗑️ Removed {target}")
+
+    if not removed:
+        logger.info(f"No existing process outputs for {region} {analysis_date} under {region_dir}")
+    return removed
+
+
 def process_region_date_new_fast_NRT(
         region: str,
         analysis_date: str,

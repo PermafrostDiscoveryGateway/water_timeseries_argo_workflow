@@ -458,7 +458,10 @@ kubectl -n snakemake exec snakemake-inspector -- rm -rf /data/water_timeseries/s
 
 Other snakemake options go in `SNAKEMAKE_EXTRA_ARGS` in `controller-job.yaml`. For example,
 `--dry-run` shows what a run would do without starting anything, and `--forcerun process`
-re-runs the process steps.
+re-runs the process steps. On its own that resumes from each region's
+`incremental_results_<target_date>.parquet` and only processes lakes that are missing from it.
+Add `--config recompute_process=true` to delete that month's process outputs first and
+recompute every lake.
 
 Snakemake's own state (`.snakemake/`, including its lock) lives inside the controller pod and
 goes away with it, so a killed run never leaves a lock behind. This also means nothing stops

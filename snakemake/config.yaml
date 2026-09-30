@@ -62,4 +62,12 @@ earth_engine:
 # the first and second merge (equivalent to max-backfill-attempts: 2).
 backfill_after_failed_merge: true
 
+# The process step resumes from
+# <output_dir>/<region>/breakpoint_<target_date>/incremental_results_<target_date>.parquet
+# and skips every lake already in it, so --forcerun process alone only redoes
+# the lakes that are missing plus the final zarr write. Set this to true (e.g.
+# --config recompute_process=true) to delete that region's breakpoint_<target_date>/
+# directory and breakpoints_<target_date>.zarr first and recompute every lake.
+recompute_process: false
+
 merge_wait_minutes: 5
