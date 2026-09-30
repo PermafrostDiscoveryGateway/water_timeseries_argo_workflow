@@ -1398,6 +1398,13 @@ spec:
   # (nrt_<month>_drainage.pmtiles), via create_nrt_pmtiles.py
   # ============================================================
   - name: create-nrt-pmtiles
+    # Holds the same mutex as manual_jobs/create-nrt-pmtiles.yaml: both write
+    # into /data/water_timeseries/precomputed_nrt and seed from whichever
+    # nrt_monthly_drain_breaks*.parquet there is newest, so running them at
+    # the same time would drop one run's month from the final table.
+    synchronization:
+      mutexes:
+        - name: nrt-precomputed-dir
     metadata:
       labels:
         long-running-job: "true"

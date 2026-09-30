@@ -12,6 +12,14 @@ spec:
   #
   # `month` (YYYY-MM) is passed to create_nrt_pmtiles.py as nrt_pmtiles_month;
   # override at submit time with e.g. `argo submit ... -p month=2026-08`.
+  #
+  # Don't run this while the daily pipeline's create-nrt-pmtiles step is
+  # running. Both share nrt_precomputed_dir and seed from whichever
+  # nrt_monthly_drain_breaks*.parquet there has the latest mtime
+  # (find_previous_breaks_file), so if they overlap, one run's month is
+  # dropped from whichever table ends up newest. The main template below
+  # takes the same `nrt-precomputed-dir` mutex as that step, so Argo queues
+  # this job until the pipeline step finishes (and vice versa).
   entrypoint: main
 
   arguments:
@@ -37,6 +45,9 @@ spec:
 
   templates:
   - name: main
+    synchronization:
+      mutexes:
+        - name: nrt-precomputed-dir
     metadata:
       labels:
         long-running-job: "true"
