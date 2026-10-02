@@ -54,6 +54,16 @@ scratch:
   temp_dir: ""
   dask_dir: ""
 
+# Credential files, set for every step the way the Argo pods mount the
+# personal-gcp-creds / earth-engine-creds secrets. Empty = use your own
+# `gcloud auth application-default login` / `earthengine authenticate` as-is.
+credentials:
+  # -> GOOGLE_APPLICATION_CREDENTIALS (secret personal-gcp-creds, key key.json)
+  gcloud_adc: ""
+  # Copied to a private per-step HOME/.config/earthengine/credentials
+  # -> EARTHENGINE_TOKEN, EE_CONFIG_DIR, HOME (secret earth-engine-creds, key credentials)
+  earthengine: ""
+
 # Same GCP / Earth Engine settings the Argo pods export. Local Earth Engine
 # auth (`earthengine authenticate`) is used as-is.
 earth_engine:

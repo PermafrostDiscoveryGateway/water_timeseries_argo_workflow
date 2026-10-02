@@ -96,6 +96,56 @@ existing interpreter (`python:`) instead.
 Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
 that directory (or use `--forcerun`) to re-run a month.
 
+### Credentials
+
+By default every step uses your own logins (`gcloud auth application-default login` and
+`earthengine authenticate`). To use specific credential files instead, the way the Argo pods
+mount the `personal-gcp-creds` and `earth-engine-creds` secrets (see
+[4. Setting up secrets](04-setting-up-secrets.md)), set them under `credentials:` in the config:
+
+```yaml
+credentials:
+  gcloud_adc: "~/.config/water_timeseries/application_default_credentials.json"
+  earthengine: "~/.config/water_timeseries/earthengine_credentials"
+```
+
+For each step, `gcloud_adc` becomes `GOOGLE_APPLICATION_CREDENTIALS`. `earthengine` is copied
+into a private per-step home directory (owner-only, under `scratch.temp_dir`) and `HOME`,
+`EARTHENGINE_TOKEN` and `EE_CONFIG_DIR` point at that copy, exactly as in the pod script. A step
+fails if a configured file doesn't exist. `snakemake/config.delta.yaml` uses the two paths
+above.
+
+#### Copying the cluster's credentials to Delta
+
+The credentials on Delta are copies of the cluster secrets, so Delta runs use the same
+accounts as the Argo pipeline. Run these on a machine where `kubectl` can reach the cluster
+(if it hangs, whitelist your IP first, see
+[3. Whitelist & port forward](03-whitelist-and-port-forward.md)). Each command decodes one
+secret and streams it over ssh straight into an owner-only file on Delta, so nothing is written
+to the local machine. Each asks for your Delta login and Duo approval.
+
+```bash
+kubectl -n argo get secret personal-gcp-creds -o jsonpath='{.data.key\.json}' | base64 -d \
+  | ssh login.delta.ncsa.illinois.edu 'umask 077; mkdir -p ~/.config/water_timeseries && cat > ~/.config/water_timeseries/application_default_credentials.json'
+```
+
+```bash
+kubectl -n argo get secret earth-engine-creds -o jsonpath='{.data.credentials}' | base64 -d \
+  | ssh login.delta.ncsa.illinois.edu 'umask 077; mkdir -p ~/.config/water_timeseries && cat > ~/.config/water_timeseries/earthengine_credentials'
+```
+
+Check on Delta that both files exist, are non-empty and are readable only by you
+(`-rw-------`):
+
+```bash
+ls -l ~/.config/water_timeseries/
+```
+
+Both secrets hold a user's login (a refresh token), not a service account, so Delta runs act as
+whoever created the secrets. They stop working if that login is revoked or expires. When the
+secrets are recreated (see [4. Setting up secrets](04-setting-up-secrets.md)), re-run both
+commands to update the copies on Delta.
+
 ## Prerequisites
 
 Before running the test pipeline, make sure you've completed:

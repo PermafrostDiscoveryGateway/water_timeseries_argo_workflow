@@ -35,6 +35,16 @@ scratch:
   temp_dir: "/tmp/$USER/water_timeseries/temp_netcdf"
   dask_dir: "/tmp/$USER/water_timeseries/dask_work_space"
 
+# The same credentials the Argo pods use, copied from the cluster secrets
+# (run on a machine with kubectl access; nothing is written locally):
+#   kubectl -n argo get secret personal-gcp-creds -o jsonpath='{.data.key\.json}' | base64 -d \
+#     | ssh login.delta.ncsa.illinois.edu 'umask 077; mkdir -p ~/.config/water_timeseries && cat > ~/.config/water_timeseries/application_default_credentials.json'
+#   kubectl -n argo get secret earth-engine-creds -o jsonpath='{.data.credentials}' | base64 -d \
+#     | ssh login.delta.ncsa.illinois.edu 'umask 077; mkdir -p ~/.config/water_timeseries && cat > ~/.config/water_timeseries/earthengine_credentials'
+credentials:
+  gcloud_adc: "~/.config/water_timeseries/application_default_credentials.json"
+  earthengine: "~/.config/water_timeseries/earthengine_credentials"
+
 # Home directories on Delta are small; keep the venv under /projects. It is
 # built on the login node (build_env is a local rule) and used by every job.
 environment:
