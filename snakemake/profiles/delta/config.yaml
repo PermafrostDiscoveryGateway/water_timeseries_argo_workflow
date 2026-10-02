@@ -12,8 +12,8 @@ jobs: 20
 latency-wait: 60
 
 default-resources:
-  # Your Delta CPU allocation - `accounts` on a Delta login node lists it.
-  slurm_account: "bbfa-delta-cpu"
+  # Delta CPU allocation this pipeline is charged to.
+  slurm_account: "biyc-delta-cpu"
   slurm_partition: "cpu"
   runtime: 120
   mem_mb: 4000
