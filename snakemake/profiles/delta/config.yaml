@@ -1,0 +1,26 @@
+# Snakemake profile for Delta: every pipeline step is submitted as a Slurm job.
+# Needs snakemake >= 8 and snakemake-executor-plugin-slurm:
+#   pip install snakemake snakemake-executor-plugin-slurm
+# Use with config.delta.yaml (see the Snakefile header).
+
+executor: slurm
+
+# Max Slurm jobs queued/running at once.
+jobs: 20
+
+# Markers are written on the compute node and checked from the login node.
+latency-wait: 60
+
+default-resources:
+  # Your Delta CPU allocation - `accounts` on a Delta login node lists it.
+  slurm_account: "bbfa-delta-cpu"
+  slurm_partition: "cpu"
+  runtime: 120
+  mem_mb: 4000
+
+# Replaces the nrt-pipeline-semaphores ConfigMap
+# (argo_workflows/near_real_time/workflow_templates/): at most this many
+# Earth Engine downloads / process steps at once.
+resources:
+  - ee_download=3
+  - process_slots=3

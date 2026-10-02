@@ -1,0 +1,41 @@
+# Delta (NCSA, ACCESS) overrides for config.yaml. Use together with the Slurm
+# profile:
+#   snakemake -s snakemake/Snakefile --configfile snakemake/config.delta.yaml \
+#       --profile snakemake/profiles/delta --config target_date=2025-08
+#
+# Keys not set here come from config.yaml. $VARS and ~ are expanded.
+
+# The Argo workflows' shared PVC (mounted at /data in the pods) lives on
+# Taiga, so /data/water_timeseries in the Argo templates is:
+#   /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries
+# That directory is live Argo state, so only read-only inputs (the lake
+# vectors) are taken from it. Everything the pipeline writes goes under
+# /projects instead.
+#
+# dynamic_world_data is both input and output: download/merge/process expect
+# the historical lakes_dw_*.nc file(s) in it, and write downloads/, merge/ and
+# the new historical file next to them. Seed it once from the Argo test data:
+#   mkdir -p /projects/bbfa/$USER/water_timeseries_test/dynamic_world_data
+#   ln -s <taiga water_timeseries>/test/dynamic_world_data/*.nc \
+#         /projects/bbfa/$USER/water_timeseries_test/dynamic_world_data/
+paths:
+  base_dir: "/projects/bbfa/$USER/water_timeseries_test"
+  dynamic_world_data: "/projects/bbfa/$USER/water_timeseries_test/dynamic_world_data"
+  vector_lake_file: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
+  region_lake_polygons_dir: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/region_lake_polygons"
+  output_dir: "/projects/bbfa/$USER/water_timeseries_test/output"
+  combined_zarr_datasets: "/projects/bbfa/$USER/water_timeseries_test/combined_zarr_datasets"
+  # Markers, logs and per-stage .env files. Must be on a filesystem the login
+  # node and the compute nodes share.
+  work_dir: "/projects/bbfa/$USER/water_timeseries_test/snakemake_work"
+
+# Node-local disk on the compute node, so temp NetCDF and Dask spill I/O
+# don't go over the shared filesystem. Nothing in it is needed after a step.
+scratch:
+  temp_dir: "/tmp/$USER/water_timeseries/temp_netcdf"
+  dask_dir: "/tmp/$USER/water_timeseries/dask_work_space"
+
+# Home directories on Delta are small; keep the venv under /projects. It is
+# built on the login node (build_env is a local rule) and used by every job.
+environment:
+  path: "/projects/bbfa/$USER/water_timeseries_test/venv"

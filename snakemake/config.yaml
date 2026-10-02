@@ -48,6 +48,12 @@ paths:
   # Snakemake's own bookkeeping: per-stage .env files, logs, done-markers.
   work_dir: "data/snakemake_work"
 
+# TMPDIR and Dask spill directory for every step. Empty = base_dir/temp_netcdf
+# and base_dir/dask_work_space, as in the Argo pods.
+scratch:
+  temp_dir: ""
+  dask_dir: ""
+
 # Same GCP / Earth Engine settings the Argo pods export. Local Earth Engine
 # auth (`earthengine authenticate`) is used as-is.
 earth_engine:

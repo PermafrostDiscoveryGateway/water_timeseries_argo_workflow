@@ -26,6 +26,15 @@
 # Usage (from the repo root):
 #   snakemake -s snakemake/Snakefile --cores 2
 #   snakemake -s snakemake/Snakefile --cores 2 --config target_date=2025-07
+#
+# On Delta (each step is a Slurm job - see snakemake/profiles/delta/):
+#   snakemake -s snakemake/Snakefile --configfile snakemake/config.delta.yaml \
+#       --profile snakemake/profiles/delta --config target_date=2025-08
+#
+# Each rule's threads / mem_mb / runtime match the Argo pod limits in
+# nrt-pipeline-templates-test.yaml; ee_download and process_slots stand in for
+# the nrt-pipeline-semaphores ConfigMap and are only enforced when given to
+# --resources (the Delta profile does).
 
 import json
 import os
@@ -42,7 +51,8 @@ EE = config["earth_engine"]
 
 
 def _abs(p):
-    p = Path(p)
+    # $VARS and ~ are expanded, e.g. /projects/bbfa/$USER/... in config.delta.yaml.
+    p = Path(os.path.expandvars(os.path.expanduser(str(p))))
     return str(p if p.is_absolute() else REPO_ROOT / p)
 
 
@@ -60,6 +70,10 @@ else:
 
 
 PATHS = {k: _abs(v) for k, v in config["paths"].items()}
+# TMPDIR / Dask spill space; empty means under base_dir, like the Argo pods.
+SCRATCH = config.get("scratch") or {}
+TEMP_DIR = _abs(SCRATCH.get("temp_dir") or os.path.join(PATHS["base_dir"], "temp_netcdf"))
+DASK_DIR = _abs(SCRATCH.get("dask_dir") or os.path.join(PATHS["base_dir"], "dask_work_space"))
 WORK = os.path.join(PATHS["work_dir"], TARGET_DATE)
 MARK = os.path.join(WORK, "markers")
 LOGS = os.path.join(WORK, "logs")
@@ -103,8 +117,7 @@ def run_stage(stage, script, region=None, extra=None):
     log_path = Path(LOGS) / (f"{stage}_{region}.log" if region else f"{stage}.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    temp_dir = os.path.join(PATHS["base_dir"], "temp_netcdf")
-    dask_dir = os.path.join(PATHS["base_dir"], "dask_work_space")
+    temp_dir, dask_dir = TEMP_DIR, DASK_DIR
     for d in (temp_dir, dask_dir, PATHS["output_dir"], PATHS["dynamic_world_data"]):
         os.makedirs(d, exist_ok=True)
 
@@ -146,6 +159,11 @@ def run_stage(stage, script, region=None, extra=None):
 def mark_done(path, **status):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps({"target_date": TARGET_DATE, **status}, indent=2) + "\n")
+
+
+# Quick or network-only steps run where snakemake itself runs (the Delta
+# login node) instead of as Slurm jobs.
+localrules: all, build_env, wait_for_region_merges
 
 
 rule all:
@@ -213,6 +231,11 @@ rule download:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "download.done"),
+    threads: 1
+    resources:
+        mem_mb=8000,
+        runtime=240,
+        ee_download=1,
     retries: 0
     run:
         download = run_stage("download", "download_region.py", wildcards.region)
@@ -231,6 +254,12 @@ rule merge_and_backfill:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "merge_and_backfill.done"),
+    threads: 2
+    resources:
+        mem_mb=20000,
+        runtime=240,
+        # The backfill is a download - shares the download semaphore in Argo.
+        ee_download=1,
     retries: 0
     run:
         status = {"merge": run_stage("merge_region", "merge_region.py", wildcards.region)}
@@ -249,6 +278,10 @@ rule force_merge:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "merge.done"),
+    threads: 2
+    resources:
+        mem_mb=20000,
+        runtime=120,
     run:
         code = run_stage("merge_region_force", "merge_region.py", wildcards.region,
                          extra={"force_merge": "true"})
@@ -263,6 +296,11 @@ rule process:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "process.done"),
+    threads: 4
+    resources:
+        mem_mb=20000,
+        runtime=240,
+        process_slots=1,
     run:
         params = config["regions"][wildcards.region] or {}
         code = run_stage("process", "process_NRT.py", wildcards.region, extra={
@@ -281,6 +319,10 @@ rule create_historical_zarr_archive:
         ENV_INPUT,
     output:
         os.path.join(MARK, "create_historical_zarr_archive.done"),
+    threads: 2
+    resources:
+        mem_mb=20000,
+        runtime=120,
     run:
         code = run_stage("create_historical_zarr_archive",
                          "combine_results_into_zarr_historical_archive.py",
@@ -312,6 +354,10 @@ rule create_new_historical_file:
         ENV_INPUT,
     output:
         os.path.join(MARK, "create_new_historical_file.done"),
+    threads: 1
+    resources:
+        mem_mb=20000,
+        runtime=120,
     run:
         code = run_stage("create_new_historical_file", "create_new_historical_file.py",
                          extra={"merge_wait_minutes": config["merge_wait_minutes"]})

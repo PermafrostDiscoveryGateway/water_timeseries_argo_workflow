@@ -1,0 +1,10 @@
+# This repo's dependencies on top of water-timeseries-v2 - the same list the
+# Dockerfile installs with `uv pip install`. Keep the two in sync.
+python-dotenv
+google-cloud-storage
+google-api-core
+toml
+dask[dataframe]
+pyarrow
+nest_asyncio
+geemap==0.37.2
