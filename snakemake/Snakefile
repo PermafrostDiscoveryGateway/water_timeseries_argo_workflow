@@ -52,7 +52,7 @@ EE = config["earth_engine"]
 
 
 def _abs(p):
-    # $VARS and ~ are expanded, e.g. /projects/biyc/$USER/... in config.delta.yaml.
+    # $VARS and ~ are expanded, e.g. /work/hdd/biyc/... in config.delta.yaml.
     p = Path(os.path.expandvars(os.path.expanduser(str(p))))
     return str(p if p.is_absolute() else REPO_ROOT / p)
 
