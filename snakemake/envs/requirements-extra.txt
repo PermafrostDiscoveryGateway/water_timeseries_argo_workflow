@@ -1,5 +1,6 @@
-# This repo's dependencies on top of water-timeseries-v2 - the same list the
-# Dockerfile installs with `uv pip install`. Keep the two in sync.
+# Installed on top of water-timeseries-v2, in a second step - the same
+# packages the Dockerfile's `uv pip install` layer adds to the
+# water-timeseries-v2 base image. Keep in sync with ../../Dockerfile.
 python-dotenv
 google-cloud-storage
 google-api-core
@@ -7,4 +8,6 @@ toml
 dask[dataframe]
 pyarrow
 nest_asyncio
+# water-timeseries requires geemap>=0.37.3; like the Dockerfile, this
+# deliberately downgrades it after the base install.
 geemap==0.37.2
