@@ -267,6 +267,7 @@ If the Argo cluster's volume moves instead (a new PVC), the Taiga path changes: 
 | `cp: cannot create regular file ... Permission denied` copying into `test/dynamic_world_data` | Same; or copy from the inspector pod instead ([step 5](#5-check-the-dynamic-world-data)). |
 | `ValueError: max() iterable argument is empty` in a download log | No historical `.nc` file in `dynamic_world_data` ([step 5](#5-check-the-dynamic-world-data)). |
 | `Missing credentials file` from `run_delta.sh` | Copy the credentials ([step 3](#3-copy-the-credentials)). |
+| Snakemake reports `SLURM status is: 'TIMEOUT'` | A step hit its time limit. For a download, raise that region's `download_runtime_hours` ([Time limits](#time-limits)) and re-run; finished steps and downloaded tiles are kept. |
 | Jobs pending with reason `QOSGrpBillingMinutes` | The allocation is out of SUs (see below). |
 | Snakemake says the directory is locked | A previous run was interrupted: run the same command once with `--unlock`, then again without it. |
 
@@ -308,10 +309,48 @@ Snakefile, where the steps allow it, is the main way to reduce the cost.
 If jobs sit in the queue with reason `QOSGrpBillingMinutes`, the allocation doesn't have enough
 balance left for the jobs requested; the PI needs to request a supplement.
 
-### Partition limits
+### Time limits
 
-The profile submits to the `cpu` partition, which allows jobs of up to 48 hours. Each rule's
-`runtime` (minutes) sets its Slurm time limit; steps in this pipeline ask for 2–4 hours.
+The profile submits to the `cpu` partition, which allows jobs of up to **48 hours**. Slurm kills a
+job that reaches its time limit (state `TIMEOUT`). Each rule's `runtime` (minutes) in the
+Snakefile sets its limit: 2–4 hours for merge, process and the combine steps.
+
+Downloads can take much longer for large regions, so their limit is set per region, in hours, under
+`download_runtime_hours` in `snakemake/config.yaml`:
+
+| Region | Limit |
+| --- | --- |
+| `EURASIA1`, `EURASIA2`, `CANADA1`–`CANADA4` | 96 hours |
+| `EURASIA3` | 24 hours |
+| `ALASKA` | 12 hours |
+| anything else (`default`, e.g. `TEST`) | 4 hours |
+
+The limit covers the full download and its missing-ID fallback together. A limit over 48 hours
+is split into back-to-back jobs of up to 48 hours each: when one is killed at its limit, Snakemake
+resubmits the download (`retries` on the `download` rule), and the new job skips the tiles already
+on disk and carries on. So 96 hours means up to two 48-hour jobs. The second job waits in the queue
+like any other, so the total time can be a bit longer than the limit.
+
+Delta charges only for the time a job actually runs, not its limit, so a generous limit costs
+nothing extra if the download finishes early; a longer limit can only mean a slightly longer wait
+in the queue. You can lower a running job's limit but not raise it, so change
+`download_runtime_hours` before starting a run. To see a running job's elapsed time (`%M`) and
+limit (`%l`):
+
+```bash
+squeue -u $USER -o "%.10i %.10M %.10l %.45k"
+```
+
+Two things to keep in mind for multi-day runs:
+
+- Snakemake itself has to keep running on the login node for the whole time. Login nodes are
+  occasionally rebooted for maintenance; if that kills the `tmux` session, start the same command
+  again. Finished steps are skipped, and downloads resume from the tiles on disk. Running jobs are
+  left alone, so check `squeue` first to avoid starting a second copy of a step.
+- A tile that was being written when a job was killed can be left truncated, and the resumed
+  download skips any tile file that isn't empty. If a merge later fails reading a file in
+  `downloads/`, delete that file and re-run.
+
 See [Partitions](https://docs.ncsa.illinois.edu/systems/delta/en/latest/user_guide/running_jobs.html)
 for the other partitions (`cpu-preempt` is charged at half rate but jobs can be preempted).
 

@@ -14,7 +14,9 @@
 #
 # Differences from the Argo test pipeline:
 #   - Every download step (download-region, download-missing-region fallback,
-#     backfill) is tried exactly once - no retryStrategy.
+#     backfill) is tried exactly once - no retryStrategy - except that a
+#     download killed at its Slurm time limit is resubmitted while its
+#     download_runtime_hours allow (see config.yaml).
 #   - download-region-last-attempts (the day-15+ parked-ID retry) is skipped,
 #     so the pipeline always takes the Argo `recovered == false` branch and
 #     force-merges each region.
@@ -37,6 +39,7 @@
 # --resources (the Delta profile does).
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -49,6 +52,34 @@ REPO_ROOT = Path(workflow.basedir).parent.resolve()
 TARGET_DATE = str(config["target_date"])
 REGIONS = list(config["regions"].keys())
 EE = config["earth_engine"]
+
+# Download time limits (config `download_runtime_hours`). Longer than one
+# Slurm job may run, a region's download is split into back-to-back jobs of
+# at most MAX_JOB_HOURS: a job killed at its limit fails, snakemake retries
+# it, and the retry resumes (download_region.py skips tiles already on disk).
+MAX_JOB_HOURS = 48  # Delta cpu partition maximum
+_DL_HOURS = config.get("download_runtime_hours") or {}
+
+
+def download_hours(region):
+    return float(_DL_HOURS.get(region, _DL_HOURS.get("default", 4)))
+
+
+def download_attempts(region):
+    return max(1, math.ceil(download_hours(region) / MAX_JOB_HOURS))
+
+
+def download_runtime(wildcards, attempt):
+    """Minutes for this attempt: whatever's left of the region's hours, up to MAX_JOB_HOURS."""
+    hours = download_hours(wildcards.region)
+    remaining = hours - (attempt - 1) * MAX_JOB_HOURS
+    return int(min(max(remaining, 1), MAX_JOB_HOURS) * 60)
+
+
+# retries is per rule, not per region: enough for the longest region. A region
+# whose limit fits in one job only gets the extra attempts if its download
+# crashes outright, which the download rule otherwise never does.
+DOWNLOAD_RETRIES = max(download_attempts(r) for r in REGIONS) - 1
 
 
 def _abs(p):
@@ -267,9 +298,9 @@ rule download:
     threads: 1
     resources:
         mem_mb=8000,
-        runtime=240,
+        runtime=download_runtime,
         ee_download=1,
-    retries: 0
+    retries: DOWNLOAD_RETRIES
     run:
         download = run_stage("download", "download_region.py", wildcards.region)
         missing = None

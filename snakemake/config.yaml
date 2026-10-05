@@ -14,6 +14,25 @@ regions:
   TEST:     {id_chunk_size: "", save_interval: "", n_jobs: ""}
   EURASIA3: {id_chunk_size: "", save_interval: "", n_jobs: ""}
 
+# Time limit for each region's download step, in hours: the full download and
+# its missing-ID fallback together. Regions not listed get `default`. Only
+# used where steps are Slurm jobs (Delta); local runs have no limit.
+#
+# A Slurm job on Delta's cpu partition can run at most 48 hours, so a longer
+# limit is split into back-to-back 48-hour jobs: when one is killed at its
+# limit, snakemake resubmits the download, which skips the tiles already on
+# disk and carries on. E.g. 96 = up to two 48-hour jobs.
+download_runtime_hours:
+  default: 4
+  ALASKA: 12
+  EURASIA3: 24
+  EURASIA1: 96
+  EURASIA2: 96
+  CANADA1: 96
+  CANADA2: 96
+  CANADA3: 96
+  CANADA4: 96
+
 # Python environment for the near_real_time/ scripts. With build: true,
 # snakemake builds it with uv the same way the Docker image is built:
 #   1. base: water-timeseries-v2 (the ghcr.io/.../water-timeseries-v2 base image)
