@@ -1,0 +1,83 @@
+DATA ACCESS NOTES
+=================
+
+This file collects notes on how to get at the pipeline's data on the cluster.
+
+## Checking for / starting the pvc-inspector pod
+
+The pvc-inspector pods let you browse the contents of the PVC (mounted at /data) without
+having to spin up a full pipeline run. Manifests live in storage_setup/:
+
+  storage_setup/python-inspector.yaml   -> pod "pvc-inspector-python" (python:3.12-slim + netcdf4)
+  storage_setup/light_inspector.yaml    -> pod "pvc-inspector-light"  (alpine + ncdump/tree/file)
+
+Check if one is already running:
+
+    kubectl -n argo get pods | grep pvc-inspector
+
+If nothing is there, start one (pick whichever image suits what you need to do):
+
+    kubectl -n argo apply -f storage_setup/python-inspector.yaml
+    kubectl -n argo apply -f storage_setup/light_inspector.yaml
+
+Wait for it to be Running:
+
+    kubectl -n argo get pod pvc-inspector-python -w
+
+## Exec into the pod
+
+    kubectl -n argo exec -it pvc-inspector-python -- sh
+    kubectl -n argo exec -it pvc-inspector-light -- sh
+
+Once inside, the PVC is mounted at /data, e.g.:
+
+    ls -la /data/water_timeseries/dynamic_world_data/
+    find /data -name '*.nc' | head -20
+    du -sh /data/water_timeseries/*
+
+## Cleaning up
+
+Remove the inspector pod(s) when you're done with them:
+
+    kubectl -n argo delete -f storage_setup/python-inspector.yaml
+    kubectl -n argo delete -f storage_setup/light_inspector.yaml
+
+## Downloading what you need to run the pipeline locally
+
+Once you have an inspector pod up (see above), you can pull data off the PVC with `kubectl cp`.
+This is the quickest way to get what you need onto your local machine to run the pipeline outside
+the cluster.
+
+Download the dynamic world data:
+
+    kubectl -n argo cp pvc-inspector-python:/data/water_timeseries/dynamic_world_data ./data/dynamic_world
+
+Download the contents of output:
+
+    kubectl -n argo cp pvc-inspector-python:/data/water_timeseries/output ./output
+
+Two more things you'll typically need alongside those:
+
+Download the input vector lake file (the lake polygons parquet that everything else is keyed off
+of):
+
+    kubectl -n argo cp pvc-inspector-python:/data/water_timeseries/input ./data/input
+
+Download the per-region lake polygon files (used via `region_lake_polygons_dir` - these are
+generated from the vector file above by utils/generate_region_lake_polygons.py, but it's much
+faster to just copy the already-generated ones off the PVC):
+
+    kubectl -n argo cp pvc-inspector-python:/data/water_timeseries/region_lake_polygons ./data/region_lake_polygons
+
+(Swap in `pvc-inspector-light` if that's the pod you started instead.) These paths match what
+`dynamic_world_dir`/`dynamic_world_data`, `output_dir`, `vector_lake_file`, and
+`region_lake_polygons_dir` point to locally in the example .env files (see
+historical_run/example.env and near_real_time/example.env) - copy the data into the paths those
+variables reference and you should be able to run the pipeline locally against it.
+
+`dynamic_world_downloads` (a subdir under dynamic_world_data) is also used by the live
+pipeline (download/merge scripts), but it's scratch space the pipeline populates itself as it
+runs - you don't need to pre-populate it.
+
+`kubectl cp` can be slow for large directories - for a big pull, `du -sh` the source directory
+first (see above) so you know what you're in for.
