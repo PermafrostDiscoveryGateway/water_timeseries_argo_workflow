@@ -98,9 +98,31 @@ must have been run on the cluster at least once.
 
 ## Running the pipeline
 
+### With the helper script
+
+[`snakemake/run_delta.sh`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/snakemake/run_delta.sh)
+does all of the steps below in one go. It changes to the repo root, installs uv and Snakemake if
+they're missing, checks that the credentials exist, and starts the run inside a `tmux` session
+named `water_timeseries-<date>`:
+
+```bash
+/projects/biyc/water_timeseries/snakemake/run_delta.sh 2025-08 -n
+```
+
+```bash
+/projects/biyc/water_timeseries/snakemake/run_delta.sh 2025-08
+```
+
+The first argument is the target month, and anything after it is passed on to Snakemake. A dry
+run (`-n`) runs directly instead of in `tmux`. There's no Python environment to activate:
+Snakemake comes from `uv tool install`, and the pipeline steps use the venv that `build_env`
+builds.
+
+### By hand
+
 All commands are run from the repo root (`/projects/biyc/water_timeseries`).
 
-### Dry run
+#### Dry run
 
 Check what will run without submitting anything:
 
@@ -108,7 +130,7 @@ Check what will run without submitting anything:
 snakemake -s snakemake/Snakefile --configfile snakemake/config.delta.yaml --profile snakemake/profiles/delta --config target_date=2025-08 -n
 ```
 
-### Real run
+#### Real run
 
 Snakemake has to keep running on the login node for the whole pipeline (it submits jobs and waits
 for them), so start it inside `tmux`. Delta has several login nodes; note which one you're on so
@@ -132,7 +154,7 @@ Detach with `Ctrl-b d`. To reattach later, ssh to the same login node (e.g.
 The first run builds the venv on the login node (`build_env`), which takes a few minutes before
 any Slurm jobs appear. Its log is `/work/hdd/biyc/water_timeseries/snakemake_work/build_env.log`.
 
-### Following jobs
+#### Following jobs
 
 ```bash
 squeue -u $USER
