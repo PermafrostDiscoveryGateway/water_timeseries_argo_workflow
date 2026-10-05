@@ -27,7 +27,8 @@ Following the [Delta data management guidance](https://docs.ncsa.illinois.edu/sy
 
 `/taiga/...` is the full path in [`snakemake/config.delta.yaml`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/snakemake/config.delta.yaml).
 Because Delta and the Argo test pipeline share the Taiga directories, don't run both at the same
-time.
+time. Delta also needs write access to `water_timeseries/test/` on Taiga, which has to be granted
+from the cluster side (see [step 4](#4-give-the-allocations-group-write-access-to-the-taiga-test-directory)).
 
 Both `/projects/biyc` and `/work/hdd/biyc` are shared by everyone on the biyc allocation. Keep
 them group-writable (`chmod -R g+rwX`, setgid on directories) so anyone on the allocation can run
@@ -82,7 +83,60 @@ ls -l ~/.config/water_timeseries/
 
 Each person who runs the pipeline needs their own copy, since the paths are under `~`.
 
-### 4. Check the Dynamic World data
+### 4. Give the allocation's group write access to the Taiga test directory
+
+Delta reads and writes `water_timeseries/test/` on Taiga (`dynamic_world_data/` and
+`snakemake_work/`), but the Argo pods create everything there as `root` with mode `755`, so a
+Delta user can't write to it. Without this step, the first job fails with:
+
+```
+WorkflowError:
+Failed to create output directory .../water_timeseries/test/snakemake_work/2025-08/markers/TEST.
+PermissionError: [Errno 13] Permission denied: '.../water_timeseries/test/snakemake_work'
+```
+
+Only root can change ownership there, so it's done from a pod on the cluster, where the volume is
+mounted at `/data`. Give `test/` to the allocation's Unix group (`delta_biyc` for the biyc
+allocation) and make it group-writable, with setgid on directories so new ones keep the group.
+
+On Delta, get the group's numeric ID (the number after the second `:`). The pod doesn't know
+Delta's group names, so it needs the number:
+
+```bash
+getent group delta_biyc
+```
+
+On a machine with cluster access, start the inspector pod (see
+[9. Data access](09-data-access.md#browsing-the-volume-with-a-pvc-inspector-pod)):
+
+```bash
+kubectl -n argo apply -f storage_setup/python-inspector.yaml
+```
+
+Then, replacing `<GID>` with the number from above:
+
+```bash
+kubectl -n argo exec pvc-inspector-python -- sh -c 'cd /data/water_timeseries/test && chgrp -R <GID> . && chmod -R g+rwX . && find . -type d -exec chmod g+s {} +'
+```
+
+Check from Delta that you can write there:
+
+```bash
+mkdir -p /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/snakemake_work && ls -la /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/
+```
+
+The directories should show the `delta_biyc` group (or its number) with `rws` group permissions.
+
+!!! warning "Re-apply after Argo test runs"
+    Files and directories an Argo test run creates afterwards are again owned by `root` and not
+    group-writable. If a Delta run later fails with `Permission denied` on something under
+    `test/`, run the `chgrp`/`chmod` command above again.
+
+The rest of the Taiga volume (`input/`, `region_lake_polygons/`, the production
+`dynamic_world_data/`) is only read by Delta, so it doesn't need any changes. It is readable by
+everyone.
+
+### 5. Check the Dynamic World data
 
 `dynamic_world_data` is the Argo test pipeline's own directory on Taiga,
 `/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/dynamic_world_data`, so Delta and the Argo test pipeline use the same files. It must
@@ -93,16 +147,17 @@ first run:
 ls -la /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/dynamic_world_data/
 ```
 
-To use the production historical file for testing, copy it in (`-p` keeps its timestamps; the
-scripts use the newest `.nc` file as the baseline):
+To use a production historical file for testing, copy it in from the inspector pod. A copy from
+Delta fails with `Permission denied` unless step 4 has been done, and files created by the pod
+need step 4 re-applied afterwards anyway. `-p` keeps the timestamps; the scripts use the newest
+`.nc` file as the baseline.
 
 ```bash
-cp -p /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/dynamic_world_data/dynamic_world_historical_2026-07.nc /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/dynamic_world_data/
+kubectl -n argo exec pvc-inspector-python -- cp -p /data/water_timeseries/dynamic_world_data/dynamic_world_historical_2026-07.nc /data/water_timeseries/test/dynamic_world_data/
 ```
 
 The pipeline also writes `downloads/`, `merge/` and the new historical file into this directory,
-so you need write access to it, and a Delta run and an Argo test run shouldn't run at the same
-time.
+so a Delta run and an Argo test run shouldn't run at the same time.
 
 The per-region lake polygons are read from the Argo volume
 (`region_lake_polygons_dir` in `config.delta.yaml`), so the
@@ -178,6 +233,46 @@ Per-step logs, `.env` files and done-markers are in
 `--forcerun <rule>`) to re-run a month. If a run is interrupted, re-running the same command
 picks up where it left off; if snakemake complains the directory is locked, add `--unlock` once,
 then run again without it.
+
+## Moving to a new allocation or project space
+
+Everything above is tied to the biyc allocation. When moving to a new one (new project code
+`<new>`, e.g. after a renewal under a different allocation, or a different Delta project):
+
+1. **Charge account**: `slurm_account` in `snakemake/profiles/delta/config.yaml`
+   (`<new>-delta-cpu`; `accounts` lists the names).
+2. **Paths** in `snakemake/config.delta.yaml`: `output_dir` and `combined_zarr_datasets`
+   (`/work/hdd/<new>/...`) and `environment.path` (`/projects/<new>/water_timeseries/venv`).
+   Update the paths in this page and in `snakemake/run_delta.sh`'s usage comment to match.
+3. **Checkout and venv**: clone the repo under `/projects/<new>` (step 1). The venv is rebuilt
+   automatically on the first run.
+4. **Group permissions on Delta**: make the new `/projects/<new>/water_timeseries` and
+   `/work/hdd/<new>/water_timeseries` group-writable with setgid on directories (step 1), so
+   everyone on the allocation can run the pipeline.
+5. **Group permissions on Taiga**: repeat step 4 with the new allocation's group
+   (`getent group delta_<new>`), so the new group can write to `water_timeseries/test/`.
+6. **Credentials** are per user, under `~`, and don't change (step 3). Anyone new running the
+   pipeline needs their own copy.
+7. **Results**: copy anything you want to keep from the old `/work/hdd/biyc/water_timeseries`
+   (`output/`, `combined_zarr_datasets/`); the Taiga data stays where it is.
+
+If the Argo cluster's volume moves instead (a new PVC), the Taiga path changes: update every
+`/taiga/...` path in `snakemake/config.delta.yaml`, then repeat steps 4 and 5.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `PermissionError: [Errno 13] Permission denied` under `.../water_timeseries/test/` | The Taiga test directory (or something an Argo run created in it since) isn't writable by your group. Re-apply [step 4](#4-give-the-allocations-group-write-access-to-the-taiga-test-directory). |
+| `cp: cannot create regular file ... Permission denied` copying into `test/dynamic_world_data` | Same; or copy from the inspector pod instead ([step 5](#5-check-the-dynamic-world-data)). |
+| `ValueError: max() iterable argument is empty` in a download log | No historical `.nc` file in `dynamic_world_data` ([step 5](#5-check-the-dynamic-world-data)). |
+| `Missing credentials file` from `run_delta.sh` | Copy the credentials ([step 3](#3-copy-the-credentials)). |
+| Jobs pending with reason `QOSGrpBillingMinutes` | The allocation is out of SUs (see below). |
+| Snakemake says the directory is locked | A previous run was interrupted: run the same command once with `--unlock`, then again without it. |
+
+For any failed step, the Slurm log path is printed in the Snakemake output
+(`.snakemake/slurm_logs/rule_<name>/<region>/<jobid>.log` in the repo), and the pipeline's own log
+is `<taiga>/water_timeseries/test/snakemake_work/<target_date>/logs/<stage>_<region>.log`.
 
 ## Allocation, quotas and limits
 
