@@ -93,6 +93,9 @@ dependencies from `snakemake/envs/requirements-extra.txt` (keep that in sync wit
 a rebuild doesn't re-run steps that already finished. Set `environment.build: false` to use an
 existing interpreter (`python:`) instead.
 
+To run it on NCSA Delta, with each step submitted as a Slurm job, see
+[10. Running on Delta](10-running-on-delta.md).
+
 Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
 that directory (or use `--forcerun`) to re-run a month.
 
