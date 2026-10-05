@@ -97,7 +97,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         requests:
@@ -223,7 +223,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         requests:
@@ -362,7 +362,7 @@ spec:
           path: /tmp/last_attempt_status/recovered.txt
           default: "false"
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         requests:
@@ -514,7 +514,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         requests:
@@ -624,7 +624,7 @@ spec:
         valueFrom:
           path: /tmp/completion/incomplete_regions.json
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         requests:
@@ -767,7 +767,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         requests:
@@ -940,7 +940,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         # Observed actual usage for n_jobs=2 regions is ~2 cores, well under the old
@@ -1155,7 +1155,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         requests:
@@ -1221,7 +1221,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         # Merging is I/O- and memory-bound (opening/combining large netCDF files),
@@ -1333,7 +1333,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         requests:
@@ -1423,7 +1423,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:56-add-pmtiles-generation-to-argo-workflow
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         requests:
@@ -1502,7 +1502,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         requests:

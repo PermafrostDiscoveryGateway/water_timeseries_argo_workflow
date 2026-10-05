@@ -39,7 +39,7 @@ spec:
         archive:
           none: {}
     container:
-      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:50-clean-up-debug-directory
+      image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:latest
       imagePullPolicy: Always
       resources:
         requests:
