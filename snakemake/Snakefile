@@ -485,6 +485,10 @@ rule create_nrt_pmtiles:
     output:
         os.path.join(MARK, "create_nrt_pmtiles.done"),
     threads: 2
+    resources:
+        # The Argo step's limits.
+        mem_mb=14000,
+        runtime=240,
     run:
         code = run_pmtiles("create_nrt_pmtiles", pmtiles_dataset("test"), TARGET_DATE,
                            overwrite=PM["overwrite"])

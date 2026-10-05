@@ -7,6 +7,10 @@
 #   snakemake -s snakemake/Snakefile.pmtiles --cores 2 --forcerun pmtiles_month \
 #       --config pmtiles_dataset=main pmtiles_months=2026-07,2026-08
 #
+# On Delta (a Slurm job per month, like the pipeline):
+#   snakemake -s snakemake/Snakefile.pmtiles --configfile snakemake/config.delta.yaml \
+#       --profile snakemake/profiles/delta --forcerun pmtiles_month
+#
 #   pmtiles_dataset  an entry of `pmtiles.datasets` in config.yaml (default
 #                    test = the pipeline's own combined zarr and outputs)
 #   pmtiles_months   comma-separated YYYY-MM months, built in order; default
@@ -58,6 +62,9 @@ rule pmtiles_month:
     wildcard_constraints:
         month="|".join(MONTHS),
     threads: 2
+    resources:
+        mem_mb=14000,
+        runtime=240,
     run:
         month = "" if wildcards.month == "latest" else wildcards.month
         code = run_pmtiles(f"pmtiles_{DATASET}_{wildcards.month}", PM_DATASET, month,

@@ -17,7 +17,8 @@
 #   /projects/biyc/water_timeseries   this repo checkout and the venv
 #   <taiga>/water_timeseries          base_dir, inputs, region polygons
 #   <taiga>/water_timeseries/test     dynamic_world_data, snakemake_work
-#   /work/hdd/biyc/water_timeseries   output, combined_zarr_datasets
+#   /work/hdd/biyc/water_timeseries   output, combined_zarr_datasets and
+#                                     the PMTiles (precomputed_nrt, nrt_tiles)
 # Keep the /projects and /work directories group-writable (g+rwX, setgid on
 # directories) so anyone on the allocation can run the pipeline.
 #
@@ -34,10 +35,22 @@ paths:
   region_lake_polygons_dir: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/region_lake_polygons"
   output_dir: "/work/hdd/biyc/water_timeseries/output"
   combined_zarr_datasets: "/work/hdd/biyc/water_timeseries/combined_zarr_datasets"
+  nrt_precomputed_dir: "/work/hdd/biyc/water_timeseries/precomputed_nrt"
+  nrt_pmtiles_output_dir: "/work/hdd/biyc/water_timeseries/nrt_tiles"
   # Markers, logs and per-stage .env files (Delta only - Argo has no
   # equivalent). Must be on a filesystem the login node and the compute nodes
   # share.
   work_dir: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/snakemake_work"
+
+# Snakefile.pmtiles datasets. "test" is this pipeline's own output (above);
+# "main" reads the production Argo pipeline's combined zarr on Taiga (read
+# only) and writes its own drain-breaks table and archives under /work.
+pmtiles:
+  datasets:
+    main:
+      combined_zarr_datasets: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/combined_zarr_datasets"
+      nrt_precomputed_dir: "/work/hdd/biyc/water_timeseries/main/precomputed_nrt"
+      nrt_pmtiles_output_dir: "/work/hdd/biyc/water_timeseries/main/nrt_tiles"
 
 # Node-local disk on the compute node, so temp NetCDF and Dask spill I/O
 # don't go over the shared filesystem. Nothing in it is needed after a step.

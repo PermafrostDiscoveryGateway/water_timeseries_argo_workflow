@@ -20,7 +20,7 @@ Following the [Delta data management guidance](https://docs.ncsa.illinois.edu/sy
 | Path | What goes there |
 | --- | --- |
 | `/projects/biyc/water_timeseries` | This repo checkout and the venv (`venv/`). Shared and persistent. |
-| `/work/hdd/biyc/water_timeseries` | Only the results: `output/` and `combined_zarr_datasets/`. |
+| `/work/hdd/biyc/water_timeseries` | Only the results: `output/`, `combined_zarr_datasets/`, and the PMTiles (`precomputed_nrt/`, `nrt_tiles/`; `main/...` for the production data). |
 | `/tmp/$USER/water_timeseries` (compute node) | Temp NetCDF and Dask spill space. Node-local SSD, wiped after each job. |
 | `/taiga/.../water_timeseries` | The Argo cluster's shared volume, used exactly as the Argo test pipeline uses it: `base_dir`, `input/` (lake vectors), `region_lake_polygons/`, and `test/dynamic_world_data/` (read and written). Delta's own `test/snakemake_work/` (logs, markers, per-stage `.env` files) is here too. |
 | `~/.config/water_timeseries/` | The Google Cloud and Earth Engine credentials (owner-only). |
@@ -234,6 +234,53 @@ Per-step logs, `.env` files and done-markers are in
 picks up where it left off; if snakemake complains the directory is locked, add `--unlock` once,
 then run again without it.
 
+## PMTiles
+
+The pipeline's last step, `create_nrt_pmtiles`, builds the month's `nrt_<month>_drainage.pmtiles`
+from the combined zarr and copies it to `/work/hdd/biyc/water_timeseries/nrt_tiles/`, with the
+running drain-breaks table in `.../precomputed_nrt/`. It runs as a Slurm job (2 cores, 14 GB, up
+to 4 hours) and works in the compute node's `/tmp`. See
+[PMTiles](07-running-the-testing-pipeline.md#pmtiles) for what it does and its settings.
+
+### tippecanoe on Delta
+
+The PMTiles are built with tippecanoe, which `build_env` compiles from source into the venv's
+`bin/` on the login node (see [tippecanoe](07-running-the-testing-pipeline.md#tippecanoe)). The
+first run after this was added rebuilds the venv once to do that; steps that already finished
+aren't re-run.
+
+The build needs a C++ compiler, `make`, `git` and the sqlite3 and zlib development headers. If it
+fails, the end of `build_env.log` (in `snakemake_work/`) shows why, e.g. `sqlite3.h: No such file
+or directory`. In that case, build tippecanoe by hand somewhere you can (e.g. in a conda env or
+from a module with the headers) and put it on your `PATH`, then set
+`environment.tippecanoe_version: ""` in `snakemake/config.delta.yaml` so `build_env` skips it.
+
+### Rebuilding only the PMTiles
+
+[`snakemake/Snakefile.pmtiles`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/snakemake/Snakefile.pmtiles)
+rebuilds the archives from an existing combined zarr without the rest of the pipeline, e.g. after
+the PMTiles code in water-timeseries-v2 changes (details in
+[Building only the PMTiles](07-running-the-testing-pipeline.md#building-only-the-pmtiles)). On
+Delta, each month is a Slurm job; run it from the repo root, in `tmux` for long runs.
+
+The latest month of this pipeline's own output (`test`):
+
+```bash
+snakemake -s snakemake/Snakefile.pmtiles --configfile snakemake/config.delta.yaml --profile snakemake/profiles/delta --forcerun pmtiles_month
+```
+
+The production Argo pipeline's data (`main`), for specific months:
+
+```bash
+snakemake -s snakemake/Snakefile.pmtiles --configfile snakemake/config.delta.yaml --profile snakemake/profiles/delta --forcerun pmtiles_month --config pmtiles_dataset=main pmtiles_months=2026-07,2026-08
+```
+
+`main` reads `water_timeseries/combined_zarr_datasets` on Taiga (read only) and writes its own
+drain-breaks table and archives to `/work/hdd/biyc/water_timeseries/main/`, so it never touches
+the Argo pipeline's published tiles. Add `build_env` to `--forcerun` to pick up new commits on the
+water-timeseries-v2 branch first. Logs and markers are in `snakemake_work/pmtiles_<dataset>/`
+next to the pipeline's.
+
 ## Moving to a new allocation or project space
 
 Everything above is tied to the biyc allocation. When moving to a new one (new project code
@@ -241,7 +288,8 @@ Everything above is tied to the biyc allocation. When moving to a new one (new p
 
 1. **Charge account**: `slurm_account` in `snakemake/profiles/delta/config.yaml`
    (`<new>-delta-cpu`; `accounts` lists the names).
-2. **Paths** in `snakemake/config.delta.yaml`: `output_dir` and `combined_zarr_datasets`
+2. **Paths** in `snakemake/config.delta.yaml`: `output_dir`, `combined_zarr_datasets`,
+   `nrt_precomputed_dir`, `nrt_pmtiles_output_dir` and the `pmtiles.datasets.main` outputs
    (`/work/hdd/<new>/...`) and `environment.path` (`/projects/<new>/water_timeseries/venv`).
    Update the paths in this page and in `snakemake/run_delta.sh`'s usage comment to match.
 3. **Checkout and venv**: clone the repo under `/projects/<new>` (step 1). The venv is rebuilt
@@ -268,6 +316,9 @@ If the Argo cluster's volume moves instead (a new PVC), the Taiga path changes: 
 | `ValueError: max() iterable argument is empty` in a download log | No historical `.nc` file in `dynamic_world_data` ([step 5](#5-check-the-dynamic-world-data)). |
 | `Missing credentials file` from `run_delta.sh` | Copy the credentials ([step 3](#3-copy-the-credentials)). |
 | Snakemake reports `SLURM status is: 'TIMEOUT'` | A step hit its time limit. For a download, raise that region's `download_runtime_hours` ([Time limits](#time-limits)) and re-run; finished steps and downloaded tiles are kept. |
+| `build_env` fails while building tippecanoe | Missing build tools or headers on the login node; see [tippecanoe on Delta](#tippecanoe-on-delta). |
+| `create_nrt_pmtiles` fails with `tippecanoe is not installed or not on PATH` | The venv was built without tippecanoe (`environment.tippecanoe_version: ""`) and none is on `PATH`. |
+| `create_nrt_pmtiles` fails with `no drainage_confidence column` | The month was processed with an older water-timeseries library; reprocess it and rebuild the combined zarr. |
 | Jobs pending with reason `QOSGrpBillingMinutes` | The allocation is out of SUs (see below). |
 | Snakemake says the directory is locked | A previous run was interrupted: run the same command once with `--unlock`, then again without it. |
 
