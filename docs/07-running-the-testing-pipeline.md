@@ -96,6 +96,50 @@ existing interpreter (`python:`) instead.
 Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
 that directory (or use `--forcerun`) to re-run a month.
 
+### Credentials
+
+By default every step uses your own logins (`gcloud auth application-default login` and
+`earthengine authenticate`). To use specific credential files instead, the way the Argo pods
+mount the `personal-gcp-creds` and `earth-engine-creds` secrets (see
+[4. Setting up secrets](04-setting-up-secrets.md)), set them under `credentials:` in the config:
+
+```yaml
+credentials:
+  gcloud_adc: "~/.config/water_timeseries/application_default_credentials.json"
+  earthengine: "~/.config/water_timeseries/earthengine_credentials"
+```
+
+For each step, `gcloud_adc` becomes `GOOGLE_APPLICATION_CREDENTIALS`. `earthengine` is copied
+into a private per-step home directory (owner-only, under `base_dir/temp_netcdf`) and `HOME`,
+`EARTHENGINE_TOKEN` and `EE_CONFIG_DIR` point at that copy, exactly as in the pod script. A step
+fails if a configured file doesn't exist. Paths may use `~` and `$VARS`.
+
+#### Copying the cluster's credentials
+
+To run with the same accounts as the Argo pipeline, copy the cluster secrets to the paths above.
+Run these on a machine where `kubectl` can reach the cluster (if it hangs, whitelist your IP
+first, see [3. Whitelist & port forward](03-whitelist-and-port-forward.md)). Each command decodes
+one secret into an owner-only file:
+
+```bash
+(umask 077; mkdir -p ~/.config/water_timeseries && kubectl -n argo get secret personal-gcp-creds -o jsonpath='{.data.key\.json}' | base64 -d > ~/.config/water_timeseries/application_default_credentials.json)
+```
+
+```bash
+(umask 077; mkdir -p ~/.config/water_timeseries && kubectl -n argo get secret earth-engine-creds -o jsonpath='{.data.credentials}' | base64 -d > ~/.config/water_timeseries/earthengine_credentials)
+```
+
+Check that both files exist, are non-empty and are readable only by you (`-rw-------`):
+
+```bash
+ls -l ~/.config/water_timeseries/
+```
+
+Both secrets hold a user's login (a refresh token), not a service account, so runs with these
+files act as whoever created the secrets. They stop working if that login is revoked or expires.
+When the secrets are recreated (see [4. Setting up secrets](04-setting-up-secrets.md)), copy them
+again.
+
 ## Prerequisites
 
 Before running the test pipeline, make sure you've completed:

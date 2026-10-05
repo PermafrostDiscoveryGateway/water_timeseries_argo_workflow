@@ -26,9 +26,14 @@
 # Usage (from the repo root):
 #   snakemake -s snakemake/Snakefile --cores 2
 #   snakemake -s snakemake/Snakefile --cores 2 --config target_date=2025-07
+#
+# Each rule's threads match the CPU limits of its Argo pod in
+# nrt-pipeline-templates-test.yaml; with --cores N, snakemake runs as many
+# steps at once as fit in N cores.
 
 import json
 import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,7 +47,8 @@ EE = config["earth_engine"]
 
 
 def _abs(p):
-    p = Path(p)
+    # $VARS and ~ are expanded, e.g. ~/.config/... for credentials.
+    p = Path(os.path.expandvars(os.path.expanduser(str(p))))
     return str(p if p.is_absolute() else REPO_ROOT / p)
 
 
@@ -60,6 +66,12 @@ else:
 
 
 PATHS = {k: _abs(v) for k, v in config["paths"].items()}
+# TMPDIR / Dask spill space, under base_dir like the Argo pods.
+TEMP_DIR = os.path.join(PATHS["base_dir"], "temp_netcdf")
+DASK_DIR = os.path.join(PATHS["base_dir"], "dask_work_space")
+# Explicit credential files, like the Argo pod's secret mounts. Empty means
+# the user's own gcloud / earthengine login is used as-is.
+CREDS = {k: _abs(v) if v else "" for k, v in (config.get("credentials") or {}).items()}
 WORK = os.path.join(PATHS["work_dir"], TARGET_DATE)
 MARK = os.path.join(WORK, "markers")
 LOGS = os.path.join(WORK, "logs")
@@ -97,14 +109,42 @@ def write_env(stage, region=None, extra=None):
     return str(env_path)
 
 
+def credential_env(stage, region=None):
+    """Credential env vars for one step, set up like the Argo pods do."""
+    env = {}
+    adc = CREDS.get("gcloud_adc")
+    if adc:
+        if not os.path.isfile(adc):
+            raise FileNotFoundError(f"credentials.gcloud_adc not found: {adc}")
+        env["GOOGLE_APPLICATION_CREDENTIALS"] = adc
+    ee_creds = CREDS.get("earthengine")
+    if ee_creds:
+        if not os.path.isfile(ee_creds):
+            raise FileNotFoundError(f"credentials.earthengine not found: {ee_creds}")
+        # Same as the pods: a private copy under a throwaway HOME, so the
+        # earthengine client finds it at ~/.config/earthengine/credentials and
+        # can refresh it without touching the original. Kept owner-only, since
+        # temp_dir may be on a shared node's /tmp.
+        home = Path(TEMP_DIR) / "home" / f"{stage}_{region or 'all'}"
+        ee_dir = home / ".config" / "earthengine"
+        ee_dir.mkdir(parents=True, exist_ok=True)
+        for d in (Path(TEMP_DIR) / "home", home, home / ".config", ee_dir):
+            d.chmod(0o700)
+        token = ee_dir / "credentials"
+        shutil.copyfile(ee_creds, token)
+        token.chmod(0o600)
+        env.update({"HOME": str(home), "EARTHENGINE_TOKEN": str(token),
+                    "EE_CONFIG_DIR": str(ee_dir)})
+    return env
+
+
 def run_stage(stage, script, region=None, extra=None):
     """Run one near_real_time/ script once; return its exit code (never raises)."""
     env_path = write_env(stage, region, extra)
     log_path = Path(LOGS) / (f"{stage}_{region}.log" if region else f"{stage}.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    temp_dir = os.path.join(PATHS["base_dir"], "temp_netcdf")
-    dask_dir = os.path.join(PATHS["base_dir"], "dask_work_space")
+    temp_dir, dask_dir = TEMP_DIR, DASK_DIR
     for d in (temp_dir, dask_dir, PATHS["output_dir"], PATHS["dynamic_world_data"]):
         os.makedirs(d, exist_ok=True)
 
@@ -125,6 +165,7 @@ def run_stage(stage, script, region=None, extra=None):
         "DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE": "0.95",
         "DASK_SCHEDULER": "threads",
     })
+    proc_env.update(credential_env(stage, region))
 
     cmd = [PYTHON, "-u", str(REPO_ROOT / "near_real_time" / script), env_path]
     with open(log_path, "a") as log:
@@ -171,7 +212,6 @@ if ENV_CFG["build"]:
             os.path.join(PATHS["work_dir"], "build_env.log"),
         run:
             import shlex
-            import shutil
 
             uv = ENV_CFG["uv"]
             # "-e ../water-timeseries-v2" is flags + a path; "pkg @ git+..." is
@@ -213,6 +253,7 @@ rule download:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "download.done"),
+    threads: 1
     retries: 0
     run:
         download = run_stage("download", "download_region.py", wildcards.region)
@@ -231,6 +272,7 @@ rule merge_and_backfill:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "merge_and_backfill.done"),
+    threads: 2
     retries: 0
     run:
         status = {"merge": run_stage("merge_region", "merge_region.py", wildcards.region)}
@@ -249,6 +291,7 @@ rule force_merge:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "merge.done"),
+    threads: 2
     run:
         code = run_stage("merge_region_force", "merge_region.py", wildcards.region,
                          extra={"force_merge": "true"})
@@ -263,6 +306,7 @@ rule process:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "process.done"),
+    threads: 4
     run:
         params = config["regions"][wildcards.region] or {}
         code = run_stage("process", "process_NRT.py", wildcards.region, extra={
@@ -281,6 +325,7 @@ rule create_historical_zarr_archive:
         ENV_INPUT,
     output:
         os.path.join(MARK, "create_historical_zarr_archive.done"),
+    threads: 2
     run:
         code = run_stage("create_historical_zarr_archive",
                          "combine_results_into_zarr_historical_archive.py",
@@ -312,6 +357,7 @@ rule create_new_historical_file:
         ENV_INPUT,
     output:
         os.path.join(MARK, "create_new_historical_file.done"),
+    threads: 1
     run:
         code = run_stage("create_new_historical_file", "create_new_historical_file.py",
                          extra={"merge_wait_minutes": config["merge_wait_minutes"]})
