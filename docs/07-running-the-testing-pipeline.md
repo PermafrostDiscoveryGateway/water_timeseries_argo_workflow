@@ -85,16 +85,81 @@ snakemake -s snakemake/Snakefile --cores 2 --config target_date=2025-08
 - The day-15+ `download-region-last-attempts` step is skipped, so each region always gets the
   forced best-effort merge before processing.
 
+Its last step, `create_nrt_pmtiles`, builds the month's PMTiles archive (see
+[PMTiles](#pmtiles) below).
+
 The first run builds the Python environment the scripts run in (`snakemake/.venv`), with uv, the
 same way the Docker image is built: first water-timeseries-v2 (by default the
 `ncsa-water-timeseries` branch the base image is built from), then this repo's extra
 dependencies from `snakemake/envs/requirements-extra.txt` (keep that in sync with the
-`Dockerfile`). It's rebuilt only when `environment` settings in the config or that file change, and
+`Dockerfile`), and finally tippecanoe, built from source into the environment's `bin/` (see
+[PMTiles](#pmtiles)). It's rebuilt only when `environment` settings in the config or that file change, and
 a rebuild doesn't re-run steps that already finished. Set `environment.build: false` to use an
 existing interpreter (`python:`) instead.
 
 Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
 that directory (or use `--forcerun`) to re-run a month.
+
+### PMTiles
+
+`create_nrt_pmtiles` runs `near_real_time/create_nrt_pmtiles.py` after
+`create_historical_zarr_archive`, with the same settings as the Argo step on branch 56
+(`pmtiles:` in `config.yaml`). From the combined zarr it:
+
+1. takes this run's month (`target_date`) and adds that month's drained lakes to the running
+   drain-breaks table in `paths.nrt_precomputed_dir` (`data/precomputed_nrt/`), and
+2. builds `nrt_<month>_drainage.pmtiles` and copies it to `paths.nrt_pmtiles_output_dir`
+   (`data/nrt_tiles/`).
+
+A month whose archive already exists is skipped; set `pmtiles.overwrite: true` to rebuild it.
+Tippecanoe works in `<base_dir>/temp_netcdf/pmtiles/`, which is removed when the step ends.
+
+#### tippecanoe
+
+The PMTiles are built with [tippecanoe](https://github.com/felt/tippecanoe), a C++ program, not a
+Python package. The environment build compiles the release in `environment.tippecanoe_version`
+(default `2.79.0`) and installs `tippecanoe` and `tile-join` into the environment's `bin/`, which
+every step has on its `PATH`. That needs `git`, `make`, a C++ compiler and the sqlite3 and zlib
+development headers; on a Mac, the Xcode command line tools are enough. The build output is in
+`data/snakemake_work/build_env.log`.
+
+To use a tippecanoe you already have instead (e.g. `brew install tippecanoe`), set
+`environment.tippecanoe_version: ""`.
+
+#### Building only the PMTiles
+
+[`snakemake/Snakefile.pmtiles`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/snakemake/Snakefile.pmtiles)
+builds the PMTiles from a combined zarr that already exists, without running the rest of the
+pipeline. Use it to rebuild the archives when the PMTiles code in water-timeseries-v2 changes.
+It uses the same config and environment as the pipeline.
+
+Rebuild the latest month of this pipeline's own output (`data/combined_zarr_datasets`):
+
+```bash
+snakemake -s snakemake/Snakefile.pmtiles --cores 2 --forcerun pmtiles_month
+```
+
+Rebuild specific months, in order, from another dataset:
+
+```bash
+snakemake -s snakemake/Snakefile.pmtiles --cores 2 --forcerun pmtiles_month --config pmtiles_dataset=main pmtiles_months=2026-07,2026-08
+```
+
+- `pmtiles_dataset` picks an entry of `pmtiles.datasets` in `config.yaml`. `test` is this
+  pipeline's own output. `main` is meant for the production Argo pipeline's combined zarr: copy
+  `/data/water_timeseries/combined_zarr_datasets` off the cluster (e.g. `kubectl cp` from a
+  `storage_setup/python-inspector.yaml` pod) and set its `combined_zarr_datasets`. Its drain-breaks
+  table and archives go to `data/main/`, apart from the test ones.
+- `pmtiles_months` is a comma-separated list of `YYYY-MM` months. They're built one after
+  another, since each seeds its drain-breaks table from the previous one. The default is the
+  latest month in the zarr.
+- Every month is rebuilt, even if its archive exists. `--forcerun pmtiles_month` makes
+  Snakemake run them again after an earlier run finished them.
+- To pick up new commits on the water-timeseries-v2 branch in `environment.base_package`, add
+  `build_env` to `--forcerun` (`--forcerun build_env pmtiles_month`). That rebuilds the whole
+  environment, including tippecanoe.
+
+Its logs and markers go to `data/snakemake_work/pmtiles_<dataset>/`.
 
 ### Credentials
 

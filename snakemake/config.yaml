@@ -31,6 +31,10 @@ environment:
   #   base_package: "-e ../water-timeseries-v2"
   base_package: "water-timeseries @ git+https://github.com/PermafrostDiscoveryGateway/water-timeseries-v2.git@ncsa-water-timeseries"
   extra_requirements: "snakemake/envs/requirements-extra.txt"
+  # tippecanoe release (https://github.com/felt/tippecanoe) built into the
+  # env's bin/ for create_nrt_pmtiles. "" = skip it and use a tippecanoe
+  # already on PATH (e.g. `brew install tippecanoe`).
+  tippecanoe_version: "2.79.0"
 
 # Only used when environment.build is false.
 python: "../water-timeseries-v2/.venv/bin/python"
@@ -45,6 +49,10 @@ paths:
   region_lake_polygons_dir: "data/region_lake_polygons"
   output_dir: "data/output_test"
   combined_zarr_datasets: "data/combined_zarr_datasets"
+  # create_nrt_pmtiles: the running drain-breaks table and the published
+  # nrt_<month>_drainage.pmtiles archives.
+  nrt_precomputed_dir: "data/precomputed_nrt"
+  nrt_pmtiles_output_dir: "data/nrt_tiles"
   # Snakemake's own bookkeeping: per-stage .env files, logs, done-markers.
   work_dir: "data/snakemake_work"
 
@@ -57,6 +65,27 @@ credentials:
   # Copied to a private per-step HOME/.config/earthengine/credentials
   # -> EARTHENGINE_TOKEN, EE_CONFIG_DIR, HOME (secret earth-engine-creds, key credentials)
   earthengine: ""
+
+# create_nrt_pmtiles settings - the same .env values as the Argo step
+# (nrt-pipeline-templates-test.yaml on branch 56).
+pmtiles:
+  drain_threshold: -0.25
+  poly_max_zoom: 14
+  drain_breaks_keep: 5
+  # Pipeline step only: rebuild the month even if its archive already exists
+  # (Argo: OVERWRITE=False). Snakefile.pmtiles always rebuilds.
+  overwrite: false
+  # Inputs/outputs Snakefile.pmtiles can build from (--config pmtiles_dataset=...).
+  # "test" is this pipeline's own output (the paths above). Any of
+  # combined_zarr_datasets / nrt_precomputed_dir / nrt_pmtiles_output_dir set
+  # here replaces the matching path.
+  datasets:
+    test: {}
+    main:
+      # E.g. a copy of the Argo pipeline's /data/water_timeseries/combined_zarr_datasets.
+      combined_zarr_datasets: ""
+      nrt_precomputed_dir: "data/main/precomputed_nrt"
+      nrt_pmtiles_output_dir: "data/main/nrt_tiles"
 
 # Same GCP / Earth Engine settings the Argo pods export. Local Earth Engine
 # auth (`earthengine authenticate`) is used as-is.

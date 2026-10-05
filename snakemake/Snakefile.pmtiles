@@ -1,0 +1,67 @@
+# Build only the NRT PMTiles (nrt_<month>_drainage.pmtiles), from a combined
+# breakpoint zarr that already exists - no download/merge/process. For
+# rebuilding the archives as water_timeseries' PMTiles code changes.
+#
+# Usage (from the repo root):
+#   snakemake -s snakemake/Snakefile.pmtiles --cores 2 --forcerun pmtiles_month
+#   snakemake -s snakemake/Snakefile.pmtiles --cores 2 --forcerun pmtiles_month \
+#       --config pmtiles_dataset=main pmtiles_months=2026-07,2026-08
+#
+#   pmtiles_dataset  an entry of `pmtiles.datasets` in config.yaml (default
+#                    test = the pipeline's own combined zarr and outputs)
+#   pmtiles_months   comma-separated YYYY-MM months, built in order; default
+#                    is the latest month in the zarr
+#
+# Every month is rebuilt (OVERWRITE=True), even if its archive exists.
+# --forcerun pmtiles_month makes snakemake run them again even though they
+# finished before; add --forcerun build_env too to pick up new commits on the
+# water-timeseries-v2 branch in environment.base_package.
+#
+# Months run one after another, never at once: each run seeds its
+# drain-breaks table from the newest one in nrt_precomputed_dir.
+#
+# Paths, environment and credentials come from the same config as the
+# pipeline (config.yaml, plus --configfile ... for other setups); markers and
+# logs go to <work_dir>/pmtiles_<dataset>/.
+
+import os
+
+DATASET = str(config.get("pmtiles_dataset") or "test")
+config.setdefault("run_name", f"pmtiles_{DATASET}")
+
+include: "Snakefile"
+
+_months = config.get("pmtiles_months") or []
+if isinstance(_months, str):
+    _months = _months.split(",")
+MONTHS = [str(m).strip() for m in _months if str(m).strip()] or ["latest"]
+PM_DATASET = pmtiles_dataset(DATASET)
+
+
+rule pmtiles:
+    default_target: True
+    input:
+        os.path.join(MARK, f"pmtiles_{MONTHS[-1]}.done"),
+
+
+def _previous_month(wildcards):
+    i = MONTHS.index(wildcards.month)
+    return [os.path.join(MARK, f"pmtiles_{MONTHS[i - 1]}.done")] if i else []
+
+
+rule pmtiles_month:
+    input:
+        _previous_month,
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "pmtiles_{month}.done"),
+    wildcard_constraints:
+        month="|".join(MONTHS),
+    threads: 2
+    run:
+        month = "" if wildcards.month == "latest" else wildcards.month
+        code = run_pmtiles(f"pmtiles_{DATASET}_{wildcards.month}", PM_DATASET, month,
+                           overwrite=True)
+        if code != 0:
+            raise RuntimeError(f"create_nrt_pmtiles failed for {wildcards.month} (exit {code})")
+        mark_done(output[0], exit_code=code, dataset=DATASET, **PM_DATASET)

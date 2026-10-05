@@ -11,6 +11,8 @@
 # Then, across all regions:
 #   wait-for-region-merges -> create-new-historical-file
 #   create-historical-zarr-archive (after every region's process)
+#     -> create-nrt-pmtiles (the month's drained-lakes PMTiles archive; from
+#        branch 56's Argo templates)
 #
 # Differences from the Argo test pipeline:
 #   - Every download step (download-region, download-missing-region fallback,
@@ -21,7 +23,10 @@
 #
 # The Python environment for the scripts is built by the build_env rule (uv),
 # the same way the Docker image is: water-timeseries-v2 first, then this
-# repo's extras - see `environment` in config.yaml.
+# repo's extras - see `environment` in config.yaml. build_env also builds
+# tippecanoe (a C++ program, not a Python package) into the env's bin/.
+#
+# Snakefile.pmtiles builds only the PMTiles, from an existing combined zarr.
 #
 # Usage (from the repo root):
 #   snakemake -s snakemake/Snakefile --cores 2
@@ -72,7 +77,9 @@ DASK_DIR = os.path.join(PATHS["base_dir"], "dask_work_space")
 # Explicit credential files, like the Argo pod's secret mounts. Empty means
 # the user's own gcloud / earthengine login is used as-is.
 CREDS = {k: _abs(v) if v else "" for k, v in (config.get("credentials") or {}).items()}
-WORK = os.path.join(PATHS["work_dir"], TARGET_DATE)
+# run_name: Snakefile.pmtiles keeps its markers and logs apart from the
+# pipeline's per-month ones.
+WORK = os.path.join(PATHS["work_dir"], str(config.get("run_name") or TARGET_DATE))
 MARK = os.path.join(WORK, "markers")
 LOGS = os.path.join(WORK, "logs")
 PIPELINE_LOG = os.path.join(WORK, "nrt_pipeline_log.jsonl")
@@ -138,8 +145,11 @@ def credential_env(stage, region=None):
     return env
 
 
-def run_stage(stage, script, region=None, extra=None):
-    """Run one near_real_time/ script once; return its exit code (never raises)."""
+def run_stage(stage, script, region=None, extra=None, cwd=None):
+    """Run one near_real_time/ script once; return its exit code (never raises).
+
+    cwd defaults to the repo root; the scripts find their imports via PYTHONPATH.
+    """
     env_path = write_env(stage, region, extra)
     log_path = Path(LOGS) / (f"{stage}_{region}.log" if region else f"{stage}.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,12 +176,16 @@ def run_stage(stage, script, region=None, extra=None):
         "DASK_SCHEDULER": "threads",
     })
     proc_env.update(credential_env(stage, region))
+    # Tools installed next to the interpreter (tippecanoe, tile-join) are
+    # found on PATH, like the Docker image's /app/.venv/bin.
+    if os.sep in PYTHON:
+        proc_env["PATH"] = os.pathsep.join([os.path.dirname(PYTHON), os.environ.get("PATH", "")])
 
     cmd = [PYTHON, "-u", str(REPO_ROOT / "near_real_time" / script), env_path]
     with open(log_path, "a") as log:
         log.write(f"=== {stage} / {region or '-'} / {TARGET_DATE} - {datetime.now()} ===\n")
         log.flush()
-        exit_code = subprocess.run(cmd, cwd=REPO_ROOT, env=proc_env,
+        exit_code = subprocess.run(cmd, cwd=cwd or REPO_ROOT, env=proc_env,
                                    stdout=log, stderr=subprocess.STDOUT).returncode
         log.write(f"=== {stage} / {region or '-'} completed with exit code: {exit_code} ===\n")
 
@@ -184,6 +198,52 @@ def run_stage(stage, script, region=None, extra=None):
     return exit_code
 
 
+PM = config["pmtiles"]
+
+
+def pmtiles_dataset(name):
+    """Input zarr and output dirs for one entry of `pmtiles.datasets`.
+
+    "test" is this pipeline's own output (paths: combined_zarr_datasets,
+    nrt_precomputed_dir, nrt_pmtiles_output_dir); any key a dataset sets
+    replaces the matching path.
+    """
+    if name not in PM["datasets"]:
+        raise ValueError(f"pmtiles dataset {name!r} not in config (have: {', '.join(PM['datasets'])})")
+    overrides = {k: v for k, v in (PM["datasets"][name] or {}).items() if v}
+    if name != "test" and not overrides.get("combined_zarr_datasets"):
+        # Don't silently fall back to this pipeline's own zarr.
+        raise ValueError(f"pmtiles dataset {name!r} has no combined_zarr_datasets - set it in the config")
+    ds = {k: PATHS[k] for k in ("combined_zarr_datasets", "nrt_precomputed_dir", "nrt_pmtiles_output_dir")}
+    ds.update({k: _abs(v) for k, v in overrides.items()})
+    return ds
+
+
+def run_pmtiles(stage, dataset, month, overwrite):
+    """Run create_nrt_pmtiles.py for one month ("" = latest in the zarr) of one dataset.
+
+    Tippecanoe builds in node-local scratch: the script's nrt_pmtiles_build_dir
+    and, since water_timeseries.utils.pmtiles_build puts its temp dir at
+    ./downloads/tippecanoe_tmp, the working directory too. Only the finished
+    archive is copied to nrt_pmtiles_output_dir.
+    """
+    scratch = os.path.join(TEMP_DIR, "pmtiles", stage)
+    shutil.rmtree(scratch, ignore_errors=True)
+    os.makedirs(scratch)
+    try:
+        return run_stage(stage, "create_nrt_pmtiles.py", cwd=scratch, extra={
+            **dataset,
+            "nrt_pmtiles_build_dir": os.path.join(scratch, "build"),
+            "nrt_pmtiles_month": month,
+            "drain_threshold": PM["drain_threshold"],
+            "nrt_poly_max_zoom": PM["poly_max_zoom"],
+            "nrt_drain_breaks_keep": PM["drain_breaks_keep"],
+            "OVERWRITE": str(bool(overwrite)),
+        })
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def mark_done(path, **status):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps({"target_date": TARGET_DATE, **status}, indent=2) + "\n")
@@ -191,7 +251,7 @@ def mark_done(path, **status):
 
 rule all:
     input:
-        os.path.join(MARK, "create_historical_zarr_archive.done"),
+        os.path.join(MARK, "create_nrt_pmtiles.done"),
         os.path.join(MARK, "create_new_historical_file.done"),
 
 
@@ -208,10 +268,12 @@ if ENV_CFG["build"]:
         params:
             base=ENV_CFG["base_package"],
             python_version=str(ENV_CFG["python_version"]),
+            tippecanoe=str(ENV_CFG.get("tippecanoe_version") or ""),
         log:
             os.path.join(PATHS["work_dir"], "build_env.log"),
         run:
             import shlex
+            import tempfile
 
             uv = ENV_CFG["uv"]
             # "-e ../water-timeseries-v2" is flags + a path; "pkg @ git+..." is
@@ -231,6 +293,22 @@ if ENV_CFG["build"]:
                     f.write(f"$ {shlex.join(cmd)}\n")
                     f.flush()
                     subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, check=True)
+                if params.tippecanoe:
+                    # tippecanoe + tile-join for create_nrt_pmtiles, built from
+                    # source into the env's bin/ (run_stage puts it on PATH).
+                    # Needs git, make, a C++ compiler and the sqlite3 and zlib
+                    # development headers.
+                    with tempfile.TemporaryDirectory() as src:
+                        for cmd, cwd in [
+                            (["git", "clone", "--depth", "1", "--branch", params.tippecanoe,
+                              "https://github.com/felt/tippecanoe.git", src], REPO_ROOT),
+                            (["make", "-j4"], src),
+                            (["make", "install", f"PREFIX={ENV_DIR}"], src),
+                            ([os.path.join(ENV_DIR, "bin", "tippecanoe"), "--version"], src),
+                        ]:
+                            f.write(f"$ {shlex.join(cmd)}\n")
+                            f.flush()
+                            subprocess.run(cmd, cwd=cwd, stdout=f, stderr=subprocess.STDOUT, check=True)
                 f.write("$ pip freeze\n")
                 freeze = subprocess.run([uv, "pip", "freeze", "--python", PYTHON],
                                         capture_output=True, text=True, check=True).stdout
@@ -239,6 +317,7 @@ if ENV_CFG["build"]:
                 "python_version": params.python_version,
                 "base_package": params.base,
                 "extra_requirements": input.extras,
+                "tippecanoe_version": params.tippecanoe,
                 "built": datetime.now().isoformat(timespec="seconds"),
                 "packages": freeze.splitlines(),
             }, indent=2) + "\n")
@@ -332,6 +411,24 @@ rule create_historical_zarr_archive:
                          extra={"combine_all": "True"})
         if code != 0:
             raise RuntimeError(f"create_historical_zarr_archive failed (exit {code})")
+        mark_done(output[0], exit_code=code)
+
+
+# create-nrt-pmtiles: the month's nrt_<month>_drainage.pmtiles, built from the
+# combined zarr create_historical_zarr_archive just wrote. Same .env settings
+# as the Argo step; see run_pmtiles() and `pmtiles` in config.yaml.
+rule create_nrt_pmtiles:
+    input:
+        os.path.join(MARK, "create_historical_zarr_archive.done"),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "create_nrt_pmtiles.done"),
+    threads: 2
+    run:
+        code = run_pmtiles("create_nrt_pmtiles", pmtiles_dataset("test"), TARGET_DATE,
+                           overwrite=PM["overwrite"])
+        if code != 0:
+            raise RuntimeError(f"create_nrt_pmtiles failed (exit {code})")
         mark_done(output[0], exit_code=code)
 
 
