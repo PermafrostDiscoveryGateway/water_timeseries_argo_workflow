@@ -20,10 +20,14 @@ Following the [Delta data management guidance](https://docs.ncsa.illinois.edu/sy
 | Path | What goes there |
 | --- | --- |
 | `/projects/biyc/water_timeseries` | This repo checkout and the venv (`venv/`). Shared and persistent. |
-| `/work/hdd/biyc/water_timeseries` | Everything jobs read and write: `dynamic_world_data/`, `output/`, `combined_zarr_datasets/`, `snakemake_work/` (logs, markers, per-stage `.env` files). |
+| `/work/hdd/biyc/water_timeseries` | Only the results: `output/` and `combined_zarr_datasets/`. |
 | `/tmp/$USER/water_timeseries` (compute node) | Temp NetCDF and Dask spill space. Node-local SSD, wiped after each job. |
-| `/taiga/.../water_timeseries` | The Argo cluster's shared volume. Only the read-only lake vectors are read from it. |
+| `/taiga/.../water_timeseries` | The Argo cluster's shared volume, used exactly as the Argo test pipeline uses it: `base_dir`, `input/` (lake vectors), `region_lake_polygons/`, and `test/dynamic_world_data/` (read and written). Delta's own `test/snakemake_work/` (logs, markers, per-stage `.env` files) is here too. |
 | `~/.config/water_timeseries/` | The Google Cloud and Earth Engine credentials (owner-only). |
+
+`/taiga/...` is the full path in [`snakemake/config.delta.yaml`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/snakemake/config.delta.yaml).
+Because Delta and the Argo test pipeline share the Taiga directories, don't run both at the same
+time.
 
 Both `/projects/biyc` and `/work/hdd/biyc` are shared by everyone on the biyc allocation. Keep
 them group-writable (`chmod -R g+rwX`, setgid on directories) so anyone on the allocation can run
@@ -78,18 +82,27 @@ ls -l ~/.config/water_timeseries/
 
 Each person who runs the pipeline needs their own copy, since the paths are under `~`.
 
-### 4. Seed the input data
+### 4. Check the Dynamic World data
 
-`dynamic_world_data` must contain the historical `lakes_dw_*.nc` file(s) before the first run.
-Link them from the Argo test data:
-
-```bash
-mkdir -p /work/hdd/biyc/water_timeseries/dynamic_world_data
-```
+`dynamic_world_data` is the Argo test pipeline's own directory on Taiga,
+`/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/dynamic_world_data`, so Delta and the Argo test pipeline use the same files. It must
+contain the historical NetCDF file (`lakes_dw_*.nc` or `dynamic_world_historical_*.nc`) before the
+first run:
 
 ```bash
-ln -s /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/dynamic_world_data/*.nc /work/hdd/biyc/water_timeseries/dynamic_world_data/
+ls -la /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/dynamic_world_data/
 ```
+
+To use the production historical file for testing, copy it in (`-p` keeps its timestamps; the
+scripts use the newest `.nc` file as the baseline):
+
+```bash
+cp -p /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/dynamic_world_data/dynamic_world_historical_2026-07.nc /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/dynamic_world_data/
+```
+
+The pipeline also writes `downloads/`, `merge/` and the new historical file into this directory,
+so you need write access to it, and a Delta run and an Argo test run shouldn't run at the same
+time.
 
 The per-region lake polygons are read from the Argo volume
 (`region_lake_polygons_dir` in `config.delta.yaml`), so the
@@ -152,7 +165,7 @@ Detach with `Ctrl-b d`. To reattach later, ssh to the same login node (e.g.
 `ssh dt-login03.delta.ncsa.illinois.edu`) and run `tmux attach -t wts`.
 
 The first run builds the venv on the login node (`build_env`), which takes a few minutes before
-any Slurm jobs appear. Its log is `/work/hdd/biyc/water_timeseries/snakemake_work/build_env.log`.
+any Slurm jobs appear. Its log is `/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/snakemake_work/build_env.log`.
 
 #### Following jobs
 
@@ -161,7 +174,7 @@ squeue -u $USER
 ```
 
 Per-step logs, `.env` files and done-markers are in
-`/work/hdd/biyc/water_timeseries/snakemake_work/<target_date>/`. Delete that directory (or pass
+`/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/snakemake_work/<target_date>/`. Delete that directory (or pass
 `--forcerun <rule>`) to re-run a month. If a run is interrupted, re-running the same command
 picks up where it left off; if snakemake complains the directory is locked, add `--unlock` once,
 then run again without it.

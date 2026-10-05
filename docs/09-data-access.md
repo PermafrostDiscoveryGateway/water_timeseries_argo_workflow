@@ -233,9 +233,10 @@ so `/data/water_timeseries` in the pods is
 `/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries`
 on Delta. No `kubectl` is needed: `ls`, `cp` and `rsync` it directly from a login node.
 
-This is the live state of the Argo pipeline. Treat it as **read-only**: copy what you need into
-your own space (e.g. `/work/hdd/biyc`) rather than writing into it. The Delta snakemake config
-reads only the lake vectors from it (see [10. Running on Delta](10-running-on-delta.md)).
+This is the live state of the Argo pipeline. Copy what you need into your own space (e.g.
+`/work/hdd/biyc`) rather than writing into it. The one exception is the Delta snakemake run: it
+uses the same Taiga directories as the Argo test pipeline, and writes only its results to
+`/work/hdd/biyc` (see [10. Running on Delta](10-running-on-delta.md)).
 
 ## Google Cloud Storage
 

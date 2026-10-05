@@ -8,33 +8,36 @@
 # The Argo workflows' shared PVC (mounted at /data in the pods) lives on
 # Taiga, so /data/water_timeseries in the Argo templates is:
 #   /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries
-# That directory is live Argo state, so only read-only inputs (the lake
-# vectors) are taken from it.
+# Delta uses the same directories as the Argo test pipeline
+# (nrt-pipeline-templates-test.yaml), so both implementations share one copy
+# of the inputs and the Dynamic World data. Only the results - output_dir and
+# combined_zarr_datasets - go to the biyc allocation's /work/hdd space.
 #
-# Layout on Delta (see the Delta data management docs):
-#   /projects/biyc/water_timeseries   shared, persistent: this repo checkout
-#                                     and the venv
-#   /work/hdd/biyc/water_timeseries   everything jobs read and write (Delta's
-#                                     scratch replacement, larger quota)
-# Both are shared by the biyc group; keep them group-writable (g+rwX, setgid
-# on directories) so anyone on the allocation can run the pipeline.
+# Layout on Delta:
+#   /projects/biyc/water_timeseries   this repo checkout and the venv
+#   <taiga>/water_timeseries          base_dir, inputs, region polygons
+#   <taiga>/water_timeseries/test     dynamic_world_data, snakemake_work
+#   /work/hdd/biyc/water_timeseries   output, combined_zarr_datasets
+# Keep the /projects and /work directories group-writable (g+rwX, setgid on
+# directories) so anyone on the allocation can run the pipeline.
 #
-# dynamic_world_data is both input and output: download/merge/process expect
-# the historical lakes_dw_*.nc file(s) in it, and write downloads/, merge/ and
-# the new historical file next to them. Seed it once from the Argo test data:
-#   mkdir -p /work/hdd/biyc/water_timeseries/dynamic_world_data
-#   ln -s <taiga water_timeseries>/test/dynamic_world_data/*.nc \
-#         /work/hdd/biyc/water_timeseries/dynamic_world_data/
+# dynamic_world_data and base_dir are read *and written*: download/merge
+# write downloads/, merge/ and the new historical file into
+# dynamic_world_data, next to the historical lakes_dw_*.nc /
+# dynamic_world_historical_*.nc file(s) they read. So the Delta user needs
+# write access there, and a Delta run and an Argo test run must not run at
+# the same time.
 paths:
-  base_dir: "/work/hdd/biyc/water_timeseries"
-  dynamic_world_data: "/work/hdd/biyc/water_timeseries/dynamic_world_data"
+  base_dir: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries"
+  dynamic_world_data: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/dynamic_world_data"
   vector_lake_file: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
   region_lake_polygons_dir: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/region_lake_polygons"
   output_dir: "/work/hdd/biyc/water_timeseries/output"
   combined_zarr_datasets: "/work/hdd/biyc/water_timeseries/combined_zarr_datasets"
-  # Markers, logs and per-stage .env files. Must be on a filesystem the login
-  # node and the compute nodes share.
-  work_dir: "/work/hdd/biyc/water_timeseries/snakemake_work"
+  # Markers, logs and per-stage .env files (Delta only - Argo has no
+  # equivalent). Must be on a filesystem the login node and the compute nodes
+  # share.
+  work_dir: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/snakemake_work"
 
 # Node-local disk on the compute node, so temp NetCDF and Dask spill I/O
 # don't go over the shared filesystem. Nothing in it is needed after a step.
