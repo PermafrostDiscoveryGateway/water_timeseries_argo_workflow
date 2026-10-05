@@ -10,8 +10,8 @@ This script:
    and merges them into the running drain-breaks table, the table
    ``build_pmtiles_nrt_monthly`` reads to know which lakes drained per month.
    Each run writes its own ``nrt_monthly_drain_breaks.run_on_<YYYYMMDD_HHMMSS>.parquet``
-   (UTC start time), seeded from the most recent earlier table, so every
-   run's table is kept and can be traced back to when it was written.
+   (UTC start time), seeded from the most recent earlier table. Only the
+   newest ``nrt_drain_breaks_keep`` tables are kept; older ones are pruned.
 3. Calls ``build_pmtiles_nrt_monthly`` in-process to build
    ``nrt_<month>_drainage.pmtiles`` -- no separate CLI/container step needed,
    which also makes this runnable locally against a small test zarr.
@@ -19,6 +19,11 @@ This script:
    the finished archive to ``nrt_pmtiles_output_dir``. Tippecanoe's final pass
    re-reads its whole tile store in random order; on the NFS-backed PVC that
    ran at ~50 KB/s and took hours, on local disk it takes minutes.
+
+The daily pipeline runs this as its last step, so it skips any month whose
+``nrt_<month>_drainage.pmtiles`` already exists or that already has rows in
+the drain-breaks table. Set ``OVERWRITE=True`` (see
+manual_jobs/create-nrt-pmtiles.yaml) to rebuild the latest month anyway.
 
 Note: the ``water_timeseries.utils.pmtiles_build.build_pmtiles_nrt_monthly``
 on this branch (``ncsa-water-timeseries``) only builds the ``drained``/
@@ -99,6 +104,30 @@ def drain_breaks_path(nrt_precomputed_dir, run_time):
     return nrt_precomputed_dir / f"nrt_monthly_drain_breaks.run_on_{run_time:%Y%m%d_%H%M%S}.parquet"
 
 
+def nrt_pmtiles_filename(month):
+    """Filename build_pmtiles_nrt_monthly writes for month (what the dashboard looks for)."""
+    return f"nrt_{month}_drainage.pmtiles"
+
+
+def month_already_built(target_month, nrt_pmtiles_output_dir, previous_file):
+    """True if target_month's archive is already published or its rows are already in the drain-breaks table."""
+    if (nrt_pmtiles_output_dir / nrt_pmtiles_filename(target_month)).exists():
+        return True
+    if previous_file is None:
+        return False
+    months = pd.read_parquet(previous_file, columns=["analysis_month"])["analysis_month"]
+    return (months == target_month).any()
+
+
+def prune_old_breaks_files(nrt_precomputed_dir, keep):
+    """Delete all but the `keep` most recently modified nrt_monthly_drain_breaks*.parquet tables."""
+    candidates = sorted(nrt_precomputed_dir.glob("nrt_monthly_drain_breaks*.parquet"),
+                        key=os.path.getmtime, reverse=True)
+    for old_file in candidates[keep:]:
+        logger.info(f"Pruning old drain-breaks table {old_file.name}")
+        old_file.unlink()
+
+
 def find_previous_breaks_file(nrt_precomputed_dir):
     """Return the most recently modified nrt_monthly_drain_breaks*.parquet, or None."""
     candidates = glob.glob(str(nrt_precomputed_dir / "nrt_monthly_drain_breaks*.parquet"))
@@ -128,7 +157,13 @@ def merge_drained_rows(df, target_month, drain_threshold, breaks_file, previous_
     if previous_file is not None and previous_file.exists():
         existing = pd.read_parquet(previous_file)
         logger.info(f"Seeding {breaks_file.name} from {previous_file.name}")
+        n_before = len(existing)
         existing = existing[existing.get("analysis_month") != target_month]
+        if drained.empty and len(existing) == n_before:
+            # Nothing to add and nothing to drop - previous_file is still current,
+            # so don't write an identical copy of it.
+            logger.info(f"No drain-breaks changes for {target_month} - not writing {breaks_file.name}")
+            return drained
     else:
         existing = pd.DataFrame(columns=drained.columns)
 
@@ -173,6 +208,8 @@ def main():
     nrt_pmtiles_build_dir = Path(os.environ.get("nrt_pmtiles_build_dir", "/tmp/nrt_pmtiles_build"))
     drain_threshold = float(os.environ.get("drain_threshold", DRAIN_THRESHOLD))
     poly_max_zoom = int(os.environ.get("nrt_poly_max_zoom", 14))
+    breaks_keep = int(os.environ.get("nrt_drain_breaks_keep", 5))
+    overwrite = os.environ.get("OVERWRITE", "False").lower() in ("true", "1", "yes")
     run_time = datetime.now(timezone.utc)
 
     combined_zarr_path = get_most_recent_combined_zarr(combined_zarr_datasets)
@@ -189,16 +226,27 @@ def main():
         target_month = pd.Timestamp(ds.date.values[-1]).strftime("%Y-%m")
     logger.info(f"Target month: {target_month}")
 
+    previous_file = find_previous_breaks_file(nrt_precomputed_dir)
+    if not overwrite and month_already_built(target_month, nrt_pmtiles_output_dir, previous_file):
+        logger.info(f"{target_month} already built - skipping (set OVERWRITE=True to rebuild)")
+        return {'success': True, 'target_month': target_month, 'skipped': True, 'pmtiles': {}}
+    if overwrite:
+        logger.info(f"OVERWRITE=True - rebuilding {target_month}")
+
     df = build_month_dataframe(ds, target_month)
     if df.empty:
         logger.warning(f"No lakes with a prediction for {target_month} - nothing to build")
         return {'success': True, 'target_month': target_month, 'pmtiles': {}}
 
-    previous_file = find_previous_breaks_file(nrt_precomputed_dir)
     breaks_file = drain_breaks_path(nrt_precomputed_dir, run_time)
     drained = merge_drained_rows(df, target_month, drain_threshold, breaks_file, previous_file)
+    prune_old_breaks_files(nrt_precomputed_dir, breaks_keep)
 
     if drained.empty:
+        stale_pmtiles = nrt_pmtiles_output_dir / nrt_pmtiles_filename(target_month)
+        if overwrite and stale_pmtiles.exists():
+            logger.info(f"Removing {stale_pmtiles} - rebuilt {target_month} has no drained lakes")
+            stale_pmtiles.unlink()
         logger.warning(f"No drained lakes for {target_month} - skipping pmtiles build "
                         f"(the base archive already covers every stable lake)")
         return {'success': True, 'target_month': target_month, 'pmtiles': {}}

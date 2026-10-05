@@ -1465,6 +1465,8 @@ spec:
           nrt_pmtiles_output_dir=/data/water_timeseries/test/nrt_tiles
           drain_threshold=-0.25
           nrt_poly_max_zoom=14
+          nrt_drain_breaks_keep=5
+          OVERWRITE=False
           EOF
 
           cd /app

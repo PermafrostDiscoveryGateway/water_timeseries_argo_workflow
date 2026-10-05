@@ -111,16 +111,6 @@ spec:
             name: nrt-pipeline-templates
             template: create-historical-zarr-archive
 
-        # Builds the NRT dashboard's PMTiles archive for the month, from the
-        # same combined breakpoint zarr - independent of create-historical-file
-        # below (that one merges the raw Dynamic World record, not breakpoints),
-        # so it only needs to wait on create-historical-zarr-archive too.
-        - name: create-nrt-pmtiles
-          depends: "create-historical-zarr-archive"
-          templateRef:
-            name: nrt-pipeline-templates
-            template: create-nrt-pmtiles
-
         # Decoupled from create-historical-zarr-archive/regions on purpose: this only
         # needs every region's *merge* output (dw_{region}_{date}.nc), not process, so
         # it doesn't need to wait behind the (much slower) process step. It has no
@@ -140,3 +130,15 @@ spec:
           templateRef:
             name: nrt-pipeline-templates
             template: create-new-historical-file
+
+        # Last step: builds the NRT dashboard's PMTiles archive for the latest
+        # month in the combined breakpoint zarr. Waits on create-historical-file
+        # too so it's the final thing the pipeline does, but still runs if that
+        # step failed, since it only reads the zarr archive. Runs with
+        # OVERWRITE=False, so a month that's already built is skipped - use
+        # manual_jobs/create-nrt-pmtiles.yaml to force a rebuild.
+        - name: create-nrt-pmtiles
+          depends: "create-historical-zarr-archive && (create-historical-file.Succeeded || create-historical-file.Failed || create-historical-file.Errored)"
+          templateRef:
+            name: nrt-pipeline-templates
+            template: create-nrt-pmtiles

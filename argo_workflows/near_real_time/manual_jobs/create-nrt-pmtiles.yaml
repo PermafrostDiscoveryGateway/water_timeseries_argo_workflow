@@ -7,11 +7,16 @@ metadata:
     workflows.argoproj.io/pod-keep: "OnCompletion"
 spec:
   # One-off, manually-submitted run (not a CronWorkflow) that builds the NRT
-  # dashboard's PMTiles archive (nrt_<month>_drainage.pmtiles) for a single
-  # month from the most recent combined breakpoint zarr.
+  # dashboard's PMTiles archive (nrt_<month>_drainage.pmtiles) for the latest
+  # month in the most recent combined breakpoint zarr.
   #
-  # `month` (YYYY-MM) is passed to create_nrt_pmtiles.py as nrt_pmtiles_month;
-  # override at submit time with e.g. `argo submit ... -p month=2026-08`.
+  # The daily pipeline already runs create-nrt-pmtiles as its last step, with
+  # OVERWRITE=False, so it skips a month that's already built. Use this job
+  # to force a rebuild of the latest month (e.g. after the combined zarr was
+  # regenerated). `overwrite` is passed to create_nrt_pmtiles.py as OVERWRITE:
+  #   - "True"  (default): rebuild the latest month even if it's already built
+  #   - "False": same as the pipeline step, only build if it isn't already
+  # Override at submit time with e.g. `argo submit ... -p overwrite=False`.
   #
   # Don't run this while the daily pipeline's create-nrt-pmtiles step is
   # running. Both share nrt_precomputed_dir and seed from whichever
@@ -24,8 +29,8 @@ spec:
 
   arguments:
     parameters:
-    - name: month
-      value: "2026-07"
+    - name: overwrite
+      value: "True"
 
   ttlStrategy:
     secondsAfterCompletion: 86400
@@ -75,12 +80,12 @@ spec:
           set -e
           set -x
           STAGE="create_nrt_pmtiles"
-          TARGET_MONTH="{{workflow.parameters.month}}"
+          OVERWRITE="{{workflow.parameters.overwrite}}"
 
           mkdir -p /tmp
           exec > >(tee -a /tmp/workflow_output.log) 2>&1
 
-          echo "=== STARTING MANUAL JOB: $STAGE ($TARGET_MONTH) ==="
+          echo "=== STARTING MANUAL JOB: $STAGE (OVERWRITE=$OVERWRITE) ==="
           echo "Timestamp: $(date)"
 
           WORKFLOW_NAME="{{workflow.name}}"
@@ -101,7 +106,8 @@ spec:
           nrt_pmtiles_output_dir=/data/water_timeseries/nrt_tiles
           drain_threshold=-0.25
           nrt_poly_max_zoom=14
-          nrt_pmtiles_month=${TARGET_MONTH}
+          nrt_drain_breaks_keep=5
+          OVERWRITE=${OVERWRITE}
           MANUAL=True
           EOF
 
