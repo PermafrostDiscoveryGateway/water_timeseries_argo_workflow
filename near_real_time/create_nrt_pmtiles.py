@@ -238,7 +238,17 @@ def main():
         logger.warning(f"No lakes with a prediction for {target_month} - nothing to build")
         return {'success': True, 'target_month': target_month, 'pmtiles': {}}
 
-    breaks_file = drain_breaks_path(nrt_precomputed_dir, run_time)
+    # drained_mask treats a table with no drainage_confidence column as
+    # "nothing scored", and marks every lake drained. That's what breakpoints
+    # from the old ncsa-water-timeseries library look like, so refuse to build
+    # rather than publish an archive showing every lake as drained.
+    if "drainage_confidence" not in df.columns:
+        logger.error(f"{target_month} in {combined_zarr_path} has no drainage_confidence column - "
+                     f"it was likely processed with an older water-timeseries library. Reprocess the "
+                     f"month and regenerate the combined zarr before building its PMTiles.")
+        return {'success': False, 'target_month': target_month, 'error': 'missing drainage_confidence'}
+
+    breaks_file =drain_breaks_path(nrt_precomputed_dir, run_time)
     drained = merge_drained_rows(df, target_month, drain_threshold, breaks_file, previous_file)
     prune_old_breaks_files(nrt_precomputed_dir, breaks_keep)
 
