@@ -412,6 +412,12 @@ def main():
     logger.info("PROCESS_NRT.py COMPLETED")
     logger.info("=" * 80)
 
+    # Exit non-zero if any region failed, so the caller (Argo / snakemake) sees
+    # the failure here instead of at the next step that reads the results.
+    if failure_count:
+        logger.error(f"{failure_count} region(s) failed - exiting with code 1")
+        sys.exit(1)
+
 
 if __name__ == '__main__':
     main()

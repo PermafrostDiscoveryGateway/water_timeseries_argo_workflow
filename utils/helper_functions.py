@@ -3647,6 +3647,19 @@ def create_final_zarr_from_incremental(
         # Save to Zarr
         logger.info(f"💾 Saving {len(breaks_merged):,} records to Zarr: {zarr_path}")
 
+        # Nullable pandas extension dtypes (e.g. Int64 from the parquet) can't be
+        # encoded by xarray's zarr backend ("Cannot interpret 'Int64Dtype()' as a
+        # data type"). Convert them to numpy dtypes: numeric -> float64 with NaN
+        # for missing values, anything else -> object.
+        for col, dtype in breaks_merged.dtypes.items():
+            if isinstance(dtype, pd.api.extensions.ExtensionDtype) and not isinstance(
+                    dtype, (pd.DatetimeTZDtype, pd.CategoricalDtype)):
+                if pd.api.types.is_numeric_dtype(dtype) or pd.api.types.is_bool_dtype(dtype):
+                    breaks_merged[col] = breaks_merged[col].to_numpy(dtype="float64", na_value=np.nan)
+                else:
+                    breaks_merged[col] = breaks_merged[col].astype(object).where(breaks_merged[col].notna(), None)
+                logger.debug(f"Converted column '{col}' from {dtype} to {breaks_merged[col].dtype} for Zarr")
+
         # Convert to xarray dataset
         ds_breaks = breaks_merged.to_xarray()
 
