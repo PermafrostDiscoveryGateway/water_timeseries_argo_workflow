@@ -93,15 +93,36 @@ same way the Docker image is built: first water-timeseries-v2 (by default the
 `ncsa-water-timeseries` branch the base image is built from), then this repo's extra
 dependencies from `snakemake/envs/requirements-extra.txt` (keep that in sync with the
 `Dockerfile`), and finally tippecanoe, built from source into the environment's `bin/` (see
-[PMTiles](#pmtiles)). It's rebuilt only when `environment` settings in the config or that file change, and
-a rebuild doesn't re-run steps that already finished. Set `environment.build: false` to use an
-existing interpreter (`python:`) instead.
+[PMTiles](#pmtiles)). It's rebuilt only when `environment` settings in the config or that file change.
+A newer environment alone doesn't re-run finished steps, but a rebuild *in the same run* does re-run
+every step after it, downloads included. When a rebuild is due, do it on its own first
+(`--until build_env`), then run the pipeline. Set `environment.build: false` to use an existing
+interpreter (`python:`) instead.
 
 To run it on NCSA Delta, with each step submitted as a Slurm job, see
 [10. Running on Delta](10-running-on-delta.md).
 
 Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
 that directory (or use `--forcerun`) to re-run a month.
+
+#### Replacing a month's results (`overwrite`)
+
+By default a month that's already been processed is left alone. To replace it, in every region of
+the run, run with `overwrite`:
+
+```bash
+snakemake/run_delta.sh 2025-08 --overwrite
+```
+
+(elsewhere: `--config overwrite=true --forcerun process`; the `--forcerun` is what makes snakemake
+re-run steps whose markers exist). Downloads and merges are not redone. Then:
+
+- `process`: a region whose breakpoint zarr is complete is deleted and reprocessed from scratch; a
+  partial one (saved results in `incremental_results_<month>.parquet`, no complete zarr) is
+  resumed where it left off; a region with nothing yet starts fresh. Without `overwrite`, a partial
+  region is resumed too, and a complete one only has its zarr rebuilt from the saved results.
+- `create_historical_zarr_archive` replaces the month in the combined archive instead of skipping it.
+- `create_nrt_pmtiles` rebuilds the month's PMTiles (as `pmtiles.overwrite: true` does).
 
 ### PMTiles
 

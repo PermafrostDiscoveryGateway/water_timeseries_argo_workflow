@@ -5,6 +5,11 @@
 #   snakemake/run_delta.sh                 # target_date=2025-08
 #   snakemake/run_delta.sh 2025-07         # another month
 #   snakemake/run_delta.sh 2025-08 -n      # dry run; anything after the date goes to snakemake
+#   snakemake/run_delta.sh 2025-08 --overwrite
+#       # replace the month's results: reprocess complete regions, resume partial
+#       # ones, replace the month in the combined archive, rebuild its PMTiles.
+#       # Downloads and merges are not redone. Same as
+#       # --config overwrite=true --forcerun process (see config.yaml).
 #
 # A real run is started inside a tmux session (water_timeseries-<date>), since
 # snakemake has to keep running on the login node until every Slurm job is
@@ -55,11 +60,22 @@ for f in ~/.config/water_timeseries/application_default_credentials.json \
     fi
 done
 
+CONFIG=("target_date=$TARGET_DATE")
+ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == "--overwrite" ]]; then
+        CONFIG+=("overwrite=true")
+        ARGS+=(--forcerun process)
+    else
+        ARGS+=("$arg")
+    fi
+done
+
 CMD=(snakemake -s snakemake/Snakefile
      --configfile snakemake/config.delta.yaml
      --profile snakemake/profiles/delta
-     --config "target_date=$TARGET_DATE"
-     "$@")
+     --config "${CONFIG[@]}"
+     "${ARGS[@]}")
 
 DRY_RUN=false
 for arg in "$@"; do

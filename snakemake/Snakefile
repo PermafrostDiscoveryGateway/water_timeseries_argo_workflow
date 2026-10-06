@@ -55,6 +55,9 @@ configfile: os.path.join(workflow.basedir, "config.yaml")
 
 REPO_ROOT = Path(workflow.basedir).parent.resolve()
 TARGET_DATE = str(config["target_date"])
+# Replace target_date's results instead of skipping what's already there: see
+# `overwrite` in config.yaml. Needs `--forcerun process` (run_delta.sh --overwrite).
+OVERWRITE = str(config.get("overwrite", False)).lower() in ("true", "1", "yes")
 REGIONS = list(config["regions"].keys())
 EE = config["earth_engine"]
 
@@ -141,6 +144,9 @@ def write_env(stage, region=None, extra=None):
         "combined_zarr_datasets": PATHS["combined_zarr_datasets"],
         "test_run": "True",
         "target_date": TARGET_DATE,
+        # Read by process_NRT.py and combine_results_into_zarr_historical_archive.py.
+        # Set here, not in the rules, so toggling it doesn't count as a code change.
+        "OVERWRITE": str(OVERWRITE),
     }
     if region:
         env["region_name"] = region
@@ -275,7 +281,7 @@ def run_pmtiles(stage, dataset, month, overwrite):
             "drain_threshold": PM["drain_threshold"],
             "nrt_poly_max_zoom": PM["poly_max_zoom"],
             "nrt_drain_breaks_keep": PM["drain_breaks_keep"],
-            "OVERWRITE": str(bool(overwrite)),
+            "OVERWRITE": str(bool(overwrite) or OVERWRITE),
         })
     finally:
         shutil.rmtree(scratch, ignore_errors=True)

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 import os
 import glob
+import shutil
 from typing import List, Optional, Dict, Any
 import zarr
 # Add project root to Python path
@@ -1775,11 +1776,16 @@ def process_region_date_new_fast_NRT(
         id_chunk_size: int = 500,
         n_jobs: int = 8,
         save_interval: int = 1,
+        overwrite: bool = False,
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using batch processing for speed.
     Uses NRTBreakpoint.calculate_break with a LIST of IDs for internal parallelization.
     Memory-optimized version: saves incrementally and clears memory after each chunk.
+
+    A partial run (incremental results but no complete breakpoint zarr) is always
+    resumed. With overwrite=True, a complete one is deleted and reprocessed from
+    scratch; without it, the zarr is just rebuilt from the saved results.
     """
     import time
     import os
@@ -1994,6 +2000,19 @@ def process_region_date_new_fast_NRT(
 
         # NEW: File for accumulating results incrementally
         incremental_file = current_breakpoint_dir / f'incremental_results_{analysis_date}.parquet'
+
+        if overwrite:
+            if breakpoint_zarr_is_complete(zarr_path):
+                logger.info(f"🗑️ OVERWRITE=True and {zarr_path} is complete - deleting it and its "
+                            f"saved results to reprocess {region} {analysis_date} from scratch")
+                shutil.rmtree(zarr_path, ignore_errors=True)
+                for stale in (incremental_file, intermediate_file,
+                              current_breakpoint_dir / f'drain_{analysis_date}.parquet'):
+                    stale.unlink(missing_ok=True)
+            elif incremental_file.exists():
+                logger.info(f"OVERWRITE=True but {region} {analysis_date} is incomplete - resuming it")
+            else:
+                logger.info(f"OVERWRITE=True - no previous results for {region} {analysis_date}")
 
         # 10. Process in chunks - MEMORY OPTIMIZED
         bp = NRTBreakpoint()
@@ -3497,6 +3516,23 @@ def process_region_date_new_fast_historical_safe(
             'region': region,
             'analysis_date': analysis_date
         }
+
+
+def breakpoint_zarr_is_complete(zarr_path: Path) -> bool:
+    """True if zarr_path is a breakpoint zarr create_final_zarr_from_incremental finished.
+
+    That means it opens, has attrs complete=True, and holds data (or is marked
+    empty: a region with no breakpoints at all). A store left by a failed save -
+    only zarr.json, no variables - counts as incomplete.
+    """
+    if not Path(zarr_path).exists():
+        return False
+    try:
+        with xr.open_zarr(zarr_path) as ds:
+            return bool(ds.attrs.get('complete')) and (len(ds.data_vars) > 0 or bool(ds.attrs.get('empty')))
+    except Exception as e:
+        logger.debug(f"Could not open {zarr_path} as a breakpoint zarr: {e}")
+        return False
 
 
 def create_final_zarr_from_incremental(

@@ -7,6 +7,14 @@
 # place of the "most recent complete summer month" a test run normally uses.
 target_date: "2025-08"
 
+# Replace target_date's results instead of keeping what's already there, in
+# every region of the run: a complete breakpoint zarr is reprocessed from
+# scratch, a partial one is resumed, the month is replaced in the combined
+# archive and its PMTiles are rebuilt. Downloads and merges are never redone.
+# Snakemake also has to rerun those steps: use `run_delta.sh <date> --overwrite`,
+# or add `--config overwrite=true --forcerun process` yourself.
+overwrite: false
+
 # Must stay in sync with utils.region_boundaries.get_small_regions(): with
 # test_run=True, wait-for-region-merges / create-new-historical-file expect
 # merge output for exactly that set of regions.
