@@ -96,7 +96,7 @@ dependencies from `snakemake/envs/requirements-extra.txt` (keep that in sync wit
 [PMTiles](#pmtiles)). It's rebuilt only when `environment` settings in the config or that file change.
 A newer environment alone doesn't re-run finished steps, but a rebuild *in the same run* does re-run
 every step after it, downloads included. When a rebuild is due, do it on its own first
-(`--until build_env`), then run the pipeline. Set `environment.build: false` to use an existing
+(`--until build_environment`), then run the pipeline. Set `environment.build: false` to use an existing
 interpreter (`python:`) instead.
 
 To run it on NCSA Delta, with each step submitted as a Slurm job, see
@@ -145,7 +145,7 @@ Python package. The environment build compiles the release in `environment.tippe
 (default `2.79.0`) and installs `tippecanoe` and `tile-join` into the environment's `bin/`, which
 every step has on its `PATH`. That needs `git`, `make`, a C++ compiler and the sqlite3 and zlib
 development headers; on a Mac, the Xcode command line tools are enough. The build output is in
-`data/snakemake_work/build_env.log`.
+`data/snakemake_work/build_environment.log`.
 
 Where the sqlite3 development files are missing (Delta has only the runtime `libsqlite3.so.0` and no
 sqlite module), set `environment.sqlite_amalgamation_url` to a SQLite
@@ -185,7 +185,7 @@ snakemake -s snakemake/Snakefile.pmtiles --cores 2 --forcerun pmtiles_month --co
 - Every month is rebuilt, even if its archive exists. `--forcerun pmtiles_month` makes
   Snakemake run them again after an earlier run finished them.
 - To pick up new commits on the water-timeseries-v2 branch in `environment.base_package`, add
-  `build_env` to `--forcerun` (`--forcerun build_env pmtiles_month`). That rebuilds the whole
+  `build_environment` to `--forcerun` (`--forcerun build_environment pmtiles_month`). That rebuilds the whole
   environment, including tippecanoe.
 
 Its logs and markers go to `data/snakemake_work/pmtiles_<dataset>/`.

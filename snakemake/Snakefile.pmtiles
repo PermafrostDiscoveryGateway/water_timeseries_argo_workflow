@@ -18,7 +18,7 @@
 #
 # Every month is rebuilt (OVERWRITE=True), even if its archive exists.
 # --forcerun pmtiles_month makes snakemake run them again even though they
-# finished before; add --forcerun build_env too to pick up new commits on the
+# finished before; add --forcerun build_environment too to pick up new commits on the
 # water-timeseries-v2 branch in environment.base_package.
 #
 # Months run one after another, never at once: each run seeds its

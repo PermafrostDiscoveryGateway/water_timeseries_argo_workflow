@@ -69,11 +69,11 @@ credentials:
   earthengine: "~/.config/water_timeseries/earthengine_credentials"
 
 # Home directories on Delta are small; keep the venv under /projects, next to
-# the repo checkout. It is built on the login node (build_env is a local rule)
+# the repo checkout. It is built on the login node (build_environment is a local rule)
 # and used by every job.
 environment:
   path: "/projects/biyc/water_timeseries/venv"
   # Delta has no sqlite3.h / libsqlite3.so (only the runtime libsqlite3.so.0,
-  # and no sqlite module), which tippecanoe needs to compile. build_env builds
+  # and no sqlite module), which tippecanoe needs to compile. build_environment builds
   # SQLite from this amalgamation into <path>/sqlite instead.
   sqlite_amalgamation_url: "https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip"

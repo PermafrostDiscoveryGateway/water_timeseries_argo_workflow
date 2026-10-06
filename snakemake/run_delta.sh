@@ -17,7 +17,7 @@
 #   tmux attach -t water_timeseries-<date>
 #
 # Nothing needs to be activated first: snakemake comes from `uv tool install`
-# (~/.local/bin), and every pipeline step runs with the venv the build_env rule
+# (~/.local/bin), and every pipeline step runs with the venv the build_environment rule
 # builds at environment.path in config.delta.yaml.
 
 set -euo pipefail

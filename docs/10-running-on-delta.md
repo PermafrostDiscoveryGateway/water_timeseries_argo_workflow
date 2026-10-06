@@ -67,7 +67,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install snakemake --with snakemake-executor-plugin-slurm
 ```
 
-The profile needs snakemake 8 or later. `uv` is also what the `build_env` rule uses to build the
+The profile needs snakemake 8 or later. `uv` is also what the `build_environment` rule uses to build the
 pipeline's own Python environment.
 
 ### 3. Copy the credentials
@@ -183,7 +183,7 @@ named `water_timeseries-<date>`:
 
 The first argument is the target month, and anything after it is passed on to Snakemake. A dry
 run (`-n`) runs directly instead of in `tmux`. There's no Python environment to activate:
-Snakemake comes from `uv tool install`, and the pipeline steps use the venv that `build_env`
+Snakemake comes from `uv tool install`, and the pipeline steps use the venv that `build_environment`
 builds.
 
 ### By hand
@@ -219,8 +219,8 @@ snakemake -s snakemake/Snakefile --configfile snakemake/config.delta.yaml --prof
 Detach with `Ctrl-b d`. To reattach later, ssh to the same login node (e.g.
 `ssh dt-login03.delta.ncsa.illinois.edu`) and run `tmux attach -t wts`.
 
-The first run builds the venv on the login node (`build_env`), which takes a few minutes before
-any Slurm jobs appear. Its log is `/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/snakemake_work/build_env.log`.
+The first run builds the venv on the login node (`build_environment`), which takes a few minutes before
+any Slurm jobs appear. Its log is `/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/snakemake_work/build_environment.log`.
 
 #### Following jobs
 
@@ -244,16 +244,16 @@ to 4 hours) and works in the compute node's `/tmp`. See
 
 ### tippecanoe on Delta
 
-The PMTiles are built with tippecanoe, which `build_env` compiles from source into the venv's
+The PMTiles are built with tippecanoe, which `build_environment` compiles from source into the venv's
 `bin/` on the login node (see [tippecanoe](07-running-the-testing-pipeline.md#tippecanoe)). The
 first run after this was added rebuilds the venv once to do that; steps that already finished
 aren't re-run.
 
 The build needs a C++ compiler, `make`, `git` and the sqlite3 and zlib development headers. If it
-fails, the end of `build_env.log` (in `snakemake_work/`) shows why, e.g. `sqlite3.h: No such file
+fails, the end of `build_environment.log` (in `snakemake_work/`) shows why, e.g. `sqlite3.h: No such file
 or directory`. In that case, build tippecanoe by hand somewhere you can (e.g. in a conda env or
 from a module with the headers) and put it on your `PATH`, then set
-`environment.tippecanoe_version: ""` in `snakemake/config.delta.yaml` so `build_env` skips it.
+`environment.tippecanoe_version: ""` in `snakemake/config.delta.yaml` so `build_environment` skips it.
 
 ### Rebuilding only the PMTiles
 
@@ -277,7 +277,7 @@ snakemake -s snakemake/Snakefile.pmtiles --configfile snakemake/config.delta.yam
 
 `main` reads `water_timeseries/combined_zarr_datasets` on Taiga (read only) and writes its own
 drain-breaks table and archives to `/work/hdd/biyc/water_timeseries/main/`, so it never touches
-the Argo pipeline's published tiles. Add `build_env` to `--forcerun` to pick up new commits on the
+the Argo pipeline's published tiles. Add `build_environment` to `--forcerun` to pick up new commits on the
 water-timeseries-v2 branch first. Logs and markers are in `snakemake_work/pmtiles_<dataset>/`
 next to the pipeline's.
 
@@ -316,7 +316,7 @@ If the Argo cluster's volume moves instead (a new PVC), the Taiga path changes: 
 | `ValueError: max() iterable argument is empty` in a download log | No historical `.nc` file in `dynamic_world_data` ([step 5](#5-check-the-dynamic-world-data)). |
 | `Missing credentials file` from `run_delta.sh` | Copy the credentials ([step 3](#3-copy-the-credentials)). |
 | Snakemake reports `SLURM status is: 'TIMEOUT'` | A step hit its time limit. For a download, raise that region's `download_runtime_hours` ([Time limits](#time-limits)) and re-run; finished steps and downloaded tiles are kept. |
-| `build_env` fails while building tippecanoe | Missing build tools or headers on the login node; see [tippecanoe on Delta](#tippecanoe-on-delta). |
+| `build_environment` fails while building tippecanoe | Missing build tools or headers on the login node; see [tippecanoe on Delta](#tippecanoe-on-delta). |
 | `create_nrt_pmtiles` fails with `tippecanoe is not installed or not on PATH` | The venv was built without tippecanoe (`environment.tippecanoe_version: ""`) and none is on `PATH`. |
 | `create_nrt_pmtiles` fails with `no drainage_confidence column` | The month was processed with an older water-timeseries library; reprocess it and rebuild the combined zarr. |
 | Jobs pending with reason `QOSGrpBillingMinutes` | The allocation is out of SUs (see below). |

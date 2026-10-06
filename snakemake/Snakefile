@@ -23,9 +23,9 @@
 #     so the pipeline always takes the Argo `recovered == false` branch and
 #     force-merges each region.
 #
-# The Python environment for the scripts is built by the build_env rule (uv),
+# The Python environment for the scripts is built by the build_environment rule (uv),
 # the same way the Docker image is: water-timeseries-v2 first, then this
-# repo's extras - see `environment` in config.yaml. build_env also builds
+# repo's extras - see `environment` in config.yaml. build_environment also builds
 # tippecanoe (a C++ program, not a Python package) into the env's bin/.
 #
 # Snakefile.pmtiles builds only the PMTiles, from an existing combined zarr.
@@ -294,7 +294,7 @@ def mark_done(path, **status):
 
 # Quick or network-only steps run where snakemake itself runs (the Delta
 # login node) instead of as Slurm jobs.
-localrules: all, build_env, wait_for_region_merges
+localrules: all, build_environment, wait_for_region_merges
 
 
 rule all:
@@ -308,7 +308,7 @@ if ENV_CFG["build"]:
     # image), then this repo's extra dependencies (Dockerfile's uv pip install).
     # Installed as two separate steps on purpose, so the extras win where they
     # conflict with the base (geemap==0.37.2) exactly as they do in the image.
-    rule build_env:
+    rule build_environment:
         input:
             extras=_abs(ENV_CFG["extra_requirements"]),
         output:
@@ -319,7 +319,7 @@ if ENV_CFG["build"]:
             tippecanoe=str(ENV_CFG.get("tippecanoe_version") or ""),
             sqlite_url=str(ENV_CFG.get("sqlite_amalgamation_url") or ""),
         log:
-            os.path.join(PATHS["work_dir"], "build_env.log"),
+            os.path.join(PATHS["work_dir"], "build_environment.log"),
         run:
             import shlex
             import tempfile
