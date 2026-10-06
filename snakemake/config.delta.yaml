@@ -73,3 +73,7 @@ credentials:
 # and used by every job.
 environment:
   path: "/projects/biyc/water_timeseries/venv"
+  # Delta has no sqlite3.h / libsqlite3.so (only the runtime libsqlite3.so.0,
+  # and no sqlite module), which tippecanoe needs to compile. build_env builds
+  # SQLite from this amalgamation into <path>/sqlite instead.
+  sqlite_amalgamation_url: "https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip"

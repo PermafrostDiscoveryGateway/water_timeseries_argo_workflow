@@ -54,6 +54,9 @@ environment:
   # env's bin/ for create_nrt_pmtiles. "" = skip it and use a tippecanoe
   # already on PATH (e.g. `brew install tippecanoe`).
   tippecanoe_version: "2.79.0"
+  # SQLite amalgamation zip to build tippecanoe against, for systems without
+  # the sqlite3 development headers (see config.delta.yaml). "" = system sqlite3.
+  sqlite_amalgamation_url: ""
 
 # Only used when environment.build is false.
 python: "../water-timeseries-v2/.venv/bin/python"

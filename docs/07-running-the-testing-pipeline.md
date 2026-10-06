@@ -126,6 +126,11 @@ every step has on its `PATH`. That needs `git`, `make`, a C++ compiler and the s
 development headers; on a Mac, the Xcode command line tools are enough. The build output is in
 `data/snakemake_work/build_env.log`.
 
+Where the sqlite3 development files are missing (Delta has only the runtime `libsqlite3.so.0` and no
+sqlite module), set `environment.sqlite_amalgamation_url` to a SQLite
+[amalgamation](https://www.sqlite.org/download.html) zip, as `config.delta.yaml` does: the build
+compiles it into `<environment.path>/sqlite/` and builds tippecanoe against that.
+
 To use a tippecanoe you already have instead (e.g. `brew install tippecanoe`), set
 `environment.tippecanoe_version: ""`.
 
