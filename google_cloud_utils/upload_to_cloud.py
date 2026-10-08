@@ -1,3 +1,4 @@
+import re
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
@@ -9,6 +10,37 @@ from google.auth import default
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+
+def _local_matches_remote(file_path: Path, blob) -> bool:
+    """
+    Determine whether the local file is already fully and correctly uploaded.
+
+    Size alone can't detect a content change that happens to produce the same
+    (or a smaller) file size, so we also compare local mtime/size against
+    values recorded in the blob's custom metadata at upload time.
+    """
+    stat = file_path.stat()
+    metadata = blob.metadata or {}
+    stored_mtime = metadata.get('local_mtime')
+    stored_size = metadata.get('local_size')
+
+    if stored_mtime is None or stored_size is None:
+        # No metadata recorded (e.g. blob predates this check) - fall back to
+        # requiring an exact size match, which at least catches interrupted uploads.
+        return stat.st_size == blob.size
+
+    return str(stat.st_size) == stored_size and str(stat.st_mtime) == stored_mtime
+
+
+def _upload_with_metadata(blob, file_path: Path):
+    """Upload a file to GCS, stamping it with local mtime/size for future skip-checks."""
+    stat = file_path.stat()
+    blob.metadata = {
+        'local_mtime': str(stat.st_mtime),
+        'local_size': str(stat.st_size),
+    }
+    blob.upload_from_filename(str(file_path))
 
 
 def get_storage_client():
@@ -106,19 +138,203 @@ def sync_breakpoint_zarr_dirs_to_gcs(base_output_dir: str, bucket_name: str, pat
 
                 blob = bucket.blob(blob_path)
 
-                # Check if file already exists
+                # Check if file already exists and matches the local file's mtime/size
+                # (a size-only check can't tell a content change from an unchanged file
+                # when the new size happens to be <= the old size)
                 if blob.exists():
-                    # Could check if file size matches or content has changed
-                    skipped_count += 1
-                    continue
+                    blob.reload()
+                    if _local_matches_remote(file_path, blob):
+                        skipped_count += 1
+                        continue
 
                 try:
                     logger.info(f"Uploading: {file_rel_path}")
-                    blob.upload_from_filename(str(file_path))
+                    _upload_with_metadata(blob, file_path)
                     uploaded_count += 1
                 except Exception as e:
                     logger.error(f"Failed to upload {file_rel_path}: {e}")
                     error_count += 1
+
+        logger.info(f"Sync summary: Uploaded {uploaded_count}, Skipped {skipped_count}, Errors {error_count}")
+
+        if dry_run:
+            logger.info(f"[DRY RUN] Would have uploaded {uploaded_count} files")
+
+        return error_count == 0
+
+    except Exception as e:
+        logger.error(f"Error during sync: {e}")
+        return False
+
+
+def sync_breakpoint_parquet_files_to_gcs(base_output_dir: str, bucket_name: str, path_to_cloud_folder: str,
+                                          dry_run: bool = False):
+    """
+    Sync only the final drain_*.parquet backup files (found in breakpoint_<date> directories)
+    from local to GCS
+
+    Args:
+        base_output_dir: Base output directory (e.g., '/data/water_timeseries/output')
+        bucket_name: GCS bucket name
+        path_to_cloud_folder: Cloud folder path (e.g., 'water-timeseries-v2/data/output')
+        dry_run: If True, show what would happen without actually syncing
+    """
+    client = get_storage_client()
+    if not client:
+        return False
+
+    try:
+        bucket = client.bucket(bucket_name)
+
+        # Verify bucket exists and is accessible
+        if not bucket.exists():
+            logger.error(f"Bucket {bucket_name} does not exist or is not accessible")
+            return False
+
+        logger.info(f"Connected to bucket: {bucket_name}")
+
+        # Walk through local directory and find drain_*.parquet files
+        base_dir = Path(base_output_dir)
+        if not base_dir.exists():
+            logger.error(f"Base output directory {base_output_dir} does not exist")
+            return False
+
+        drain_monthly_pattern = re.compile(r'^drain_\d{4}-\d{2}\.parquet$')
+        parquet_files = [
+            path for path in base_dir.rglob('drain_*.parquet')
+            if path.is_file()
+            and drain_monthly_pattern.match(path.name)
+            and 'partial' not in path.name
+        ]
+
+        if not parquet_files:
+            logger.warning("No drain_*.parquet files found")
+            return True
+
+        logger.info(f"Found {len(parquet_files)} drain_*.parquet files to sync")
+
+        uploaded_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        for local_file in parquet_files:
+            rel_path = local_file.relative_to(base_dir)
+            blob_path = f"{path_to_cloud_folder}/{rel_path}"
+
+            if dry_run:
+                logger.info(f"[DRY RUN] Would upload: {rel_path}")
+                uploaded_count += 1
+                continue
+
+            blob = bucket.blob(blob_path)
+
+            # Check if file already exists and matches the local file's mtime/size
+            # (a size-only check can't tell a content change from an unchanged file
+            # when the new size happens to be <= the old size)
+            if blob.exists():
+                blob.reload()
+                if _local_matches_remote(local_file, blob):
+                    skipped_count += 1
+                    continue
+
+            try:
+                logger.info(f"Uploading: {rel_path}")
+                _upload_with_metadata(blob, local_file)
+                uploaded_count += 1
+            except Exception as e:
+                logger.error(f"Failed to upload {rel_path}: {e}")
+                error_count += 1
+
+        logger.info(f"Sync summary: Uploaded {uploaded_count}, Skipped {skipped_count}, Errors {error_count}")
+
+        if dry_run:
+            logger.info(f"[DRY RUN] Would have uploaded {uploaded_count} files")
+
+        return error_count == 0
+
+    except Exception as e:
+        logger.error(f"Error during sync: {e}")
+        return False
+
+
+def sync_top_level_matches_to_gcs(base_dir: str, bucket_name: str, path_to_cloud_folder: str,
+                                   pattern: str, dry_run: bool = False):
+    """
+    Sync top-level files/directories directly under base_dir matching `pattern`
+    (e.g. 'combined_historical_nrt_*.zarr') to path_to_cloud_folder, preserving
+    each match's relative path (and, for directories such as zarr stores, all
+    of their contents).
+
+    Args:
+        base_dir: Local directory to scan for matches
+        bucket_name: GCS bucket name
+        path_to_cloud_folder: Cloud folder path (e.g. 'water-timeseries-v2/near-real-time/output')
+        pattern: glob pattern to match against top-level entries of base_dir
+        dry_run: If True, show what would happen without actually syncing
+    """
+    client = get_storage_client()
+    if not client:
+        return False
+
+    try:
+        bucket = client.bucket(bucket_name)
+
+        if not bucket.exists():
+            logger.error(f"Bucket {bucket_name} does not exist or is not accessible")
+            return False
+
+        logger.info(f"Connected to bucket: {bucket_name}")
+
+        base_path = Path(base_dir)
+        if not base_path.exists():
+            logger.error(f"Base directory {base_dir} does not exist")
+            return False
+
+        matches = sorted(base_path.glob(pattern))
+        if not matches:
+            logger.warning(f"No files matching '{pattern}' found in {base_dir}")
+            return True
+
+        logger.info(f"Found {len(matches)} item(s) matching '{pattern}' to sync")
+
+        files_to_sync = []
+        for match in matches:
+            if match.is_dir():
+                files_to_sync.extend(f for f in match.rglob('*') if f.is_file())
+            elif match.is_file():
+                files_to_sync.append(match)
+
+        uploaded_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        for file_path in files_to_sync:
+            rel_path = file_path.relative_to(base_path)
+            blob_path = f"{path_to_cloud_folder}/{rel_path}"
+
+            if dry_run:
+                logger.info(f"[DRY RUN] Would upload: {rel_path}")
+                uploaded_count += 1
+                continue
+
+            blob = bucket.blob(blob_path)
+
+            # Check if file already exists and matches the local file's mtime/size
+            # (a size-only check can't tell a content change from an unchanged file
+            # when the new size happens to be <= the old size)
+            if blob.exists():
+                blob.reload()
+                if _local_matches_remote(file_path, blob):
+                    skipped_count += 1
+                    continue
+
+            try:
+                logger.info(f"Uploading: {rel_path}")
+                _upload_with_metadata(blob, file_path)
+                uploaded_count += 1
+            except Exception as e:
+                logger.error(f"Failed to upload {rel_path}: {e}")
+                error_count += 1
 
         logger.info(f"Sync summary: Uploaded {uploaded_count}, Skipped {skipped_count}, Errors {error_count}")
 
@@ -145,20 +361,23 @@ def main():
 
     # Get environment variables
     output_dir = os.environ.get('output_dir')
+    combined_zarr_datasets = os.environ.get('combined_zarr_datasets')
+    dynamic_world_data_dir = os.environ.get('dynamic_world_data')
     project = os.environ.get('project')
+    dry_run = os.environ.get('dry_run', 'False').lower() in ('true', '1', 'yes')
 
     if not output_dir:
         logger.error("output_dir environment variable not set")
-        return
+        sys.exit(1)
 
     if not project:
         logger.error("project environment variable not set")
-        return
+        sys.exit(1)
 
     # Verify output directory exists
     if not Path(output_dir).exists():
         logger.error(f"Output directory {output_dir} does not exist")
-        return
+        sys.exit(1)
 
     # Set environment variables
     os.environ["EE_PROJECT"] = project
@@ -170,17 +389,66 @@ def main():
     # Sync only breakpoint_zarr directories to cloud
     logger.info(f"Syncing breakpoint_zarr directories from {output_dir} to gs://{bucket_name}/{path_to_cloud_folder}")
 
-    success = sync_breakpoint_zarr_dirs_to_gcs(
+    zarr_success = sync_breakpoint_zarr_dirs_to_gcs(
         base_output_dir=output_dir,
         bucket_name=bucket_name,
         path_to_cloud_folder=path_to_cloud_folder,
-        dry_run=False  # Set to True to preview changes
+        dry_run=dry_run  # Set to True to preview changes
     )
 
-    if success:
+    # Also sync the final parquet backup (drain_<date>.parquet) files
+    logger.info(f"Syncing final drain_*.parquet files from {output_dir} to gs://{bucket_name}/{path_to_cloud_folder}")
+
+    parquet_success = sync_breakpoint_parquet_files_to_gcs(
+        base_output_dir=output_dir,
+        bucket_name=bucket_name,
+        path_to_cloud_folder=path_to_cloud_folder,
+        dry_run=dry_run  # Set to True to preview changes
+    )
+
+    # Sync the combined NRT zarr archives (combined_historical_nrt_*.zarr) to the
+    # near-real-time "output" bucket
+    nrt_output_cloud_folder = 'water-timeseries-v2/near-real-time/output'
+    if combined_zarr_datasets:
+        logger.info(
+            f"Syncing combined NRT zarr archives from {combined_zarr_datasets} "
+            f"to gs://{bucket_name}/{nrt_output_cloud_folder}"
+        )
+        nrt_output_success = sync_top_level_matches_to_gcs(
+            base_dir=combined_zarr_datasets,
+            bucket_name=bucket_name,
+            path_to_cloud_folder=nrt_output_cloud_folder,
+            pattern="combined_historical_nrt_*.zarr",
+            dry_run=dry_run
+        )
+    else:
+        logger.warning("combined_zarr_datasets environment variable not set - skipping NRT zarr archive sync")
+        nrt_output_success = True
+
+    # Sync the combined historical files produced by create_new_historical_file.py to the
+    # near-real-time "dynamic_world_data" bucket
+    nrt_dynamic_world_cloud_folder = 'water-timeseries-v2/near-real-time/dynamic_world_data'
+    if dynamic_world_data_dir:
+        logger.info(
+            f"Syncing combined historical files from {dynamic_world_data_dir} "
+            f"to gs://{bucket_name}/{nrt_dynamic_world_cloud_folder}"
+        )
+        nrt_dynamic_world_success = sync_top_level_matches_to_gcs(
+            base_dir=dynamic_world_data_dir,
+            bucket_name=bucket_name,
+            path_to_cloud_folder=nrt_dynamic_world_cloud_folder,
+            pattern="dynamic_world_historical_*.nc",
+            dry_run=dry_run
+        )
+    else:
+        logger.warning("dynamic_world_data environment variable not set - skipping dynamic_world_data sync")
+        nrt_dynamic_world_success = True
+
+    if zarr_success and parquet_success and nrt_output_success and nrt_dynamic_world_success:
         logger.info("Sync complete!")
     else:
         logger.error("Sync failed!")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
