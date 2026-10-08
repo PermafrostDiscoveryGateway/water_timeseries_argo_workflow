@@ -72,6 +72,11 @@ spec:
     retryStrategy:
       limit: "5"
       retryPolicy: "OnFailure"
+      # Exit code 3 = incomplete only because of no-data/incomplete tiles (no
+      # real errors; see download_region.py). Retrying can't fix those, and a
+      # retrying step keeps its download-concurrency slot through every
+      # backoff, so skip retries and let download-missing-region handle them.
+      expression: "asInt(lastRetry.exitCode) != 3"
       backoff:
         duration: "2m"
         factor: "2"
