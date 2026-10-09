@@ -142,6 +142,11 @@ def write_env(stage, region=None, extra=None):
         "region_lake_polygons_dir": PATHS["region_lake_polygons_dir"],
         "output_dir": PATHS["output_dir"],
         "combined_zarr_datasets": PATHS["combined_zarr_datasets"],
+        # This Snakefile is the test pipeline only: test_run=True makes every
+        # stage skip the summer-month / day-of-month gate and use target_date.
+        # Its PMTiles are built from its own combined zarr and written under
+        # test/ (paths: nrt_*_dir); only Snakefile.pmtiles with
+        # --config pmtiles_dataset=main reads the production data.
         "test_run": "True",
         "target_date": TARGET_DATE,
         # Read by process_NRT.py and combine_results_into_zarr_historical_archive.py.

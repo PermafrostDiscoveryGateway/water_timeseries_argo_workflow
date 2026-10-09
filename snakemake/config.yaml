@@ -81,8 +81,8 @@ paths:
   combined_zarr_datasets: "data/combined_zarr_datasets"
   # create_nrt_pmtiles: the running drain-breaks table and the published
   # nrt_<month>_drainage.pmtiles archives.
-  nrt_precomputed_dir: "data/precomputed_nrt"
-  nrt_pmtiles_output_dir: "data/nrt_tiles"
+  nrt_precomputed_dir: "data/test/precomputed_nrt"
+  nrt_pmtiles_output_dir: "data/test/nrt_tiles"
   # Snakemake's own bookkeeping: per-stage .env files, logs, done-markers.
   work_dir: "data/snakemake_work"
 

@@ -10,15 +10,17 @@
 #   /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries
 # Delta uses the same directories as the Argo test pipeline
 # (nrt-pipeline-templates-test.yaml), so both implementations share one copy
-# of the inputs and the Dynamic World data. Only the results - output_dir and
-# combined_zarr_datasets - go to the biyc allocation's /work/hdd space.
+# of the inputs and the Dynamic World data. Only the results - output_dir,
+# combined_zarr_datasets and the PMTiles - go to the biyc allocation's
+# /work/hdd space.
 #
 # Layout on Delta:
 #   /projects/biyc/water_timeseries   this repo checkout and the venv
 #   <taiga>/water_timeseries          base_dir, inputs, region polygons
 #   <taiga>/water_timeseries/test     dynamic_world_data, snakemake_work
-#   /work/hdd/biyc/water_timeseries   output, combined_zarr_datasets and
-#                                     the PMTiles (precomputed_nrt, nrt_tiles)
+#   /work/hdd/biyc/water_timeseries   output and combined_zarr_datasets
+#   /work/hdd/biyc/water_timeseries/test   this pipeline's PMTiles
+#                                     (precomputed_nrt, nrt_tiles)
 # Keep the /projects and /work directories group-writable (g+rwX, setgid on
 # directories) so anyone on the allocation can run the pipeline.
 #
@@ -35,8 +37,8 @@ paths:
   region_lake_polygons_dir: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/region_lake_polygons"
   output_dir: "/work/hdd/biyc/water_timeseries/output"
   combined_zarr_datasets: "/work/hdd/biyc/water_timeseries/combined_zarr_datasets"
-  nrt_precomputed_dir: "/work/hdd/biyc/water_timeseries/precomputed_nrt"
-  nrt_pmtiles_output_dir: "/work/hdd/biyc/water_timeseries/nrt_tiles"
+  nrt_precomputed_dir: "/work/hdd/biyc/water_timeseries/test/precomputed_nrt"
+  nrt_pmtiles_output_dir: "/work/hdd/biyc/water_timeseries/test/nrt_tiles"
   # Markers, logs and per-stage .env files (Delta only - Argo has no
   # equivalent). Must be on a filesystem the login node and the compute nodes
   # share.

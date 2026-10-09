@@ -131,9 +131,12 @@ re-run steps whose markers exist). Downloads and merges are not redone. Then:
 (`pmtiles:` in `config.yaml`). From the combined zarr it:
 
 1. takes this run's month (`target_date`) and adds that month's drained lakes to the running
-   drain-breaks table in `paths.nrt_precomputed_dir` (`data/precomputed_nrt/`), and
+   drain-breaks table in `paths.nrt_precomputed_dir` (`data/test/precomputed_nrt/`), and
 2. builds `nrt_<month>_drainage.pmtiles` and copies it to `paths.nrt_pmtiles_output_dir`
-   (`data/nrt_tiles/`).
+   (`data/test/nrt_tiles/`).
+
+Both come from this pipeline's own combined zarr and live under `test/`, apart from the
+production data (`pmtiles.datasets.main`, under `main/`).
 
 A month whose archive already exists is skipped; set `pmtiles.overwrite: true` to rebuild it.
 Tippecanoe works in `<base_dir>/temp_netcdf/pmtiles/`, which is removed when the step ends.

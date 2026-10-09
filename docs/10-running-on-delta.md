@@ -20,7 +20,7 @@ Following the [Delta data management guidance](https://docs.ncsa.illinois.edu/sy
 | Path | What goes there |
 | --- | --- |
 | `/projects/biyc/water_timeseries` | This repo checkout and the venv (`venv/`). Shared and persistent. |
-| `/work/hdd/biyc/water_timeseries` | Only the results: `output/`, `combined_zarr_datasets/`, and the PMTiles (`precomputed_nrt/`, `nrt_tiles/`; `main/...` for the production data). |
+| `/work/hdd/biyc/water_timeseries` | Only the results: `output/`, `combined_zarr_datasets/`, and the PMTiles (`test/precomputed_nrt/`, `test/nrt_tiles/`; `main/...` for the production data). |
 | `/tmp/$USER/water_timeseries` (compute node) | Temp NetCDF and Dask spill space. Node-local SSD, wiped after each job. |
 | `/taiga/.../water_timeseries` | The Argo cluster's shared volume, used exactly as the Argo test pipeline uses it: `base_dir`, `input/` (lake vectors), `region_lake_polygons/`, and `test/dynamic_world_data/` (read and written). Delta's own `test/snakemake_work/` (logs, markers, per-stage `.env` files) is here too. |
 | `~/.config/water_timeseries/` | The Google Cloud and Earth Engine credentials (owner-only). |
@@ -237,8 +237,8 @@ then run again without it.
 ## PMTiles
 
 The pipeline's last step, `create_nrt_pmtiles`, builds the month's `nrt_<month>_drainage.pmtiles`
-from the combined zarr and copies it to `/work/hdd/biyc/water_timeseries/nrt_tiles/`, with the
-running drain-breaks table in `.../precomputed_nrt/`. It runs as a Slurm job (2 cores, 14 GB, up
+from the combined zarr and copies it to `/work/hdd/biyc/water_timeseries/test/nrt_tiles/`, with the
+running drain-breaks table in `.../test/precomputed_nrt/`. It runs as a Slurm job (2 cores, 14 GB, up
 to 4 hours) and works in the compute node's `/tmp`. See
 [PMTiles](07-running-the-testing-pipeline.md#pmtiles) for what it does and its settings.
 
