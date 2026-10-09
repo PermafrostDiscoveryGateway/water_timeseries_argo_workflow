@@ -229,7 +229,6 @@ def run_stage(stage, script, region=None, extra=None, cwd=None):
         "DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE": "0.95",
         "DASK_SCHEDULER": "threads",
     })
-    proc_env.update(credential_env(stage, region))
     # Tools installed next to the interpreter (tippecanoe, tile-join) are
     # found on PATH, like the Docker image's /app/.venv/bin.
     if os.sep in PYTHON:
@@ -240,6 +239,9 @@ def run_stage(stage, script, region=None, extra=None, cwd=None):
         log.write(f"=== {stage} / {region or '-'} / {TARGET_DATE} - {datetime.now()} ===\n")
         log.flush()
         try:
+            # Inside the try, so a failure partway through copying the token
+            # is cleaned up too.
+            proc_env.update(credential_env(stage, region))
             exit_code = subprocess.run(cmd, cwd=cwd or REPO_ROOT, env=proc_env,
                                        stdout=log, stderr=subprocess.STDOUT).returncode
         finally:
