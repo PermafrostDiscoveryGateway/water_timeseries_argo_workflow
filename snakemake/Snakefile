@@ -159,6 +159,11 @@ def write_env(stage, region=None, extra=None):
     return str(env_path)
 
 
+def _ee_home(stage, region=None):
+    """Throwaway HOME holding one step's private copy of the Earth Engine token."""
+    return Path(TEMP_DIR) / "home" / f"{stage}_{region or 'all'}"
+
+
 def credential_env(stage, region=None):
     """Credential env vars for one step, set up like the Argo pods do."""
     env = {}
@@ -174,8 +179,9 @@ def credential_env(stage, region=None):
         # Same as the pods: a private copy under a throwaway HOME, so the
         # earthengine client finds it at ~/.config/earthengine/credentials and
         # can refresh it without touching the original. Kept owner-only, since
-        # temp_dir may be on a shared node's /tmp.
-        home = Path(TEMP_DIR) / "home" / f"{stage}_{region or 'all'}"
+        # temp_dir may be on a shared node's /tmp. run_stage removes it again
+        # once the step's process has returned.
+        home = _ee_home(stage, region)
         ee_dir = home / ".config" / "earthengine"
         ee_dir.mkdir(parents=True, exist_ok=True)
         for d in (Path(TEMP_DIR) / "home", home, home / ".config", ee_dir):
@@ -228,8 +234,12 @@ def run_stage(stage, script, region=None, extra=None, cwd=None):
     with open(log_path, "a") as log:
         log.write(f"=== {stage} / {region or '-'} / {TARGET_DATE} - {datetime.now()} ===\n")
         log.flush()
-        exit_code = subprocess.run(cmd, cwd=cwd or REPO_ROOT, env=proc_env,
-                                   stdout=log, stderr=subprocess.STDOUT).returncode
+        try:
+            exit_code = subprocess.run(cmd, cwd=cwd or REPO_ROOT, env=proc_env,
+                                       stdout=log, stderr=subprocess.STDOUT).returncode
+        finally:
+            # Don't leave the Earth Engine token behind in node-local /tmp.
+            shutil.rmtree(_ee_home(stage, region), ignore_errors=True)
         log.write(f"=== {stage} / {region or '-'} completed with exit code: {exit_code} ===\n")
 
     record = {"stage": stage, "region": region, "target_date": TARGET_DATE,
