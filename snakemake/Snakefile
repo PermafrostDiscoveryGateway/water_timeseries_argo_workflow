@@ -92,7 +92,13 @@ DOWNLOAD_RETRIES = max(download_attempts(r) for r in REGIONS) - 1
 
 def _abs(p):
     # $VARS and ~ are expanded, e.g. /work/hdd/biyc/... in config.delta.yaml.
-    p = Path(os.path.expandvars(os.path.expanduser(str(p))))
+    # "{taiga_root}" is replaced by the top-level taiga_root config key.
+    p = str(p)
+    if "{taiga_root}" in p:
+        if not config.get("taiga_root"):
+            raise ValueError(f"{p!r} uses {{taiga_root}}, but taiga_root is not set in the config")
+        p = p.replace("{taiga_root}", str(config["taiga_root"]))
+    p = Path(os.path.expandvars(os.path.expanduser(p)))
     return str(p if p.is_absolute() else REPO_ROOT / p)
 
 

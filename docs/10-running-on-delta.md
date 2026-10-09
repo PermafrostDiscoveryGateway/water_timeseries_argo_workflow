@@ -25,7 +25,9 @@ Following the [Delta data management guidance](https://docs.ncsa.illinois.edu/sy
 | `/taiga/.../water_timeseries` | The Argo cluster's shared volume, used exactly as the Argo test pipeline uses it: `base_dir`, `input/` (lake vectors), `region_lake_polygons/`, and `test/dynamic_world_data/` (read and written). Delta's own `test/snakemake_work/` (logs, markers, per-stage `.env` files) is here too. |
 | `~/.config/water_timeseries/` | The Google Cloud and Earth Engine credentials (owner-only). |
 
-`/taiga/...` is the full path in [`snakemake/config.delta.yaml`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/snakemake/config.delta.yaml).
+`<taiga_root>` stands for the `taiga_root` setting in [`snakemake/config.delta.yaml`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/snakemake/config.delta.yaml):
+the Argo volume's directory on Taiga (see [Data access](09-data-access.md#from-delta-and-other-ncsa-systems)).
+Every Taiga path in the config is built from it.
 Because Delta and the Argo test pipeline share the Taiga directories, don't run both at the same
 time. Delta also needs write access to `water_timeseries/test/` on Taiga, which has to be granted
 from the cluster side (see [step 4](#4-give-the-allocations-group-write-access-to-the-taiga-test-directory)).
@@ -119,10 +121,15 @@ Then, replacing `<GID>` with the number from above:
 kubectl -n argo exec pvc-inspector-python -- sh -c 'cd /data/water_timeseries/test && chgrp -R <GID> . && chmod -R g+rwX . && find . -type d -exec chmod g+s {} +'
 ```
 
-Check from Delta that you can write there:
+Check from Delta that you can write there. The first command reads `taiga_root` from the config, and
+the later Taiga commands on this page use the same `$TAIGA_ROOT`:
 
 ```bash
-mkdir -p /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/snakemake_work && ls -la /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/
+TAIGA_ROOT=$(sed -n 's/^taiga_root: *"\(.*\)"/\1/p' /projects/biyc/water_timeseries/snakemake/config.delta.yaml)
+```
+
+```bash
+mkdir -p "$TAIGA_ROOT/water_timeseries/test/snakemake_work" && ls -la "$TAIGA_ROOT/water_timeseries/test/"
 ```
 
 The directories should show the `delta_biyc` group (or its number) with `rws` group permissions.
@@ -139,12 +146,12 @@ everyone.
 ### 5. Check the Dynamic World data
 
 `dynamic_world_data` is the Argo test pipeline's own directory on Taiga,
-`/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/dynamic_world_data`, so Delta and the Argo test pipeline use the same files. It must
+`<taiga_root>/water_timeseries/test/dynamic_world_data`, so Delta and the Argo test pipeline use the same files. It must
 contain the historical NetCDF file (`lakes_dw_*.nc` or `dynamic_world_historical_*.nc`) before the
 first run:
 
 ```bash
-ls -la /taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/dynamic_world_data/
+ls -la "$TAIGA_ROOT/water_timeseries/test/dynamic_world_data/"
 ```
 
 To use a production historical file for testing, copy it in from the inspector pod. A copy from
@@ -220,7 +227,7 @@ Detach with `Ctrl-b d`. To reattach later, ssh to the same login node (e.g.
 `ssh dt-login03.delta.ncsa.illinois.edu`) and run `tmux attach -t wts`.
 
 The first run builds the venv on the login node (`build_environment`), which takes a few minutes before
-any Slurm jobs appear. Its log is `/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/snakemake_work/build_environment.log`.
+any Slurm jobs appear. Its log is `<taiga_root>/water_timeseries/test/snakemake_work/build_environment.log`.
 
 #### Following jobs
 
@@ -229,7 +236,7 @@ squeue -u $USER
 ```
 
 Per-step logs, `.env` files and done-markers are in
-`/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26/water_timeseries/test/snakemake_work/<target_date>/`. Delete that directory (or pass
+`<taiga_root>/water_timeseries/test/snakemake_work/<target_date>/`. Delete that directory (or pass
 `--forcerun <rule>`) to re-run a month. If a run is interrupted, re-running the same command
 picks up where it left off; if snakemake complains the directory is locked, add `--unlock` once,
 then run again without it.
@@ -304,8 +311,10 @@ Everything above is tied to the biyc allocation. When moving to a new one (new p
 7. **Results**: copy anything you want to keep from the old `/work/hdd/biyc/water_timeseries`
    (`output/`, `combined_zarr_datasets/`); the Taiga data stays where it is.
 
-If the Argo cluster's volume moves instead (a new PVC), the Taiga path changes: update every
-`/taiga/...` path in `snakemake/config.delta.yaml`, then repeat steps 4 and 5.
+If the Argo cluster's volume moves instead (a new PVC), the Taiga path changes: update
+`taiga_root` in `snakemake/config.delta.yaml` (every other Taiga path follows from it) and the
+path in [Data access](09-data-access.md#from-delta-and-other-ncsa-systems), then repeat steps 4
+and 5.
 
 ## Troubleshooting
 
