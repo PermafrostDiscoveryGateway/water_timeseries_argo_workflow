@@ -308,7 +308,7 @@ def main():
 
     id_chunk_size = int(os.environ.get("id_chunk_size", 500))
     save_interval = int(os.environ.get("save_interval", 1))
-    n_jobs = int(os.environ.get("n_jobs", 2))
+    n_jobs = int(os.environ.get("n_jobs", 1))
     # OVERWRITE=True: reprocess complete regions from scratch, resume partial ones.
     overwrite = os.environ.get("OVERWRITE", "False").lower() in ("true", "1", "yes")
     if overwrite:
