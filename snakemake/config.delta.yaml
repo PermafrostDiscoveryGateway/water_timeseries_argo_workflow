@@ -79,3 +79,6 @@ environment:
   # and no sqlite module), which tippecanoe needs to compile. build_environment builds
   # SQLite from this amalgamation into <path>/sqlite instead.
   sqlite_amalgamation_url: "https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip"
+  # SHA-256 of the zip above, verified before it is extracted and compiled on the
+  # login node. Update it with the URL: curl -sL <url> | shasum -a 256
+  sqlite_amalgamation_sha256: "1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032"

@@ -335,13 +335,22 @@ if ENV_CFG["build"]:
             python_version=str(ENV_CFG["python_version"]),
             tippecanoe=str(ENV_CFG.get("tippecanoe_version") or ""),
             sqlite_url=str(ENV_CFG.get("sqlite_amalgamation_url") or ""),
+            sqlite_sha256=str(ENV_CFG.get("sqlite_amalgamation_sha256") or "").strip().lower(),
         log:
             os.path.join(PATHS["work_dir"], "build_environment.log"),
         run:
+            import hashlib
             import shlex
             import tempfile
             import urllib.request
             import zipfile
+
+            # Checked before the old env is removed below. The zip is compiled
+            # on the login node, so it must match a pinned checksum.
+            if params.tippecanoe and params.sqlite_url and not params.sqlite_sha256:
+                raise ValueError("environment.sqlite_amalgamation_url is set but "
+                                 "environment.sqlite_amalgamation_sha256 is empty - pin the "
+                                 "zip's SHA-256 in the config")
 
             uv = ENV_CFG["uv"]
             # "-e ../water-timeseries-v2" is flags + a path; "pkg @ git+..." is
@@ -382,6 +391,13 @@ if ENV_CFG["build"]:
                         f.write(f"$ download and unzip {params.sqlite_url}\n")
                         f.flush()
                         zip_path, _ = urllib.request.urlretrieve(params.sqlite_url)
+                        with open(zip_path, "rb") as zf:
+                            actual_sha256 = hashlib.sha256(zf.read()).hexdigest()
+                        if actual_sha256 != params.sqlite_sha256:
+                            os.remove(zip_path)
+                            raise ValueError(f"SQLite zip checksum mismatch for {params.sqlite_url}: "
+                                             f"expected sha256 {params.sqlite_sha256}, got {actual_sha256}")
+                        f.write(f"sha256 verified: {actual_sha256}\n")
                         with zipfile.ZipFile(zip_path) as z:
                             names = z.namelist()
                             for name in ("sqlite3.h", "sqlite3.c"):
@@ -420,6 +436,7 @@ if ENV_CFG["build"]:
                 "extra_requirements": input.extras,
                 "tippecanoe_version": params.tippecanoe,
                 "sqlite_amalgamation_url": params.sqlite_url,
+                "sqlite_amalgamation_sha256": params.sqlite_sha256,
                 "built": datetime.now().isoformat(timespec="seconds"),
                 "packages": freeze.splitlines(),
             }, indent=2) + "\n")

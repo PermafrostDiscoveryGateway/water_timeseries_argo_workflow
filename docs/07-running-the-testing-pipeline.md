@@ -153,7 +153,10 @@ development headers; on a Mac, the Xcode command line tools are enough. The buil
 Where the sqlite3 development files are missing (Delta has only the runtime `libsqlite3.so.0` and no
 sqlite module), set `environment.sqlite_amalgamation_url` to a SQLite
 [amalgamation](https://www.sqlite.org/download.html) zip, as `config.delta.yaml` does: the build
-compiles it into `<environment.path>/sqlite/` and builds tippecanoe against that.
+compiles it into `<environment.path>/sqlite/` and builds tippecanoe against that. Also set
+`environment.sqlite_amalgamation_sha256` to the zip's SHA-256 (`curl -sL <url> | shasum -a 256`;
+not the SHA3-256 sqlite.org lists): the build checks it before extracting the zip and refuses to run
+without it.
 
 To use a tippecanoe you already have instead (e.g. `brew install tippecanoe`), set
 `environment.tippecanoe_version: ""`.

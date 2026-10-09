@@ -65,6 +65,9 @@ environment:
   # SQLite amalgamation zip to build tippecanoe against, for systems without
   # the sqlite3 development headers (see config.delta.yaml). "" = system sqlite3.
   sqlite_amalgamation_url: ""
+  # SHA-256 of that zip (not the SHA3-256 sqlite.org lists), checked before it is
+  # extracted and compiled. Required whenever the URL is set.
+  sqlite_amalgamation_sha256: ""
 
 # Only used when environment.build is false.
 python: "../water-timeseries-v2/.venv/bin/python"
