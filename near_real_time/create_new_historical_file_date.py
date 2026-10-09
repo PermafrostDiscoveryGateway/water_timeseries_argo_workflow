@@ -101,7 +101,7 @@ def main():
     logger.info("STEP 1: Waiting for region processing to complete")
     logger.info("=" * 80)
 
-    max_wait_minutes = int(os.environ.get('merge_wait_minutes', 30))
+    max_wait_minutes = int(os.environ.get('merge_wait_minutes', 2880))
 
     regions_completed = wait_for_regions_to_complete(
         dynamic_world_data_dir=dynamic_world_data_dir,
