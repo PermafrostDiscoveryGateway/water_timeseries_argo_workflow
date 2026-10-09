@@ -112,8 +112,7 @@ def main():
 
     region_boundaries = get_region_boundaries()
     all_regions = list(region_boundaries.keys())
-    test_run = os.environ.get("test_run")
-    if test_run and test_run.lower() == 'true':
+    if is_test_run():
         all_regions = list(get_small_regions().keys())
 
     logger.info("Loading lake vector file...")
