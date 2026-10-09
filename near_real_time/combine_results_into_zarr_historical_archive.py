@@ -286,8 +286,12 @@ def main():
     shutil.rmtree(tmp_zarr_dataset_path, ignore_errors=True)
     logger.info(f"Saving combined result to {new_zarr_dataset_path}")
     ds_combined.to_zarr(tmp_zarr_dataset_path, mode='w', align_chunks=True)
-    shutil.rmtree(new_zarr_dataset_path, ignore_errors=True)
+    bak = new_zarr_dataset_path + ".bak"
+    shutil.rmtree(bak, ignore_errors=True)
+    if os.path.exists(new_zarr_dataset_path):
+        os.rename(new_zarr_dataset_path, bak)
     os.rename(tmp_zarr_dataset_path, new_zarr_dataset_path)
+    shutil.rmtree(bak, ignore_errors=True)
 
     logger.success(f"Combined zarr dataset written to {new_zarr_dataset_path}")
 
