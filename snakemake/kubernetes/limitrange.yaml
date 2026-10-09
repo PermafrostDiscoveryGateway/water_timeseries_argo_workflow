@@ -1,0 +1,22 @@
+# Optional, but recommended on a shared cluster: the Kubernetes executor only
+# sets resource *requests* on job pods, so without this they have no memory
+# limit at all. These defaults match the limits in
+# nrt-pipeline-templates-test.yaml (20Gi / 4 cpu / 16Gi ephemeral storage).
+# Containers that set their own limits (controller-job.yaml, inspector.yaml)
+# keep them.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: snakemake-job-defaults
+  namespace: snakemake
+spec:
+  limits:
+    - type: Container
+      default:
+        memory: 20Gi
+        cpu: "4"
+        ephemeral-storage: 16Gi
+      defaultRequest:
+        memory: 1Gi
+        cpu: 250m
+        ephemeral-storage: 1Gi

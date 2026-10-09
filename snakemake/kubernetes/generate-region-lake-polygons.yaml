@@ -1,0 +1,58 @@
+# One-off Job: split the global lake vector file into the per-region
+# <REGION>_lake_polygons.parquet files the download jobs read - the snakemake
+# namespace equivalent of
+# argo_workflows/near_real_time/manual_jobs/generate-region-lake-polygons.yaml.
+# Only needed if you didn't copy region_lake_polygons over from the argo
+# volume (docs/10-...md). Needs the vector file on the PVC first.
+#   kubectl -n snakemake create -f snakemake/kubernetes/generate-region-lake-polygons.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: generate-region-lake-polygons-
+  namespace: snakemake
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      serviceAccountName: snakemake-job
+      restartPolicy: Never
+      containers:
+        - name: main
+          # Keep in sync with profiles/kubernetes/config.yaml (container-image).
+          image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:snakemake-59-adopt-the-test-pipeline-using-snakemake-kubernetes
+          imagePullPolicy: Always
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p /data/water_timeseries/region_lake_polygons /data/scratch/generate_region_lake_polygons
+              cat > /data/scratch/generate_region_lake_polygons/.env << EOF
+              project=pdg-project-406720
+              base_dir=/data/water_timeseries
+              vector_lake_file=/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet
+              region_lake_polygons_dir=/data/water_timeseries/region_lake_polygons
+              MANUAL=True
+              EOF
+              python -u /app/utils/generate_region_lake_polygons.py /data/scratch/generate_region_lake_polygons/.env
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: OMP_NUM_THREADS
+              value: "1"
+          resources:
+            requests:
+              memory: "14Gi"
+              cpu: "2"
+              ephemeral-storage: "8Gi"
+            limits:
+              memory: "20Gi"
+              cpu: "2"
+              ephemeral-storage: "16Gi"
+          volumeMounts:
+            - name: snakemake-share
+              mountPath: /data
+      volumes:
+        - name: snakemake-share
+          persistentVolumeClaim:
+            claimName: snakemake-share

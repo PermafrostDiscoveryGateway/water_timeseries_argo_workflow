@@ -1,0 +1,7 @@
+# Namespace for the snakemake test pipeline - kept separate from `argo`.
+# On a Rancher-managed cluster you may have to create it from the Rancher UI
+# instead, inside your project (see docs/10-...md).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: snakemake

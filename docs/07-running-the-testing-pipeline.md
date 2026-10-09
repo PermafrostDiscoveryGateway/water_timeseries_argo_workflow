@@ -66,6 +66,51 @@ argo submit -n argo --from cronworkflow/nrt-pipeline-cron-test
 You can follow progress and inspect logs for each step in the Argo UI (see
 [6. How the pipeline works](06-how-the-pipeline-works.md#following-jobs)).
 
+## Running the test pipeline locally with snakemake
+
+[`snakemake/Snakefile`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/snakemake/Snakefile)
+runs the same steps as the test cron workflow on your own machine, against one explicit month
+instead of "today". Local paths, regions and the Python interpreter are set in
+[`snakemake/config.yaml`](https://github.com/PermafrostDiscoveryGateway/water-timeseries-argo-workflow/blob/main/snakemake/config.yaml).
+
+```bash
+snakemake -s snakemake/Snakefile --cores 2 --config target_date=2025-08
+```
+
+`target_date` (`YYYY-MM`) is written into every stage's `.env` and picked up by
+`utils.date_gate.most_recent_summer_month()`. It differs from the Argo test pipeline in two ways:
+
+- Each download step (the full download, its missing-ID fallback, and the single backfill after
+  a failed merge) runs once, with no retries.
+- The day-15+ `download-region-last-attempts` step is skipped, so each region always gets the
+  forced best-effort merge before processing.
+
+The first run builds the Python environment the scripts run in (`snakemake/.venv`), with uv, the
+same way the Docker image is built: first water-timeseries-v2 (by default the
+`ncsa-water-timeseries` branch the base image is built from), then this repo's extra
+dependencies from `snakemake/envs/requirements-extra.txt` (keep that in sync with the
+`Dockerfile`). It's rebuilt only when `environment` settings in the config or that file change, and
+a rebuild doesn't re-run steps that already finished. Set `environment.build: false` to use an
+existing interpreter (`python:`) instead.
+
+Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
+that directory (or use `--forcerun`) to re-run a month.
+
+Re-running `process` this way doesn't recompute it from scratch. It resumes from
+`<output_dir>/<region>/breakpoint_<target_date>/incremental_results_<target_date>.parquet`,
+skips every lake already in that file, and then rewrites the final zarr. For a real recompute,
+add `--config recompute_process=true`. The process step then deletes
+`<output_dir>/<region>/breakpoint_<target_date>/` and
+`<output_dir>/<region>/breakpoint_zarr/breakpoints_<target_date>.zarr` for each region before it
+runs:
+
+```bash
+snakemake -s snakemake/Snakefile --cores 2 --forcerun process --config recompute_process=true
+```
+
+To run the same Snakefile on a Kubernetes cluster instead, see
+[10. Running the test pipeline with snakemake on Kubernetes](10-running-the-test-pipeline-with-snakemake-on-kubernetes.md).
+
 ## Prerequisites
 
 Before running the test pipeline, make sure you've completed:

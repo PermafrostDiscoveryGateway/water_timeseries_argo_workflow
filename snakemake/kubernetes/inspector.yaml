@@ -1,0 +1,34 @@
+# Small pod with the snakemake-share PVC mounted at /data, for seeding the
+# volume and browsing results (like storage_setup/light_inspector.yaml for
+# the argo namespace).
+#   kubectl -n snakemake apply -f snakemake/kubernetes/inspector.yaml
+#   kubectl -n snakemake exec -it snakemake-inspector -- sh
+apiVersion: v1
+kind: Pod
+metadata:
+  name: snakemake-inspector
+  namespace: snakemake
+spec:
+  containers:
+    - name: inspector
+      image: alpine:latest
+      command: ["sh", "-c"]
+      args:
+        - |
+          apk add --no-cache bash tree file netcdf
+          tail -f /dev/null
+      volumeMounts:
+        - name: snakemake-share
+          mountPath: /data
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "512Mi"
+          cpu: "500m"
+  volumes:
+    - name: snakemake-share
+      persistentVolumeClaim:
+        claimName: snakemake-share
+  restartPolicy: Never
