@@ -14,12 +14,6 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-# Exit code for a download that is incomplete only because of no-data or
-# incomplete tiles (no real errors). Re-running won't fix those, so the Argo
-# download-region template doesn't retry on it and goes straight to the
-# missing-IDs backfill instead.
-EXIT_INCOMPLETE_NO_REAL_ERRORS = 3
-
 
 # After merging, compare original vs new
 def verify_merge_result(original_file, merged_file):
@@ -157,8 +151,8 @@ def main():
                 else:
                     logger.warning(
                         f"Download for {REGION} incomplete, but only because of confirmed no-data or "
-                        f"incomplete tiles (no real errors) - the missing-IDs backfill will handle these: {download_result}")
-                    exit_code = EXIT_INCOMPLETE_NO_REAL_ERRORS
+                        f"incomplete tiles (no real errors) - not failing the step; the merge step's "
+                        f"completion check/backfill will handle any real gap: {download_result}")
         else:
             logger.debug(f"Already done downloading {REGION} for {date_to_run}")
 
