@@ -90,7 +90,7 @@ Its last step, `create_nrt_pmtiles`, builds the month's PMTiles archive (see
 
 The first run builds the Python environment the scripts run in (`snakemake/.venv`), with uv, the
 same way the Docker image is built: first water-timeseries-v2 (by default the
-`ncsa-water-timeseries` branch the base image is built from), then this repo's extra
+`main` branch the base image is built from), then this repo's extra
 dependencies from `snakemake/envs/requirements-extra.txt` (keep that in sync with the
 `Dockerfile`), and finally tippecanoe, built from source into the environment's `bin/` (see
 [PMTiles](#pmtiles)). It's rebuilt only when `environment` settings in the config or that file change.

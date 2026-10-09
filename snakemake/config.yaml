@@ -53,10 +53,10 @@ environment:
   uv: "uv"
   path: "snakemake/.venv"
   python_version: "3.12"
-  # Anything `uv pip install` accepts. The image tag ncsa-water-timeseries is
-  # built from the branch of the same name. For a local checkout instead:
+  # Anything `uv pip install` accepts. The image tag main (the Dockerfile's base
+  # image) is built from the branch of the same name. For a local checkout instead:
   #   base_package: "-e ../water-timeseries-v2"
-  base_package: "water-timeseries @ git+https://github.com/PermafrostDiscoveryGateway/water-timeseries-v2.git@ncsa-water-timeseries"
+  base_package: "water-timeseries @ git+https://github.com/PermafrostDiscoveryGateway/water-timeseries-v2.git@main"
   extra_requirements: "snakemake/envs/requirements-extra.txt"
   # tippecanoe release (https://github.com/felt/tippecanoe) built into the
   # env's bin/ for create_nrt_pmtiles. "" = skip it and use a tippecanoe
