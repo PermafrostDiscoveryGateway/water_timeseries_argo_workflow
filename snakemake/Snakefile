@@ -1,0 +1,614 @@
+# Local snakemake version of the nrt-pipeline-cron-test Argo workflow
+# (argo_workflows/near_real_time/cron_jobs/pipeline/nrt-pipeline-cron-test.yaml
+# + workflow_templates/nrt-pipeline-templates-test.yaml), pinned to one
+# explicit month (config `target_date`) instead of "today".
+#
+# Per region (region-pipeline in the Argo templates):
+#   download (download-region-with-fallback)
+#     -> merge (+ one backfill/re-merge if it fails)  (merge-and-backfill-region-loop)
+#     -> force merge                                  (merge-after-last-attempts-force)
+#     -> process                                      (process-region)
+# Then, across all regions:
+#   wait-for-region-merges -> create-new-historical-file
+#   create-historical-zarr-archive (after every region's process)
+#     -> create-nrt-pmtiles (the month's drained-lakes PMTiles archive; from
+#        branch 56's Argo templates)
+#
+# Differences from the Argo test pipeline:
+#   - Every download step (download-region, download-missing-region fallback,
+#     backfill) is tried exactly once - no retryStrategy - except that a
+#     download killed at its Slurm time limit is resubmitted while its
+#     download_runtime_hours allow (see config.yaml).
+#   - download-region-last-attempts (the day-15+ parked-ID retry) is skipped,
+#     so the pipeline always takes the Argo `recovered == false` branch and
+#     force-merges each region.
+#
+# The Python environment for the scripts is built by the build_environment rule (uv),
+# the same way the Docker image is: water-timeseries-v2 first, then this
+# repo's extras - see `environment` in config.yaml. build_environment also builds
+# tippecanoe (a C++ program, not a Python package) into the env's bin/.
+#
+# Snakefile.pmtiles builds only the PMTiles, from an existing combined zarr.
+#
+# Usage (from the repo root):
+#   snakemake -s snakemake/Snakefile --cores 2
+#   snakemake -s snakemake/Snakefile --cores 2 --config target_date=2025-07
+#
+# On Delta (each step is a Slurm job - see snakemake/profiles/delta/):
+#   snakemake -s snakemake/Snakefile --configfile snakemake/config.delta.yaml \
+#       --profile snakemake/profiles/delta --config target_date=2025-08
+#
+# Each rule's threads / mem_mb / runtime match the Argo pod limits in
+# nrt-pipeline-templates-test.yaml; ee_download and process_slots stand in for
+# the nrt-pipeline-semaphores ConfigMap and are only enforced when given to
+# --resources (the Delta profile does).
+
+import json
+import math
+import os
+import shutil
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+configfile: os.path.join(workflow.basedir, "config.yaml")
+
+REPO_ROOT = Path(workflow.basedir).parent.resolve()
+TARGET_DATE = str(config["target_date"])
+# Replace target_date's results instead of skipping what's already there: see
+# `overwrite` in config.yaml. Needs `--forcerun process` (run_delta.sh --overwrite).
+OVERWRITE = str(config.get("overwrite", False)).lower() in ("true", "1", "yes")
+REGIONS = list(config["regions"].keys())
+EE = config["earth_engine"]
+
+# Download time limits (config `download_runtime_hours`). Longer than one
+# Slurm job may run, a region's download is split into back-to-back jobs of
+# at most MAX_JOB_HOURS: a job killed at its limit fails, snakemake retries
+# it, and the retry resumes (download_region.py skips tiles already on disk).
+MAX_JOB_HOURS = 48  # Delta cpu partition maximum
+_DL_HOURS = config.get("download_runtime_hours") or {}
+
+
+def download_hours(region):
+    return float(_DL_HOURS.get(region, _DL_HOURS.get("default", 4)))
+
+
+def download_attempts(region):
+    return max(1, math.ceil(download_hours(region) / MAX_JOB_HOURS))
+
+
+def download_runtime(wildcards, attempt):
+    """Minutes for this attempt: whatever's left of the region's hours, up to MAX_JOB_HOURS."""
+    hours = download_hours(wildcards.region)
+    remaining = hours - (attempt - 1) * MAX_JOB_HOURS
+    return int(min(max(remaining, 1), MAX_JOB_HOURS) * 60)
+
+
+# retries is per rule, not per region: enough for the longest region. A region
+# whose limit fits in one job only gets the extra attempts if its download
+# crashes outright, which the download rule otherwise never does.
+DOWNLOAD_RETRIES = max(download_attempts(r) for r in REGIONS) - 1
+
+
+def _abs(p):
+    # $VARS and ~ are expanded, e.g. /work/hdd/biyc/... in config.delta.yaml.
+    # "{taiga_root}" is replaced by the top-level taiga_root config key.
+    p = str(p)
+    if "{taiga_root}" in p:
+        if not config.get("taiga_root"):
+            raise ValueError(f"{p!r} uses {{taiga_root}}, but taiga_root is not set in the config")
+        p = p.replace("{taiga_root}", str(config["taiga_root"]))
+    p = Path(os.path.expandvars(os.path.expanduser(p)))
+    return str(p if p.is_absolute() else REPO_ROOT / p)
+
+
+ENV_CFG = config["environment"]
+if ENV_CFG["build"]:
+    ENV_DIR = _abs(ENV_CFG["path"])
+    PYTHON = os.path.join(ENV_DIR, "bin", "python")
+    ENV_MARKER = os.path.join(ENV_DIR, ".snakemake-env.json")
+    # ancient(): (re)building the env never makes finished steps re-run.
+    ENV_INPUT = [ancient(ENV_MARKER)]
+else:
+    # A bare name ("python") is looked up on PATH; anything with a slash is a path.
+    PYTHON = _abs(config["python"]) if "/" in config["python"] else config["python"]
+    ENV_INPUT = []
+
+
+PATHS = {k: _abs(v) for k, v in config["paths"].items()}
+# TMPDIR / Dask spill space; empty means under base_dir, like the Argo pods.
+SCRATCH = config.get("scratch") or {}
+TEMP_DIR = _abs(SCRATCH.get("temp_dir") or os.path.join(PATHS["base_dir"], "temp_netcdf"))
+DASK_DIR = _abs(SCRATCH.get("dask_dir") or os.path.join(PATHS["base_dir"], "dask_work_space"))
+# Explicit credential files, like the Argo pod's secret mounts. Empty means
+# the user's own gcloud / earthengine login is used as-is.
+CREDS = {k: _abs(v) if v else "" for k, v in (config.get("credentials") or {}).items()}
+# run_name: Snakefile.pmtiles keeps its markers and logs apart from the
+# pipeline's per-month ones.
+WORK = os.path.join(PATHS["work_dir"], str(config.get("run_name") or TARGET_DATE))
+MARK = os.path.join(WORK, "markers")
+LOGS = os.path.join(WORK, "logs")
+PIPELINE_LOG = os.path.join(WORK, "nrt_pipeline_log.jsonl")
+
+wildcard_constraints:
+    region="|".join(REGIONS),
+
+
+def write_env(stage, region=None, extra=None):
+    """Same .env keys the Argo pods write to /data/scratch/<stage>/<region>/.env."""
+    env = {
+        "project": EE["project"],
+        "vector_dataset_file_url": EE["vector_dataset_file_url"],
+        "bucket_path": EE["bucket_path"],
+        "base_dir": PATHS["base_dir"],
+        "dynamic_world_dir": PATHS["dynamic_world_data"],
+        "dynamic_world_data": PATHS["dynamic_world_data"],
+        "dynamic_world_downloads": os.path.join(PATHS["dynamic_world_data"], "downloads"),
+        "vector_lake_file": PATHS["vector_lake_file"],
+        "region_lake_polygons_dir": PATHS["region_lake_polygons_dir"],
+        "output_dir": PATHS["output_dir"],
+        "combined_zarr_datasets": PATHS["combined_zarr_datasets"],
+        # This Snakefile is the test pipeline only: test_run=True makes every
+        # stage skip the summer-month / day-of-month gate and use target_date.
+        # Its PMTiles are built from its own combined zarr and written under
+        # test/ (paths: nrt_*_dir); only Snakefile.pmtiles with
+        # --config pmtiles_dataset=main reads the production data.
+        "test_run": "True",
+        "target_date": TARGET_DATE,
+        # Read by process_NRT.py and combine_results_into_zarr_historical_archive.py.
+        # Set here, not in the rules, so toggling it doesn't count as a code change.
+        "OVERWRITE": str(OVERWRITE),
+    }
+    if region:
+        env["region_name"] = region
+    env.update({k: v for k, v in (extra or {}).items() if v not in ("", None)})
+
+    env_dir = Path(WORK) / "scratch" / stage / (region or "")
+    env_dir.mkdir(parents=True, exist_ok=True)
+    env_path = env_dir / ".env"
+    env_path.write_text("".join(f"{k}={v}\n" for k, v in env.items()))
+    return str(env_path)
+
+
+def _ee_home(stage, region=None):
+    """Throwaway HOME holding one step's private copy of the Earth Engine token."""
+    return Path(TEMP_DIR) / "home" / f"{stage}_{region or 'all'}"
+
+
+def credential_env(stage, region=None):
+    """Credential env vars for one step, set up like the Argo pods do."""
+    env = {}
+    adc = CREDS.get("gcloud_adc")
+    if adc:
+        if not os.path.isfile(adc):
+            raise FileNotFoundError(f"credentials.gcloud_adc not found: {adc}")
+        env["GOOGLE_APPLICATION_CREDENTIALS"] = adc
+    ee_creds = CREDS.get("earthengine")
+    if ee_creds:
+        if not os.path.isfile(ee_creds):
+            raise FileNotFoundError(f"credentials.earthengine not found: {ee_creds}")
+        # Same as the pods: a private copy under a throwaway HOME, so the
+        # earthengine client finds it at ~/.config/earthengine/credentials and
+        # can refresh it without touching the original. Kept owner-only, since
+        # temp_dir may be on a shared node's /tmp. run_stage removes it again
+        # once the step's process has returned.
+        home = _ee_home(stage, region)
+        ee_dir = home / ".config" / "earthengine"
+        ee_dir.mkdir(parents=True, exist_ok=True)
+        for d in (Path(TEMP_DIR) / "home", home, home / ".config", ee_dir):
+            d.chmod(0o700)
+        token = ee_dir / "credentials"
+        shutil.copyfile(ee_creds, token)
+        token.chmod(0o600)
+        env.update({"HOME": str(home), "EARTHENGINE_TOKEN": str(token),
+                    "EE_CONFIG_DIR": str(ee_dir)})
+    return env
+
+
+def run_stage(stage, script, region=None, extra=None, cwd=None):
+    """Run one near_real_time/ script once; return its exit code (never raises).
+
+    cwd defaults to the repo root; the scripts find their imports via PYTHONPATH.
+    """
+    env_path = write_env(stage, region, extra)
+    log_path = Path(LOGS) / (f"{stage}_{region}.log" if region else f"{stage}.log")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    temp_dir, dask_dir = TEMP_DIR, DASK_DIR
+    for d in (temp_dir, dask_dir, PATHS["output_dir"], PATHS["dynamic_world_data"]):
+        os.makedirs(d, exist_ok=True)
+
+    proc_env = dict(os.environ)
+    proc_env.update({
+        "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get("PYTHONPATH")])),
+        "PYTHONUNBUFFERED": "1",
+        "OMP_NUM_THREADS": "1",
+        "lake_chunk_size": "20000",
+        "EE_CLOUD_PROJECT": EE["EE_CLOUD_PROJECT"],
+        "EE_PROJECT": EE["EE_PROJECT"],
+        "TMPDIR": temp_dir,
+        "TEMP": temp_dir,
+        "TMP": temp_dir,
+        "DASK_TEMPORARY_DIRECTORY": dask_dir,
+        "DASK_DISTRIBUTED__WORKER__MEMORY__TARGET": "0.7",
+        "DASK_DISTRIBUTED__WORKER__MEMORY__SPILL": "0.8",
+        "DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE": "0.95",
+        "DASK_SCHEDULER": "threads",
+    })
+    # Tools installed next to the interpreter (tippecanoe, tile-join) are
+    # found on PATH, like the Docker image's /app/.venv/bin.
+    if os.sep in PYTHON:
+        proc_env["PATH"] = os.pathsep.join([os.path.dirname(PYTHON), os.environ.get("PATH", "")])
+
+    cmd = [PYTHON, "-u", str(REPO_ROOT / "near_real_time" / script), env_path]
+    with open(log_path, "a") as log:
+        log.write(f"=== {stage} / {region or '-'} / {TARGET_DATE} - {datetime.now()} ===\n")
+        log.flush()
+        try:
+            # Inside the try, so a failure partway through copying the token
+            # is cleaned up too.
+            proc_env.update(credential_env(stage, region))
+            exit_code = subprocess.run(cmd, cwd=cwd or REPO_ROOT, env=proc_env,
+                                       stdout=log, stderr=subprocess.STDOUT).returncode
+        finally:
+            # Don't leave the Earth Engine token behind in node-local /tmp.
+            shutil.rmtree(_ee_home(stage, region), ignore_errors=True)
+        log.write(f"=== {stage} / {region or '-'} completed with exit code: {exit_code} ===\n")
+
+    record = {"stage": stage, "region": region, "target_date": TARGET_DATE,
+              "exit_code": exit_code,
+              "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    with open(PIPELINE_LOG, "a") as f:
+        f.write(json.dumps(record) + "\n")
+    print(f"[{stage}{' / ' + region if region else ''}] exit code {exit_code} (log: {log_path})")
+    return exit_code
+
+
+PM = config["pmtiles"]
+
+
+def pmtiles_dataset(name):
+    """Input zarr and output dirs for one entry of `pmtiles.datasets`.
+
+    "test" is this pipeline's own output (paths: combined_zarr_datasets,
+    nrt_precomputed_dir, nrt_pmtiles_output_dir); any key a dataset sets
+    replaces the matching path.
+    """
+    if name not in PM["datasets"]:
+        raise ValueError(f"pmtiles dataset {name!r} not in config (have: {', '.join(PM['datasets'])})")
+    overrides = {k: v for k, v in (PM["datasets"][name] or {}).items() if v}
+    if name != "test" and not overrides.get("combined_zarr_datasets"):
+        # Don't silently fall back to this pipeline's own zarr.
+        raise ValueError(f"pmtiles dataset {name!r} has no combined_zarr_datasets - set it in the config")
+    ds = {k: PATHS[k] for k in ("combined_zarr_datasets", "nrt_precomputed_dir", "nrt_pmtiles_output_dir")}
+    ds.update({k: _abs(v) for k, v in overrides.items()})
+    return ds
+
+
+def run_pmtiles(stage, dataset, month, overwrite):
+    """Run create_nrt_pmtiles.py for one month ("" = latest in the zarr) of one dataset.
+
+    Tippecanoe builds in node-local scratch: the script's nrt_pmtiles_build_dir
+    and, since water_timeseries.utils.pmtiles_build puts its temp dir at
+    ./downloads/tippecanoe_tmp, the working directory too. Only the finished
+    archive is copied to nrt_pmtiles_output_dir.
+    """
+    scratch = os.path.join(TEMP_DIR, "pmtiles", stage)
+    shutil.rmtree(scratch, ignore_errors=True)
+    os.makedirs(scratch)
+    try:
+        return run_stage(stage, "create_nrt_pmtiles.py", cwd=scratch, extra={
+            **dataset,
+            "nrt_pmtiles_build_dir": os.path.join(scratch, "build"),
+            "nrt_pmtiles_month": month,
+            "drain_threshold": PM["drain_threshold"],
+            "nrt_poly_max_zoom": PM["poly_max_zoom"],
+            "nrt_drain_breaks_keep": PM["drain_breaks_keep"],
+            "OVERWRITE": str(bool(overwrite) or OVERWRITE),
+        })
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def mark_done(path, **status):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps({"target_date": TARGET_DATE, **status}, indent=2) + "\n")
+
+
+# Quick or network-only steps run where snakemake itself runs (the Delta
+# login node) instead of as Slurm jobs.
+localrules: all, build_environment, wait_for_region_merges
+
+
+rule all:
+    input:
+        os.path.join(MARK, "create_nrt_pmtiles.done"),
+        os.path.join(MARK, "create_new_historical_file.done"),
+
+
+if ENV_CFG["build"]:
+    # Same two layers as the Docker image: water-timeseries-v2 (the base
+    # image), then this repo's extra dependencies (Dockerfile's uv pip install).
+    # Installed as two separate steps on purpose, so the extras win where they
+    # conflict with the base (geemap==0.37.2) exactly as they do in the image.
+    rule build_environment:
+        input:
+            extras=_abs(ENV_CFG["extra_requirements"]),
+        output:
+            ENV_MARKER,
+        params:
+            base=ENV_CFG["base_package"],
+            python_version=str(ENV_CFG["python_version"]),
+            tippecanoe=str(ENV_CFG.get("tippecanoe_version") or ""),
+            sqlite_url=str(ENV_CFG.get("sqlite_amalgamation_url") or ""),
+            sqlite_sha256=str(ENV_CFG.get("sqlite_amalgamation_sha256") or "").strip().lower(),
+        log:
+            os.path.join(PATHS["work_dir"], "build_environment.log"),
+        run:
+            import hashlib
+            import shlex
+            import tempfile
+            import urllib.request
+            import zipfile
+
+            # Checked before the old env is removed below. The zip is compiled
+            # on the login node, so it must match a pinned checksum.
+            if params.tippecanoe and params.sqlite_url and not params.sqlite_sha256:
+                raise ValueError("environment.sqlite_amalgamation_url is set but "
+                                 "environment.sqlite_amalgamation_sha256 is empty - pin the "
+                                 "zip's SHA-256 in the config")
+
+            uv = ENV_CFG["uv"]
+            # "-e ../water-timeseries-v2" is flags + a path; "pkg @ git+..." is
+            # one requirement that has to stay a single argument.
+            base = shlex.split(params.base) if params.base.startswith("-") else [params.base]
+            shutil.rmtree(ENV_DIR, ignore_errors=True)
+            steps = [
+                [uv, "venv", "--python", params.python_version, ENV_DIR],
+                # The water-timeseries-v2 Dockerfile installs h3 first as well.
+                [uv, "pip", "install", "--python", PYTHON, "h3>=4.0.0"],
+                [uv, "pip", "install", "--python", PYTHON, *base],
+                [uv, "pip", "install", "--python", PYTHON, "-r", input.extras],
+            ]
+            Path(log[0]).parent.mkdir(parents=True, exist_ok=True)
+            with open(log[0], "w") as f:
+                for cmd in steps:
+                    f.write(f"$ {shlex.join(cmd)}\n")
+                    f.flush()
+                    subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, check=True)
+                if params.tippecanoe:
+                    # tippecanoe + tile-join for create_nrt_pmtiles, built from
+                    # source into the env's bin/ (run_stage puts it on PATH).
+                    # Needs git, make, a C++ compiler and the zlib development
+                    # headers, plus sqlite3's unless sqlite_amalgamation_url is set.
+                    make_env = dict(os.environ)
+                    steps = []
+                    if params.sqlite_url:
+                        # No sqlite3.h / libsqlite3.so on the system (Delta has only
+                        # the runtime libsqlite3.so.0): build SQLite from its
+                        # amalgamation into the env, and point tippecanoe's Makefile
+                        # at it (it appends to CFLAGS/CXXFLAGS/LDFLAGS from the
+                        # environment). rpath, so tippecanoe finds it at run time.
+                        sqlite_dir = os.path.join(ENV_DIR, "sqlite")
+                        sqlite_inc = os.path.join(sqlite_dir, "include")
+                        sqlite_lib = os.path.join(sqlite_dir, "lib")
+                        os.makedirs(sqlite_inc, exist_ok=True)
+                        os.makedirs(sqlite_lib, exist_ok=True)
+                        f.write(f"$ download and unzip {params.sqlite_url}\n")
+                        f.flush()
+                        zip_path, _ = urllib.request.urlretrieve(params.sqlite_url)
+                        with open(zip_path, "rb") as zf:
+                            actual_sha256 = hashlib.sha256(zf.read()).hexdigest()
+                        if actual_sha256 != params.sqlite_sha256:
+                            os.remove(zip_path)
+                            raise ValueError(f"SQLite zip checksum mismatch for {params.sqlite_url}: "
+                                             f"expected sha256 {params.sqlite_sha256}, got {actual_sha256}")
+                        f.write(f"sha256 verified: {actual_sha256}\n")
+                        with zipfile.ZipFile(zip_path) as z:
+                            names = z.namelist()
+                            for name in ("sqlite3.h", "sqlite3.c"):
+                                member = next(n for n in names if n.endswith("/" + name))
+                                Path(sqlite_dir, name).write_bytes(z.read(member))
+                        shutil.move(os.path.join(sqlite_dir, "sqlite3.h"), sqlite_inc)
+                        steps.append(([os.environ.get("CC", "cc"), "-O2", "-fPIC", "-shared",
+                                       "-DSQLITE_THREADSAFE=1", "-o",
+                                       os.path.join(sqlite_lib, "libsqlite3.so"),
+                                       os.path.join(sqlite_dir, "sqlite3.c"),
+                                       "-lm", "-lpthread", "-ldl"], REPO_ROOT))
+                        for var in ("CFLAGS", "CXXFLAGS"):
+                            make_env[var] = f"-I{sqlite_inc} {make_env.get(var, '')}".strip()
+                        make_env["LDFLAGS"] = (f"-L{sqlite_lib} -Wl,-rpath,{sqlite_lib} "
+                                               f"{make_env.get('LDFLAGS', '')}").strip()
+                    with tempfile.TemporaryDirectory() as src:
+                        steps += [
+                            (["git", "clone", "--depth", "1", "--branch", params.tippecanoe,
+                              "https://github.com/felt/tippecanoe.git", src], REPO_ROOT),
+                            (["make", "-j4"], src),
+                            (["make", "install", f"PREFIX={ENV_DIR}"], src),
+                            ([os.path.join(ENV_DIR, "bin", "tippecanoe"), "--version"], src),
+                        ]
+                        for cmd, cwd in steps:
+                            f.write(f"$ {shlex.join(cmd)}\n")
+                            f.flush()
+                            subprocess.run(cmd, cwd=cwd, env=make_env, stdout=f,
+                                           stderr=subprocess.STDOUT, check=True)
+                f.write("$ pip freeze\n")
+                freeze = subprocess.run([uv, "pip", "freeze", "--python", PYTHON],
+                                        capture_output=True, text=True, check=True).stdout
+                f.write(freeze)
+            Path(output[0]).write_text(json.dumps({
+                "python_version": params.python_version,
+                "base_package": params.base,
+                "extra_requirements": input.extras,
+                "tippecanoe_version": params.tippecanoe,
+                "sqlite_amalgamation_url": params.sqlite_url,
+                "sqlite_amalgamation_sha256": params.sqlite_sha256,
+                "built": datetime.now().isoformat(timespec="seconds"),
+                "packages": freeze.splitlines(),
+            }, indent=2) + "\n")
+
+
+# download-region-with-fallback: one attempt at the full per-tile download;
+# if that fails, one attempt at the targeted missing-ID download. Never fails
+# the region - like the Argo region-pipeline (continueOn failed/error), merge
+# decides whether there's enough data.
+rule download:
+    input:
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "{region}", "download.done"),
+    threads: 1
+    resources:
+        mem_mb=8000,
+        runtime=download_runtime,
+        ee_download=1,
+    retries: DOWNLOAD_RETRIES
+    run:
+        download = run_stage("download", "download_region.py", wildcards.region)
+        missing = None
+        if download != 0:
+            missing = run_stage("download_missing", "download_region_missing_ids.py", wildcards.region)
+        mark_done(output[0], download=download, download_missing=missing)
+
+
+# merge-and-backfill-region-loop: merge; if the region is still below the
+# completion threshold, backfill once and re-merge. Never fails the region -
+# the force merge below is what has to succeed.
+rule merge_and_backfill:
+    input:
+        os.path.join(MARK, "{region}", "download.done"),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "{region}", "merge_and_backfill.done"),
+    threads: 2
+    resources:
+        mem_mb=20000,
+        runtime=240,
+        # The backfill is a download - shares the download semaphore in Argo.
+        ee_download=1,
+    retries: 0
+    run:
+        status = {"merge": run_stage("merge_region", "merge_region.py", wildcards.region)}
+        if status["merge"] != 0 and config["backfill_after_failed_merge"]:
+            status["backfill"] = run_stage("backfill", "download_region_missing_ids.py", wildcards.region)
+            status["merge_after_backfill"] = run_stage("merge_region", "merge_region.py", wildcards.region)
+        mark_done(output[0], **status)
+
+
+# download-region-last-attempts is skipped, i.e. always "recovered == false",
+# so this is merge-after-last-attempts-force: best-effort merge accepting
+# whatever completeness the region has.
+rule force_merge:
+    input:
+        os.path.join(MARK, "{region}", "merge_and_backfill.done"),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "{region}", "merge.done"),
+    threads: 2
+    resources:
+        mem_mb=20000,
+        runtime=120,
+    run:
+        code = run_stage("merge_region_force", "merge_region.py", wildcards.region,
+                         extra={"force_merge": "true"})
+        if code != 0:
+            raise RuntimeError(f"force merge failed for {wildcards.region} (exit {code})")
+        mark_done(output[0], merge_force=code)
+
+
+rule process:
+    input:
+        os.path.join(MARK, "{region}", "merge.done"),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "{region}", "process.done"),
+    threads: 4
+    resources:
+        mem_mb=20000,
+        runtime=240,
+        process_slots=1,
+    run:
+        params = config["regions"][wildcards.region] or {}
+        code = run_stage("process", "process_NRT.py", wildcards.region, extra={
+            "id_chunk_size": params.get("id_chunk_size"),
+            "save_interval": params.get("save_interval"),
+            "n_jobs": params.get("n_jobs"),
+        })
+        if code != 0:
+            raise RuntimeError(f"process failed for {wildcards.region} (exit {code})")
+        mark_done(output[0], process=code)
+
+
+rule create_historical_zarr_archive:
+    input:
+        expand(os.path.join(MARK, "{region}", "process.done"), region=REGIONS),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "create_historical_zarr_archive.done"),
+    threads: 2
+    resources:
+        mem_mb=20000,
+        runtime=120,
+    run:
+        code = run_stage("create_historical_zarr_archive",
+                         "combine_results_into_zarr_historical_archive.py",
+                         extra={"combine_all": "True"})
+        if code != 0:
+            raise RuntimeError(f"create_historical_zarr_archive failed (exit {code})")
+        mark_done(output[0], exit_code=code)
+
+
+# create-nrt-pmtiles: the month's nrt_<month>_drainage.pmtiles, built from the
+# combined zarr create_historical_zarr_archive just wrote. Same .env settings
+# as the Argo step; see run_pmtiles() and `pmtiles` in config.yaml.
+rule create_nrt_pmtiles:
+    input:
+        os.path.join(MARK, "create_historical_zarr_archive.done"),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "create_nrt_pmtiles.done"),
+    threads: 2
+    resources:
+        # The Argo step's limits.
+        mem_mb=14000,
+        runtime=240,
+    run:
+        code = run_pmtiles("create_nrt_pmtiles", pmtiles_dataset("test"), TARGET_DATE,
+                           overwrite=PM["overwrite"])
+        if code != 0:
+            raise RuntimeError(f"create_nrt_pmtiles failed (exit {code})")
+        mark_done(output[0], exit_code=code)
+
+
+# In Argo this starts with the workflow and polls; here snakemake already
+# orders it after every region's merge, so it's just a quick confirmation.
+rule wait_for_region_merges:
+    input:
+        expand(os.path.join(MARK, "{region}", "merge.done"), region=REGIONS),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "wait_for_region_merges.done"),
+    run:
+        code = run_stage("wait_for_region_merges", "wait_for_region_merges.py",
+                         extra={"merge_wait_minutes": config["merge_wait_minutes"]})
+        if code != 0:
+            raise RuntimeError(f"wait_for_region_merges timed out (exit {code})")
+        mark_done(output[0], exit_code=code)
+
+
+rule create_new_historical_file:
+    input:
+        os.path.join(MARK, "wait_for_region_merges.done"),
+        ENV_INPUT,
+    output:
+        os.path.join(MARK, "create_new_historical_file.done"),
+    threads: 1
+    resources:
+        mem_mb=20000,
+        runtime=120,
+    run:
+        code = run_stage("create_new_historical_file", "create_new_historical_file.py",
+                         extra={"merge_wait_minutes": config["merge_wait_minutes"]})
+        if code != 0:
+            raise RuntimeError(f"create_new_historical_file failed (exit {code})")
+        mark_done(output[0], exit_code=code)
