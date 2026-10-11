@@ -122,14 +122,14 @@ spec:
             name: nrt-pipeline-templates-test
             template: create-new-historical-file
 
-        # Last step: builds the NRT dashboard's PMTiles archive for the latest
-        # month in the combined breakpoint zarr. Waits on create-historical-file
-        # too so it's the final thing the pipeline does, but still runs if that
-        # step failed, since it only reads the zarr archive. Runs with
+        # Builds the NRT dashboard's PMTiles archive for the latest month in the
+        # combined breakpoint zarr. It only reads the zarr archive, so it depends
+        # on create-historical-zarr-archive alone and runs in parallel with
+        # create-historical-file rather than waiting behind it. Runs with
         # OVERWRITE=False, so a month that's already built is skipped - use
         # manual_jobs/create-nrt-pmtiles.yaml to force a rebuild.
         - name: create-nrt-pmtiles
-          depends: "create-historical-zarr-archive && (create-historical-file.Succeeded || create-historical-file.Failed || create-historical-file.Errored)"
+          depends: "create-historical-zarr-archive"
           templateRef:
             name: nrt-pipeline-templates-test
             template: create-nrt-pmtiles

@@ -10,7 +10,7 @@ spec:
   # dashboard's PMTiles archive (nrt_<month>_drainage.pmtiles) for the latest
   # month in the most recent combined breakpoint zarr.
   #
-  # The daily pipeline already runs create-nrt-pmtiles as its last step, with
+  # The daily pipeline already runs create-nrt-pmtiles after the zarr archive step, with
   # OVERWRITE=False, so it skips a month that's already built. Use this job
   # to force a rebuild of the latest month (e.g. after the combined zarr was
   # regenerated). `overwrite` is passed to create_nrt_pmtiles.py as OVERWRITE:
