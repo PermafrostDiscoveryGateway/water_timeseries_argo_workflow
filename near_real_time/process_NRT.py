@@ -1,5 +1,5 @@
 from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates
-from utils.date_gate import is_test_run, most_recent_summer_month
+from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
 import sys
 from typing import List, Dict, Any, Optional
 import gc
@@ -332,7 +332,7 @@ def main():
         logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_date}")
     elif (TODAY_MONTH -1) in summer_months:
         TODAY_DAY = TODAY.day
-        if TODAY_DAY > 3:
+        if TODAY_DAY >= RUN_START_DAY:
             SHOULD_RUN = True
             target_month = TODAY_MONTH - 1
             target_date = f"{TODAY_YEAR}-{target_month:02d}"

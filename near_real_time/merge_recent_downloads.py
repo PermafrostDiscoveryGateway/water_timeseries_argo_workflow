@@ -1,7 +1,7 @@
 from utils.helper_functions import (
     verify_downloads_complete, merge_new_results, combine_region_files, _get_id_chunk_size,
 )
-from utils.date_gate import is_test_run, most_recent_summer_month
+from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
 import sys
 from loguru import logger
 from datetime import datetime, timedelta
@@ -882,7 +882,7 @@ def main():
         logger.debug(f"test_run=True - bypassing the summer-month/day-of-month gate, using {target_month.strftime('%Y-%m')}")
     elif TODAY_MONTH - 1 in summer_months:
         TODAY_DAY = TODAY.day
-        if TODAY_DAY > 3:
+        if TODAY_DAY >= RUN_START_DAY:
             SHOULD_RUN = True
             # Last complete (previous) month, computed this way so it also
             # handles the January wraparound correctly.

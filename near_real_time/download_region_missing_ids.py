@@ -40,7 +40,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from utils.region_boundaries import get_region_boundaries
-from utils.date_gate import is_test_run, most_recent_summer_month
+from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
 from utils.download_utils import is_no_data_error
 
 # Accept a batch as complete if this fraction of its requested lakes come
@@ -293,7 +293,7 @@ def main():
         logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
     elif TODAY_MONTH - 1 in summer_months:
         TODAY_DAY = TODAY.day
-        if TODAY_DAY > 2:
+        if TODAY_DAY >= RUN_START_DAY:
             SHOULD_RUN = True
             target_month = datetime(TODAY.year, TODAY_MONTH - 1, 1)
 

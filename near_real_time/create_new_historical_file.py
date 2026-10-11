@@ -2,7 +2,7 @@ from utils.helper_functions import (
     verify_merged_netcdf, enable_memory_tracking, log_memory_usage,
     combine_region_files, _get_id_chunk_size,
 )
-from utils.date_gate import is_test_run, most_recent_summer_month
+from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
 import sys
 from loguru import logger
 from datetime import datetime
@@ -488,7 +488,7 @@ def get_target_month_to_run(today: datetime = None) -> "datetime | None":
 
     if is_test_run():
         return most_recent_summer_month(today)
-    if today.month - 1 in summer_months and today.day > 3:
+    if today.month - 1 in summer_months and today.day >= RUN_START_DAY:
         return datetime(today.year, today.month - 1, 1)
     return None
 

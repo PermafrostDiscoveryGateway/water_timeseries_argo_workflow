@@ -25,7 +25,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from utils.region_boundaries import get_region_boundaries, get_small_regions
-from utils.date_gate import is_test_run, most_recent_summer_month
+from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
 from near_real_time.download_region_missing_ids import (
     get_region_lakes,
     get_historical_valid_ids,
@@ -99,7 +99,7 @@ def main():
         target_month = most_recent_summer_month(TODAY)
         logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
     else:
-        should_run = (TODAY.month - 1) in summer_months and TODAY.day > 3
+        should_run = (TODAY.month - 1) in summer_months and TODAY.day >= RUN_START_DAY
         target_month = datetime(TODAY.year, TODAY.month - 1, 1)
 
     if not should_run:

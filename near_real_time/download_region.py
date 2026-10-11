@@ -1,5 +1,5 @@
 from utils.helper_functions import verify_downloads_complete , download_near_real_time_region_dates, compare_netcdf_files
-from utils.date_gate import is_test_run, most_recent_summer_month
+from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
 import sys
 import utils.download_utils as download_new_dynamic_world_data
 from loguru import logger
@@ -122,7 +122,7 @@ def main():
         logger.debug(f"TODAY MONTH: {TODAY_MONTH}")
         logger.debug(f"Last month: {TODAY.month - 1} checking to see if we should run")
         TODAY_DAY = TODAY.day
-        if TODAY_DAY > 2:
+        if TODAY_DAY >= RUN_START_DAY:
             SHOULD_RUN = True
             target_month = datetime(TODAY.year, TODAY_MONTH - 1, 1)
             logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")

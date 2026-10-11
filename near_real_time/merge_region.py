@@ -25,7 +25,7 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from utils.date_gate import is_test_run, most_recent_summer_month
+from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
 from near_real_time.merge_recent_downloads import process_region_fast, _configure_dask_for_low_memory
 
 
@@ -59,7 +59,7 @@ def main():
         logger.debug(f"test_run=True - bypassing the summer-month/day-of-month gate, using {target_month.strftime('%Y-%m')}")
     elif TODAY_MONTH - 1 in summer_months:
         TODAY_DAY = TODAY.day
-        if TODAY_DAY > 3:
+        if TODAY_DAY >= RUN_START_DAY:
             SHOULD_RUN = True
             # Last complete (previous) month, computed this way so it also
             # handles the January wraparound correctly.

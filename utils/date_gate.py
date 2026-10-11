@@ -1,9 +1,10 @@
 # Shared summer-season / test-run date gating for the near-real-time scripts.
 #
-# Normal runs only fire in June-September, and only a few days into the month
-# (so the prior month's upstream data is actually available) - see the
-# `TODAY_DAY > N` checks next to each call site. A test run needs to be able
-# to fire on any day, against whichever month is actually testable. The
+# Normal runs only fire in June-September, and only from RUN_START_DAY of the
+# month (so the prior month's upstream data is actually available) - every
+# near-real-time script compares today's day against that one constant. A
+# test run needs to be able to fire on any day, against whichever month is
+# actually testable. The
 # current month is never a candidate - even in-season it's still in
 # progress and won't have data yet - so this always targets the most recent
 # *complete* summer month, starting the search at last month.
@@ -16,6 +17,10 @@ import re
 from datetime import datetime
 
 SUMMER_MONTHS = [6, 7, 8, 9]
+
+# First day of the month the NRT pipeline stages (download, merge, check,
+# process, combine, historical file) are allowed to run, i.e. `day >= RUN_START_DAY`.
+RUN_START_DAY = 2
 
 
 def is_test_run() -> bool:
@@ -36,7 +41,7 @@ def should_run_last_attempts(today: datetime = None, min_day: int = 15) -> bool:
     """Gate for download_region_last_attempts.py.
 
     Dynamic World ingestion for a just-finished month can lag by a couple of
-    weeks, so a lake confirmed "no data" early in the month (day 3-14, when
+    weeks, so a lake confirmed "no data" early in the month (day 2-14, when
     the regular download/backfill scripts run) may just not be ingested yet.
     This gate holds the last-attempts script back until `min_day`, giving
     ingestion time to catch up before treating a lake as permanently no-data.
