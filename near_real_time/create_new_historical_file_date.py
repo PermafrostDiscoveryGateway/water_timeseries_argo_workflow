@@ -129,7 +129,7 @@ def main():
 
         if not region_files:
             logger.error(f"No region files found for date {date_to_run}")
-            return
+            return 1
 
         logger.info(f"Found {len(region_files)} region files to combine")
 
