@@ -130,6 +130,10 @@ spec:
         # manual_jobs/create-nrt-pmtiles.yaml to force a rebuild.
         - name: create-nrt-pmtiles
           depends: "create-historical-zarr-archive"
+          # A failure here (e.g. the latest month has no drainage_confidence) shows
+          # on this node but doesn't mark the whole workflow Failed.
+          continueOn:
+            failed: true
           templateRef:
             name: nrt-pipeline-templates-test
             template: create-nrt-pmtiles
