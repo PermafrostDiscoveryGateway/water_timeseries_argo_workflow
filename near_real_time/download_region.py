@@ -151,7 +151,7 @@ def main():
                     logger.warning(
                         f"Download for {REGION} incomplete, but only because of confirmed no-data or "
                         f"incomplete tiles (no real errors) - the missing-IDs backfill will handle these: {download_result}")
-                exit_code = 1
+                exit_code = 1 if download_result.get('had_real_error', True) else 0
         else:
             logger.debug(f"Already done downloading {REGION} for {date_to_run}")
 

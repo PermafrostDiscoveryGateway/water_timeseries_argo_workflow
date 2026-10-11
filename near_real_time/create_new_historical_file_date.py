@@ -101,7 +101,7 @@ def main():
     logger.info("STEP 1: Waiting for region processing to complete")
     logger.info("=" * 80)
 
-    max_wait_minutes = int(os.environ.get('merge_wait_minutes', 30))
+    max_wait_minutes = int(os.environ.get('merge_wait_minutes', 2880))
 
     regions_completed = wait_for_regions_to_complete(
         dynamic_world_data_dir=dynamic_world_data_dir,
@@ -179,7 +179,7 @@ def main():
         required_space_gb = (historical_file_size_gb + combined_file_size_gb) * 2.5
         if free_space_gb < required_space_gb:
             logger.error(f"Insufficient disk space! Need ~{required_space_gb:.2f} GB, have {free_space_gb:.2f} GB")
-            return
+            return 1
     except Exception as e:
         logger.warning(f"Could not check disk space: {e}")
 
@@ -197,7 +197,7 @@ def main():
 
     if not merge_result.get('success', False):
         logger.error(f"Failed to merge historical file: {merge_result.get('error', 'Unknown error')}")
-        return
+        return 1
 
     if not merge_result.get('dates_added'):
         logger.info(merge_result.get('message', 'No new dates to add.'))
@@ -230,4 +230,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

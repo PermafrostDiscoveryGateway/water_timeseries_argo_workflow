@@ -290,6 +290,7 @@ def main():
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         return {'success': False, 'error': 'No .nc files found'}
 
+    # mtime, not ctime, on purpose: the other scripts pick the historical file by mtime too.
     original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getmtime)
     logger.debug(f"Most recent dynamic world file: {original_most_recent_dynamic_world_file}")
     logger.debug(f"Dates in the historical file")
