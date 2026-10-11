@@ -162,7 +162,9 @@ def merge_drained_rows(df, target_month, drain_threshold, breaks_file, previous_
         existing = pd.read_parquet(previous_file)
         logger.info(f"Seeding {breaks_file.name} from {previous_file.name}")
         n_before = len(existing)
-        existing = existing[existing.get("analysis_month") != target_month]
+        # An empty or legacy table may have no analysis_month column - nothing to drop then.
+        if "analysis_month" in existing.columns:
+            existing = existing[existing["analysis_month"] != target_month]
         if drained.empty and len(existing) == n_before:
             # Nothing to add and nothing to drop - previous_file is still current,
             # so don't write an identical copy of it.
