@@ -20,10 +20,11 @@ This script:
    re-reads its whole tile store in random order; on the NFS-backed PVC that
    ran at ~50 KB/s and took hours, on local disk it takes minutes.
 
-The daily pipeline runs this as its last step, so it skips any month whose
-``nrt_<month>_drainage.pmtiles`` already exists or that already has rows in
-the drain-breaks table. Set ``OVERWRITE=True`` (see
-manual_jobs/create-nrt-pmtiles.yaml) to rebuild the latest month anyway.
+The daily pipeline runs this after the combined zarr is written. It skips a
+month only when ``nrt_<month>_drainage.pmtiles`` is newer than the combined
+zarr, so a regenerated zarr (new data, or more lakes drained) refreshes the
+month and an unchanged one is left alone. Set ``OVERWRITE=True`` (see
+manual_jobs/create-nrt-pmtiles.yaml) to rebuild the latest month regardless.
 
 Note: the ``water_timeseries.utils.pmtiles_build.build_pmtiles_nrt_monthly``
 on this branch (``ncsa-water-timeseries``) only builds the ``drained``/
@@ -109,14 +110,12 @@ def nrt_pmtiles_filename(month):
     return f"nrt_{month}_drainage.pmtiles"
 
 
-def month_already_built(target_month, nrt_pmtiles_output_dir, previous_file):
-    """True if target_month's archive is already published or its rows are already in the drain-breaks table."""
-    if (nrt_pmtiles_output_dir / nrt_pmtiles_filename(target_month)).exists():
-        return True
-    if previous_file is None:
+def month_already_built(target_month, nrt_pmtiles_output_dir, combined_zarr_path):
+    """True if target_month's archive is published and newer than the combined zarr it was built from."""
+    pmtiles_path = nrt_pmtiles_output_dir / nrt_pmtiles_filename(target_month)
+    if not pmtiles_path.exists():
         return False
-    months = pd.read_parquet(previous_file, columns=["analysis_month"])["analysis_month"]
-    return (months == target_month).any()
+    return pmtiles_path.stat().st_mtime > Path(combined_zarr_path).stat().st_mtime
 
 
 def prune_old_breaks_files(nrt_precomputed_dir, keep, protect=None):
@@ -232,8 +231,9 @@ def main():
     logger.info(f"Target month: {target_month}")
 
     previous_file = find_previous_breaks_file(nrt_precomputed_dir)
-    if not overwrite and month_already_built(target_month, nrt_pmtiles_output_dir, previous_file):
-        logger.info(f"{target_month} already built - skipping (set OVERWRITE=True to rebuild)")
+    if not overwrite and month_already_built(target_month, nrt_pmtiles_output_dir, combined_zarr_path):
+        logger.info(f"{target_month} already built from the current zarr - skipping "
+                    f"(set OVERWRITE=True to rebuild)")
         return {'success': True, 'target_month': target_month, 'skipped': True, 'pmtiles': {}}
     if overwrite:
         logger.info(f"OVERWRITE=True - rebuilding {target_month}")
@@ -253,10 +253,9 @@ def main():
                      f"month and regenerate the combined zarr before building its PMTiles.")
         return {'success': False, 'target_month': target_month, 'error': 'missing drainage_confidence'}
 
-    # The table is the "month already built" marker (see month_already_built), so
-    # write it to a .partial name (which the *.parquet globs ignore), build from
-    # that, and only os.replace it into place once the archive is published. A
-    # failed build then leaves no table behind and the next run retries the month.
+    # Write the table to a .partial name (which the *.parquet globs ignore), build
+    # from that, and only os.replace it into place once the archive is published,
+    # so a failed build never leaves a table that claims the month was built.
     breaks_file = drain_breaks_path(nrt_precomputed_dir, run_time)
     partial_file = breaks_file.with_name(breaks_file.name + ".partial")
     outputs = {}
@@ -265,7 +264,7 @@ def main():
 
         if drained.empty:
             stale_pmtiles = nrt_pmtiles_output_dir / nrt_pmtiles_filename(target_month)
-            if overwrite and stale_pmtiles.exists():
+            if stale_pmtiles.exists():
                 logger.info(f"Removing {stale_pmtiles} - rebuilt {target_month} has no drained lakes")
                 stale_pmtiles.unlink()
             logger.warning(f"No drained lakes for {target_month} - skipping pmtiles build "
