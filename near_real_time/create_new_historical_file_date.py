@@ -155,7 +155,7 @@ def main():
     original_most_recent_dynamic_world_file = resolve_historical_file(dynamic_world_data_dir)
     if original_most_recent_dynamic_world_file is None:
         logger.error("No .nc files found in the dynamic_world_data directory")
-        return
+        return 1
 
     historical_file_size_gb = Path(original_most_recent_dynamic_world_file).stat().st_size / (1024 ** 3)
     logger.info(f"Historical file: {os.path.basename(original_most_recent_dynamic_world_file)}")
