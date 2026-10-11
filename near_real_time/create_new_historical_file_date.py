@@ -113,7 +113,7 @@ def main():
 
     if not regions_completed:
         logger.error(f"❌ Not all regions completed processing for {date_to_run}. Aborting merge.")
-        return
+        return 1
 
     # ========== STEP 2: Create combined file if it doesn't exist ==========
     logger.info("=" * 80)
