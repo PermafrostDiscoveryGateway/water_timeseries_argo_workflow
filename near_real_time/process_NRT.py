@@ -1,6 +1,16 @@
+import sys
+from pathlib import Path
+
+# Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
+# imports below: `utils` lives in the project root, which is only on the path by
+# default inside the Docker image (PYTHONPATH=/app), so moving this block lower
+# breaks `python near_real_time/<script>.py` outside the container.
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates
 from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
-import sys
 from typing import List, Dict, Any, Optional
 import gc
 import traceback
@@ -11,13 +21,7 @@ import os
 import glob
 import time
 import pandas as pd
-from pathlib import Path
 import xarray as xr
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
 
 def is_file_ready(filepath, wait_seconds=0.5, checks=20):
     """Check if a file is ready (not being written to)."""

@@ -1,5 +1,15 @@
-from utils.near_real_time_grid_v2 import compare_netcdf_files, enable_memory_tracking, log_memory_usage, has_region_been_merged_for_dates, get_ids_for_region_from_vector_file
 import sys
+from pathlib import Path
+
+# Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
+# imports below: `utils` lives in the project root, which is only on the path by
+# default inside the Docker image (PYTHONPATH=/app), so moving this block lower
+# breaks `python near_real_time/<script>.py` outside the container.
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from utils.near_real_time_grid_v2 import compare_netcdf_files, enable_memory_tracking, log_memory_usage, has_region_been_merged_for_dates, get_ids_for_region_from_vector_file
 import gc
 from loguru import logger
 from datetime import date, datetime
@@ -9,12 +19,6 @@ import glob
 import time
 import utils.region_boundaries
 from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
-from pathlib import Path
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
 
 
 def get_creation_time(filepath):
