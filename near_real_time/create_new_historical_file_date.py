@@ -141,7 +141,7 @@ def main():
 
         if not combine_result.get('success', False):
             logger.error(f"Failed to create combined file: {combine_result.get('error', 'Unknown error')}")
-            return
+            return 1
 
         logger.info("✅ Combined file created successfully!")
     else:
