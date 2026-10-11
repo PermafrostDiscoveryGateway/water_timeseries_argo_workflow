@@ -29,11 +29,11 @@ STALE_THRESHOLD_SECONDS = 60 * 2
 
 
 def get_most_recent_combined_zarr(combined_zarr_datasets):
-    """Return the most recently created combined_historical_nrt_*.zarr store, or None if there isn't one."""
+    """Return the most recently modified combined_historical_nrt_*.zarr store, or None if there isn't one."""
     zarr_paths = glob.glob(os.path.join(combined_zarr_datasets, "combined_historical_nrt_*.zarr"))
     if not zarr_paths:
         return None
-    return max(zarr_paths, key=os.path.getctime)
+    return max(zarr_paths, key=os.path.getmtime)
 
 
 def zarr_store_age_seconds(zarr_path):

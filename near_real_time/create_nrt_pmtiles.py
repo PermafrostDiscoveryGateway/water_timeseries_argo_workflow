@@ -63,11 +63,11 @@ if str(project_root) not in sys.path:
 
 
 def get_most_recent_combined_zarr(combined_zarr_datasets):
-    """Return the most recently created combined_historical_nrt_*.zarr store, or None."""
+    """Return the most recently modified combined_historical_nrt_*.zarr store, or None."""
     zarr_paths = glob.glob(os.path.join(combined_zarr_datasets, "combined_historical_nrt_*.zarr"))
     if not zarr_paths:
         return None
-    return max(zarr_paths, key=os.path.getctime)
+    return max(zarr_paths, key=os.path.getmtime)
 
 
 def build_month_dataframe(ds, target_month):

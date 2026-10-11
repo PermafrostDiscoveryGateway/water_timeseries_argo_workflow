@@ -94,7 +94,7 @@ def get_historical_valid_ids(dynamic_world_data_dir):
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     if not all_dynamic_world_files:
         return None
-    historical_file = max(all_dynamic_world_files, key=os.path.getctime)
+    historical_file = max(all_dynamic_world_files, key=os.path.getmtime)
     ds_historical = xr.open_dataset(historical_file)
     valid_ids = normalize_id_set(ds_historical['id_geohash'].values.tolist())
     ds_historical.close()
