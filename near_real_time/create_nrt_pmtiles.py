@@ -119,11 +119,16 @@ def month_already_built(target_month, nrt_pmtiles_output_dir, previous_file):
     return (months == target_month).any()
 
 
-def prune_old_breaks_files(nrt_precomputed_dir, keep):
-    """Delete all but the `keep` most recently modified nrt_monthly_drain_breaks*.parquet tables."""
+def prune_old_breaks_files(nrt_precomputed_dir, keep, protect=None):
+    """Delete all but the `keep` most recently modified nrt_monthly_drain_breaks*.parquet tables.
+
+    `protect` (the table this run just committed) is never deleted, whatever `keep` is.
+    """
     candidates = sorted(nrt_precomputed_dir.glob("nrt_monthly_drain_breaks*.parquet"),
                         key=os.path.getmtime, reverse=True)
     for old_file in candidates[keep:]:
+        if old_file == protect:
+            continue
         logger.info(f"Pruning old drain-breaks table {old_file.name}")
         old_file.unlink()
 
@@ -208,7 +213,7 @@ def main():
     nrt_pmtiles_build_dir = Path(os.environ.get("nrt_pmtiles_build_dir", "/tmp/nrt_pmtiles_build"))
     drain_threshold = float(os.environ.get("drain_threshold", DRAIN_THRESHOLD))
     poly_max_zoom = int(os.environ.get("nrt_poly_max_zoom", 14))
-    breaks_keep = int(os.environ.get("nrt_drain_breaks_keep", 5))
+    breaks_keep = max(1, int(os.environ.get("nrt_drain_breaks_keep", 5)))
     overwrite = os.environ.get("OVERWRITE", "False").lower() in ("true", "1", "yes")
     run_time = datetime.now(timezone.utc)
 
@@ -286,7 +291,7 @@ def main():
     finally:
         partial_file.unlink(missing_ok=True)
 
-    prune_old_breaks_files(nrt_precomputed_dir, breaks_keep)
+    prune_old_breaks_files(nrt_precomputed_dir, breaks_keep, protect=breaks_file)
 
     result = {
         'success': True,
