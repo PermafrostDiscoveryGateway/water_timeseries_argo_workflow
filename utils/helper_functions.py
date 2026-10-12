@@ -1222,14 +1222,6 @@ def combine_region_files(
         logger.info("Combining datasets lazily...")
         combined = xr.concat(datasets, dim='id_geohash')
 
-        for ds in datasets:
-            try:
-                ds.close()
-            except Exception:
-                pass
-        datasets = None
-        gc.collect()
-
         # Remove duplicates in a single pass instead of after every file.
         # Plain numpy on the id_geohash coordinate values (no .unique()/
         # .drop_duplicates() dask-aware shortcut here).
@@ -1259,6 +1251,16 @@ def combine_region_files(
             }
 
         combined.to_netcdf(output_file, encoding=encoding, unlimited_dims=['date'])
+
+        # combined is dask-backed on the source files, so only close them once
+        # the write has finished.
+        for ds in datasets:
+            try:
+                ds.close()
+            except Exception:
+                pass
+        datasets = None
+        gc.collect()
 
         file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
 
