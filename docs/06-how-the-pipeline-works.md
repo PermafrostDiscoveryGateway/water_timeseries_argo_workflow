@@ -35,6 +35,22 @@ DAG per region, followed by combination stages once every region is done:
    job on a periodic schedule (independent of the main pipeline DAG), since combining this into
    the end of the process step proved unreliable.
 
+## When it runs
+
+The pipeline only runs in the summer: it always processes the **previous** (complete) month, and
+only if that month is June-September. The cron fires daily, and each script gates itself using
+`get_target_month()` in `utils/date_gate.py`:
+
+- **Downloads start on day 2** of the month (`DOWNLOAD_START_DAY`), including the backfill of
+  missing IDs.
+- **Everything after the downloads starts on day 3** (`MERGE_START_DAY`): the completion check,
+  merge, historical file, process and combine stages. This is deliberately one day after the
+  downloads, because the merge waits on the downloads finishing and they are very unlikely to be
+  done sooner.
+
+A test run (`test_run=true`, `1` or `yes`) bypasses the day/season gate and uses the most recent
+summer month instead.
+
 Every job type is written so that a new run will not start while a previous run for the same
 region/step is still in progress — e.g. if Canada's download is still running when the next
 scheduled time arrives, the new one is skipped rather than started concurrently. This avoids long

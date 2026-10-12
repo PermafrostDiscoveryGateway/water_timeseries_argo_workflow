@@ -2,7 +2,7 @@ from utils.helper_functions import (
     verify_merged_netcdf, enable_memory_tracking, log_memory_usage,
     combine_region_files, _get_id_chunk_size,
 )
-from utils.date_gate import is_test_run, most_recent_summer_month
+from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
 import sys
 from loguru import logger
 from datetime import datetime
@@ -483,14 +483,7 @@ def get_all_regions() -> List[str]:
 
 def get_target_month_to_run(today: datetime = None) -> "datetime | None":
     """Same summer-season/day-of-month gate as main(). None means nothing to do yet."""
-    summer_months = [6, 7, 8, 9]
-    today = today or datetime.now()
-
-    if is_test_run():
-        return most_recent_summer_month(today)
-    if today.month - 1 in summer_months and today.day > 3:
-        return datetime(today.year, today.month - 1, 1)
-    return None
+    return get_target_month(today, min_day=MERGE_START_DAY)
 
 
 def main():
