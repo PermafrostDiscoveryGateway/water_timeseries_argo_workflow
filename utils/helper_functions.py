@@ -5,6 +5,7 @@ import numpy as np
 import sys
 from pathlib import Path
 import os
+import re
 import glob
 from typing import List, Optional, Dict, Any
 import zarr
@@ -1711,6 +1712,32 @@ def has_region_been_merged_for_dates(
             'region_has_ids': False,
             'no_data_expected': False
         }
+
+_HISTORICAL_FILE_DATE_RE = re.compile(r"dynamic_world_historical_(\d{4})-(\d{2})(?:-(\d{2}))?\.nc$")
+
+
+def find_most_recent_historical_file(nc_files: List[str]) -> Optional[str]:
+    """
+    Pick the most recent historical file using the date in its filename
+    (dynamic_world_historical_YYYY-MM[-DD].nc) rather than file mtime, so a file
+    that is still being written can't be chosen just because it was touched last.
+
+    Files without a dated name (e.g. lakes_dw_V2d_compressed.nc) are only used,
+    newest by mtime, when no dated historical file exists.
+    """
+    dated = []
+    for f in nc_files:
+        match = _HISTORICAL_FILE_DATE_RE.search(os.path.basename(f))
+        if match:
+            year, month, day = match.groups()
+            dated.append(((int(year), int(month), int(day or 0)), f))
+    if dated:
+        return max(dated)[1]
+    if not nc_files:
+        return None
+    logger.warning("No dynamic_world_historical_<date>.nc files found; falling back to newest by mtime")
+    return max(nc_files, key=os.path.getmtime)
+
 
 def debug_historical_dates(historical_file_path: str) -> None:
     """
