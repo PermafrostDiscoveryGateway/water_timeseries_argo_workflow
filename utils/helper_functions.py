@@ -868,6 +868,8 @@ def download_near_real_time_region_dates(
                 ds_dl = downloader.download_dw_monthly(
                     gdf=gdf_subset,
                     max_total_requests=max_total_requests,
+                    # Deliberately serial: parallel downloads kept hitting GEE
+                    # restricted mode, so slower is better here.
                     n_parallel=1,
                     date_list=[ANALYSIS_DATE],
                     save_to_file=outfile_download
@@ -912,6 +914,12 @@ def download_near_real_time_region_dates(
                             f'NOTE: Grid {bbox_west} {bbox_south} returned {len(downloaded_ids)}/{len(expected_ids)} '
                             f'requested lakes ({tile_completion_pct:.2%} complete, >= {TILE_COMPLETION_THRESHOLD:.0%} '
                             f'threshold) - accepting as complete')
+                        # The tile file now exists, so skip-if-exists will never
+                        # retry these; record them so the backfill step and run
+                        # report have an explicit list.
+                        missing_ids_file = outfile_download.with_name(f'{outfile_download.stem}_missing_ids.txt')
+                        with open(missing_ids_file, 'w') as f:
+                            f.write('\n'.join(sorted(str(i) for i in missing_in_tile)) + '\n')
 
                     download_successful = True
                     if should_overwrite:
