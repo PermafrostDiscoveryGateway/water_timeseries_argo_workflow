@@ -82,18 +82,22 @@ def main():
 
     if not debug_dir:
         logger.error("debug_dir environment variable not set")
-        return
+        sys.exit(1)
 
     if not num_days:
         logger.error("num_days environment variable not set")
-        return
+        sys.exit(1)
 
-    num_days = float(num_days)
+    try:
+        num_days = float(num_days)
+    except ValueError:
+        logger.error(f"num_days must be a number, got {num_days!r}")
+        sys.exit(1)
     debug_dir = Path(debug_dir)
 
     if not debug_dir.exists():
         logger.error(f"debug_dir {debug_dir} does not exist")
-        return
+        sys.exit(1)
 
     old_dirs = find_old_debug_dirs(debug_dir, num_days)
 
@@ -103,18 +107,27 @@ def main():
 
     logger.info(f"Found {len(old_dirs)} debug directories older than {num_days} days in {debug_dir}")
 
+    failures = []
     for old_dir in old_dirs:
-        newest = newest_mtime(old_dir)
-        age_days = (time.time() - newest) / 86400
-        modified = datetime.fromtimestamp(newest)
-        if dry_run:
-            logger.info(f"[DRY RUN] Would delete {old_dir} (last modified {modified}, {age_days:.1f} days old)")
-        else:
-            logger.info(f"Deleting {old_dir} (last modified {modified}, {age_days:.1f} days old)")
-            shutil.rmtree(old_dir)
+        try:
+            newest = newest_mtime(old_dir)
+            age_days = (time.time() - newest) / 86400
+            modified = datetime.fromtimestamp(newest)
+            if dry_run:
+                logger.info(f"[DRY RUN] Would delete {old_dir} (last modified {modified}, {age_days:.1f} days old)")
+            else:
+                logger.info(f"Deleting {old_dir} (last modified {modified}, {age_days:.1f} days old)")
+                shutil.rmtree(old_dir)
+        except Exception as e:
+            logger.error(f"Failed to delete {old_dir}: {e}")
+            failures.append(old_dir)
 
     if dry_run:
-        logger.info(f"[DRY RUN] Would delete {len(old_dirs)} debug directories")
+        logger.info(f"[DRY RUN] Would delete {len(old_dirs) - len(failures)} debug directories")
+
+    if failures:
+        logger.error(f"Failed to delete {len(failures)} of {len(old_dirs)} debug directories: {[str(f) for f in failures]}")
+        sys.exit(1)
 
 
 if __name__ == '__main__':
