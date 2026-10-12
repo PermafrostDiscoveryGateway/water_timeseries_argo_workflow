@@ -18,7 +18,7 @@ from loguru import logger
 from pathlib import Path
 import xarray as xr
 from utils.region_boundaries import get_region_boundaries
-from utils.date_gate import is_test_run, most_recent_summer_month
+from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run, most_recent_summer_month
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
@@ -151,7 +151,6 @@ def main():
     MANUAL = bool(os.environ.get("MANUAL"))
 
     SHOULD_RUN = False
-    summer_months = [6, 7, 8, 9]
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
     TODAY_YEAR = TODAY.year
@@ -166,12 +165,9 @@ def main():
         SHOULD_RUN = True
         target_date = most_recent_summer_month(TODAY).strftime("%Y-%m")
         logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_date}")
-    elif (TODAY_MONTH - 1) in summer_months:
-        TODAY_DAY = TODAY.day
-        if TODAY_DAY > 3:
-            SHOULD_RUN = True
-            logger.debug(f"TODAY_DAY: {TODAY_DAY} - Should run: {SHOULD_RUN}")
-            logger.debug(f"Target date: {target_date}")
+    elif get_target_month(TODAY, min_day=MERGE_START_DAY) is not None:
+        SHOULD_RUN = True
+        logger.debug(f"Should run: {SHOULD_RUN}, target date: {target_date}")
 
     if not SHOULD_RUN:
         logger.info("Skipping processing - conditions not met")
