@@ -15,7 +15,7 @@ merge_recent_downloads.py until/unless a separate combine step is split out.
 """
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,7 +25,7 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
+from utils.date_gate import MERGE_START_DAY, get_target_month
 from near_real_time.merge_recent_downloads import process_region_fast, _configure_dask_for_low_memory
 
 
@@ -48,22 +48,8 @@ def main():
 
     # ========== DETERMINE DATE TO RUN (same window as merge_recent_downloads.py) ==========
     SHOULD_RUN = False
-    summer_months = [6, 7, 8, 9]
-    TODAY = datetime.now()
-    TODAY_MONTH = TODAY.month
-    target_month = None
-
-    if is_test_run():
-        SHOULD_RUN = True
-        target_month = most_recent_summer_month(TODAY)
-        logger.debug(f"test_run=True - bypassing the summer-month/day-of-month gate, using {target_month.strftime('%Y-%m')}")
-    elif TODAY_MONTH - 1 in summer_months:
-        TODAY_DAY = TODAY.day
-        if TODAY_DAY >= RUN_START_DAY:
-            SHOULD_RUN = True
-            # Last complete (previous) month, computed this way so it also
-            # handles the January wraparound correctly.
-            target_month = TODAY.replace(day=1) - timedelta(days=1)
+    target_month = get_target_month(min_day=MERGE_START_DAY)
+    SHOULD_RUN = target_month is not None
 
     if not SHOULD_RUN:
         logger.debug("Too early in the month to run - exiting")

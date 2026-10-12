@@ -25,7 +25,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from utils.region_boundaries import get_region_boundaries, get_small_regions
-from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
+from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
 from near_real_time.download_region_missing_ids import (
     get_region_lakes,
     get_historical_valid_ids,
@@ -92,15 +92,8 @@ def main():
 
     # Same "should we even be running for this month" gate the download/merge
     # scripts use, so the checker doesn't chase a date nobody is processing.
-    summer_months = [6, 7, 8, 9]
-    TODAY = datetime.now()
-    if is_test_run():
-        should_run = True
-        target_month = most_recent_summer_month(TODAY)
-        logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
-    else:
-        should_run = (TODAY.month - 1) in summer_months and TODAY.day >= RUN_START_DAY
-        target_month = datetime(TODAY.year, TODAY.month - 1, 1)
+    target_month = get_target_month(min_day=MERGE_START_DAY)
+    should_run = target_month is not None
 
     if not should_run:
         logger.info("Outside the operating window this month - reporting all-complete so the pipeline proceeds")

@@ -1,10 +1,10 @@
 # Shared summer-season / test-run date gating for the near-real-time scripts.
 #
-# Normal runs only fire in June-September, and only from RUN_START_DAY of the
-# month (so the prior month's upstream data is actually available) - every
-# near-real-time script compares today's day against that one constant. A
-# test run needs to be able to fire on any day, against whichever month is
-# actually testable. The
+# Normal runs only fire in June-September, and only a few days into the month
+# (so the prior month's upstream data is actually available) - every script
+# calls get_target_month() with DOWNLOAD_START_DAY or MERGE_START_DAY. A test
+# run needs to be able to fire on any day, against whichever month is actually
+# testable. The
 # current month is never a candidate - even in-season it's still in
 # progress and won't have data yet - so this always targets the most recent
 # *complete* summer month, starting the search at last month.
@@ -14,13 +14,18 @@
 # pipeline), instead of whatever month "today" happens to resolve to.
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 SUMMER_MONTHS = [6, 7, 8, 9]
 
-# First day of the month the NRT pipeline stages (download, merge, check,
-# process, combine, historical file) are allowed to run, i.e. `day >= RUN_START_DAY`.
-RUN_START_DAY = 2
+# Downloads (and the backfill that tops them up) start on day 2 of the month,
+# as soon as the prior month's data is available.
+DOWNLOAD_START_DAY = 2
+# Everything downstream of the downloads (completion check, merge, historical
+# file, process, combine) starts on day 3. It is deliberately one day after the
+# downloads: the merge waits on the downloads finishing, and they are very
+# unlikely to be done within a day, so starting it sooner would just poll.
+MERGE_START_DAY = 3
 
 
 def is_test_run() -> bool:
@@ -70,3 +75,22 @@ def most_recent_summer_month(today: datetime = None) -> datetime:
             month = 12
             year -= 1
     return datetime(year, month, 1)
+
+
+def get_target_month(today: datetime = None, min_day: int = MERGE_START_DAY) -> "datetime | None":
+    """The month a normal NRT run should process, or None if it's too early / out of season.
+
+    The target is always the previous (complete) month, which must be a summer
+    month, and the run only fires from `min_day` of the current month
+    (DOWNLOAD_START_DAY for downloads, MERGE_START_DAY for everything after).
+    A test run bypasses the day/season gate and uses the most recent summer
+    month instead. Rolling back from the first of the month handles January.
+    """
+    if today is None:
+        today = datetime.now()
+    if is_test_run():
+        return most_recent_summer_month(today)
+    target = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
+    if target.month in SUMMER_MONTHS and today.day >= min_day:
+        return target
+    return None

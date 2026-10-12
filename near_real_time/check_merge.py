@@ -18,7 +18,7 @@ import os
 import glob
 import time
 import utils.region_boundaries
-from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
+from utils.date_gate import MERGE_START_DAY, get_target_month
 
 
 def get_creation_time(filepath):
@@ -103,7 +103,6 @@ def main():
 
     SHOULD_RUN = False
 
-    summer_months = [6, 7, 8, 9]
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     most_recent_dynamic_world_file = None
@@ -117,19 +116,8 @@ def main():
     dynamic_world_file_to_test = os.path.join(dynamic_world_data_dir, 'historical_data_20260710_052759.nc')
     logger.debug(f"We want to check the file {dynamic_world_file_to_test}")
 
-    TODAY =  datetime.now()
-    TODAY_MONTH = TODAY.month
-    target_month = None
-    if is_test_run():
-        target_month = most_recent_summer_month(TODAY)
-        SHOULD_RUN = True
-        logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
-    elif TODAY_MONTH - 1 in summer_months:
-        TODAY_DAY = TODAY.day
-        if TODAY_DAY >= RUN_START_DAY:
-            SHOULD_RUN = True
-            target_month = datetime(TODAY.year, TODAY_MONTH - 1, 1)
-            logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
+    target_month = get_target_month(min_day=MERGE_START_DAY)
+    SHOULD_RUN = target_month is not None
 
     if SHOULD_RUN:
         date_to_run = [target_month.strftime("%Y-%m")]

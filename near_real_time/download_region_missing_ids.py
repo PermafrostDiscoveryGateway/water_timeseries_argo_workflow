@@ -40,7 +40,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from utils.region_boundaries import get_region_boundaries
-from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
+from utils.date_gate import DOWNLOAD_START_DAY, get_target_month
 from utils.download_utils import is_no_data_error
 
 # Accept a batch as complete if this fraction of its requested lakes come
@@ -283,19 +283,8 @@ def main():
 
     # ========== DETERMINE DATE TO RUN (same window as the regular download jobs) ==========
     SHOULD_RUN = False
-    summer_months = [6, 7, 8, 9]
-    TODAY = datetime.now()
-    TODAY_MONTH = TODAY.month
-    target_month = None
-    if is_test_run():
-        target_month = most_recent_summer_month(TODAY)
-        SHOULD_RUN = True
-        logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_month.strftime('%Y-%m')}")
-    elif TODAY_MONTH - 1 in summer_months:
-        TODAY_DAY = TODAY.day
-        if TODAY_DAY >= RUN_START_DAY:
-            SHOULD_RUN = True
-            target_month = datetime(TODAY.year, TODAY_MONTH - 1, 1)
+    target_month = get_target_month(min_day=DOWNLOAD_START_DAY)
+    SHOULD_RUN = target_month is not None
 
     if not SHOULD_RUN:
         logger.debug("Too early in the month to run - exiting")

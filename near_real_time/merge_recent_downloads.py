@@ -12,9 +12,9 @@ if str(project_root) not in sys.path:
 from utils.helper_functions import (
     verify_downloads_complete, merge_new_results, combine_region_files, _get_id_chunk_size,
 )
-from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
+from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
 from loguru import logger
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 import os
 import glob
@@ -873,24 +873,9 @@ def main():
 
     # ========== Determine if we should run ==========
     SHOULD_RUN = False
-    summer_months = [6, 7, 8, 9]
 
-    TODAY = datetime.now()
-    TODAY_MONTH = TODAY.month
-    target_month = None
-
-    if is_test_run():
-        SHOULD_RUN = True
-        target_month = most_recent_summer_month(TODAY)
-        logger.debug(f"test_run=True - bypassing the summer-month/day-of-month gate, using {target_month.strftime('%Y-%m')}")
-    elif TODAY_MONTH - 1 in summer_months:
-        TODAY_DAY = TODAY.day
-        if TODAY_DAY >= RUN_START_DAY:
-            SHOULD_RUN = True
-            # Last complete (previous) month, computed this way so it also
-            # handles the January wraparound correctly.
-            target_month = TODAY.replace(day=1) - timedelta(days=1)
-            logger.debug(f"Should run: {SHOULD_RUN}")
+    target_month = get_target_month(min_day=MERGE_START_DAY)
+    SHOULD_RUN = target_month is not None
 
     if not SHOULD_RUN:
         logger.debug(f"Too early in the month to run downloads - exiting")

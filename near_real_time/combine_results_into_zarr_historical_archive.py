@@ -25,7 +25,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from utils.region_boundaries import get_region_boundaries
-from utils.date_gate import is_test_run, most_recent_summer_month, RUN_START_DAY
+from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run, most_recent_summer_month
 # A breakpoint zarr store that was written to within this window is assumed to
 # still be mid-write, so it's excluded from the merge rather than folded in as a partial.
 STALE_THRESHOLD_SECONDS = 60 * 2
@@ -153,7 +153,6 @@ def main():
     MANUAL = bool(os.environ.get("MANUAL"))
 
     SHOULD_RUN = False
-    summer_months = [6, 7, 8, 9]
     TODAY = datetime.now()
     TODAY_MONTH = TODAY.month
     TODAY_YEAR = TODAY.year
@@ -168,12 +167,9 @@ def main():
         SHOULD_RUN = True
         target_date = most_recent_summer_month(TODAY).strftime("%Y-%m")
         logger.debug(f"test_run=True - bypassing day-of-month/season gate, using {target_date}")
-    elif (TODAY_MONTH - 1) in summer_months:
-        TODAY_DAY = TODAY.day
-        if TODAY_DAY >= RUN_START_DAY:
-            SHOULD_RUN = True
-            logger.debug(f"TODAY_DAY: {TODAY_DAY} - Should run: {SHOULD_RUN}")
-            logger.debug(f"Target date: {target_date}")
+    elif get_target_month(TODAY, min_day=MERGE_START_DAY) is not None:
+        SHOULD_RUN = True
+        logger.debug(f"Should run: {SHOULD_RUN}, target date: {target_date}")
 
     if not SHOULD_RUN:
         logger.info("Skipping processing - conditions not met")
