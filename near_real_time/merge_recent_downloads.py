@@ -1,7 +1,6 @@
 from utils.helper_functions import (
     verify_downloads_complete, merge_new_results, combine_region_files, _get_id_chunk_size,
 )
-from utils.completion_marker import clear_completion_marker, mark_complete
 from utils.date_gate import is_test_run, most_recent_summer_month
 import sys
 from loguru import logger
@@ -188,9 +187,7 @@ def merge_new_results(
             }
 
         # Write to file
-        clear_completion_marker(merged_file_path)
         combined.to_netcdf(merged_file_path, encoding=encoding, unlimited_dims=['date'])
-        mark_complete(merged_file_path)
 
         # Get file size
         file_size_gb = Path(merged_file_path).stat().st_size / (1024 ** 3)

@@ -19,7 +19,6 @@ from water_timeseries.dataset import DWDataset
 from water_timeseries.breakpoint import NRTBreakpoint
 import datetime
 from utils.region_boundaries import get_region_boundaries
-from utils.completion_marker import clear_completion_marker, mark_complete
 import json
 import resource
 
@@ -132,7 +131,6 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250
         encoding = {var: {'zlib': True, 'complevel': 5} for var in final_merged.data_vars}
 
         temp_output = output_path.with_suffix('.tmp.nc')
-        clear_completion_marker(output_path)
 
         final_merged.to_netcdf(temp_output, encoding=encoding, mode='w')
 
@@ -144,7 +142,6 @@ def merge_netcdf_chunked(ds_historical, combined_ds, output_path, chunk_size=250
             if output_path.exists():
                 output_path.unlink()
             temp_output.rename(output_path)
-            mark_complete(output_path)
             logger.info(f"Successfully wrote merged file to {output_path}")
             logger.info(f"File size: {output_path.stat().st_size / (1024 ** 3):.2f} GB")
     else:

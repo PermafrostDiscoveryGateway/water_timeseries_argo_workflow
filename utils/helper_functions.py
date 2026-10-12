@@ -26,7 +26,6 @@ from water_timeseries.breakpoint import NRTBreakpoint, BeastBreakpoint
 import datetime
 from utils.region_boundaries import get_region_boundaries
 from utils.download_utils import is_no_data_error
-from utils.completion_marker import clear_completion_marker, mark_complete
 import json
 
 import dask
@@ -1258,9 +1257,7 @@ def combine_region_files(
                 'chunksizes': (min(id_chunk, 500, n_ids), n_dates)
             }
 
-        clear_completion_marker(output_file)
         combined.to_netcdf(output_file, encoding=encoding, unlimited_dims=['date'])
-        mark_complete(output_file)
 
         file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
 
@@ -1404,9 +1401,7 @@ def merge_new_results(
             }
 
         # Write to file
-        clear_completion_marker(merged_file_path)
         combined.to_netcdf(merged_file_path, encoding=encoding)
-        mark_complete(merged_file_path)
 
         # Get file size
         file_size_gb = Path(merged_file_path).stat().st_size / (1024 ** 3)

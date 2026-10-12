@@ -2,7 +2,6 @@ from utils.helper_functions import (
     verify_merged_netcdf, enable_memory_tracking, log_memory_usage,
     combine_region_files, _get_id_chunk_size,
 )
-from utils.completion_marker import clear_completion_marker, mark_complete
 from utils.date_gate import is_test_run, most_recent_summer_month
 import sys
 from loguru import logger
@@ -424,13 +423,11 @@ def merge_historical_file(
             }
 
         # Write with chunked output
-        clear_completion_marker(output_file)
         merged_ds.to_netcdf(
             output_file,
             encoding=encoding,
             unlimited_dims=['date']  # Allow date dimension to grow
         )
-        mark_complete(output_file)
 
         # Get final size
         final_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
