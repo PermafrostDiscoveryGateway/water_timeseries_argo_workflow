@@ -475,8 +475,7 @@ def get_all_regions() -> List[str]:
     import utils.region_boundaries
     boundaries = utils.region_boundaries.get_region_boundaries()
     all_regions = list(boundaries.keys())
-    test_run = os.environ.get("test_run")
-    if test_run and test_run.lower() == 'true':
+    if is_test_run():
         all_regions = list(utils.region_boundaries.get_small_regions().keys())
     return all_regions
 
