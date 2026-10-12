@@ -1175,6 +1175,7 @@ def combine_region_files(
         logger.error(f"Missing files: {missing_files}")
         return {'success': False, 'error': f'Missing files: {missing_files}'}
 
+    datasets = []
     try:
         id_chunk = _get_id_chunk_size()
         # Respect the operator-configured chunk size -- see merge_new_results
@@ -1182,7 +1183,6 @@ def combine_region_files(
         combine_chunk = id_chunk
 
         logger.info(f"Loading region datasets (dask-chunked, id_geohash={combine_chunk})...")
-        datasets = []
         file_info = []
 
         for file_path in region_files:
@@ -1252,16 +1252,6 @@ def combine_region_files(
 
         combined.to_netcdf(output_file, encoding=encoding, unlimited_dims=['date'])
 
-        # combined is dask-backed on the source files, so only close them once
-        # the write has finished.
-        for ds in datasets:
-            try:
-                ds.close()
-            except Exception:
-                pass
-        datasets = None
-        gc.collect()
-
         file_size_gb = Path(output_file).stat().st_size / (1024 ** 3)
 
         result = {
@@ -1290,6 +1280,17 @@ def combine_region_files(
         import traceback
         traceback.print_exc()
         return {'success': False, 'error': str(e)}
+
+    finally:
+        # combined is dask-backed on the source files, so they are only closed
+        # once the write has finished (or failed).
+        for ds in datasets:
+            try:
+                ds.close()
+            except Exception:
+                pass
+        datasets = None
+        gc.collect()
 
 
 def merge_new_results(
