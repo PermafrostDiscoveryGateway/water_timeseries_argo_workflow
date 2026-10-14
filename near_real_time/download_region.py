@@ -142,8 +142,8 @@ def main():
                 else:
                     logger.warning(
                         f"Download for {REGION} incomplete, but only because of confirmed no-data or "
-                        f"incomplete tiles (no real errors) - the missing-IDs backfill will handle these: {download_result}")
-                exit_code = 1 if download_result.get('had_real_error', True) else 0
+                        f"incomplete tiles (no real errors) - not failing the step; the merge step's "
+                        f"completion check/backfill will handle any real gap: {download_result}")
         else:
             logger.debug(f"Already done downloading {REGION} for {date_to_run}")
 

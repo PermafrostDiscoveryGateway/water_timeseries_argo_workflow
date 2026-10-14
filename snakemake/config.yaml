@@ -7,12 +7,39 @@
 # place of the "most recent complete summer month" a test run normally uses.
 target_date: "2025-08"
 
+# Replace target_date's results instead of keeping what's already there, in
+# every region of the run: a complete breakpoint zarr is reprocessed from
+# scratch, a partial one is resumed, the month is replaced in the combined
+# archive and its PMTiles are rebuilt. Downloads and merges are never redone.
+# Snakemake also has to rerun those steps: use `run_delta.sh <date> --overwrite`,
+# or add `--config overwrite=true --forcerun process` yourself.
+overwrite: false
+
 # Must stay in sync with utils.region_boundaries.get_small_regions(): with
 # test_run=True, wait-for-region-merges / create-new-historical-file expect
 # merge output for exactly that set of regions.
 regions:
   TEST:     {id_chunk_size: "", save_interval: "", n_jobs: ""}
   EURASIA3: {id_chunk_size: "", save_interval: "", n_jobs: ""}
+
+# Time limit for each region's download step, in hours: the full download and
+# its missing-ID fallback together. Regions not listed get `default`. Only
+# used where steps are Slurm jobs (Delta); local runs have no limit.
+#
+# A Slurm job on Delta's cpu partition can run at most 48 hours, so a longer
+# limit is split into back-to-back 48-hour jobs: when one is killed at its
+# limit, snakemake resubmits the download, which skips the tiles already on
+# disk and carries on. E.g. 96 = up to two 48-hour jobs.
+download_runtime_hours:
+  default: 4
+  ALASKA: 12
+  EURASIA3: 24
+  EURASIA1: 96
+  EURASIA2: 96
+  CANADA1: 96
+  CANADA2: 96
+  CANADA3: 96
+  CANADA4: 96
 
 # Python environment for the near_real_time/ scripts. With build: true,
 # snakemake builds it with uv the same way the Docker image is built:
@@ -26,15 +53,21 @@ environment:
   uv: "uv"
   path: "snakemake/.venv"
   python_version: "3.12"
-  # Anything `uv pip install` accepts. The image tag ncsa-water-timeseries is
-  # built from the branch of the same name. For a local checkout instead:
+  # Anything `uv pip install` accepts. Keep this on the same release as the
+  # Dockerfile's base image (water-timeseries-v2:v0.16.8). For a local checkout instead:
   #   base_package: "-e ../water-timeseries-v2"
-  base_package: "water-timeseries @ git+https://github.com/PermafrostDiscoveryGateway/water-timeseries-v2.git@ncsa-water-timeseries"
+  base_package: "water-timeseries @ git+https://github.com/PermafrostDiscoveryGateway/water-timeseries-v2.git@v0.16.8"
   extra_requirements: "snakemake/envs/requirements-extra.txt"
   # tippecanoe release (https://github.com/felt/tippecanoe) built into the
   # env's bin/ for create_nrt_pmtiles. "" = skip it and use a tippecanoe
   # already on PATH (e.g. `brew install tippecanoe`).
   tippecanoe_version: "2.79.0"
+  # SQLite amalgamation zip to build tippecanoe against, for systems without
+  # the sqlite3 development headers (see config.delta.yaml). "" = system sqlite3.
+  sqlite_amalgamation_url: ""
+  # SHA-256 of that zip (not the SHA3-256 sqlite.org lists), checked before it is
+  # extracted and compiled. Required whenever the URL is set.
+  sqlite_amalgamation_sha256: ""
 
 # Only used when environment.build is false.
 python: "../water-timeseries-v2/.venv/bin/python"
@@ -51,10 +84,16 @@ paths:
   combined_zarr_datasets: "data/combined_zarr_datasets"
   # create_nrt_pmtiles: the running drain-breaks table and the published
   # nrt_<month>_drainage.pmtiles archives.
-  nrt_precomputed_dir: "data/precomputed_nrt"
-  nrt_pmtiles_output_dir: "data/nrt_tiles"
+  nrt_precomputed_dir: "data/test/precomputed_nrt"
+  nrt_pmtiles_output_dir: "data/test/nrt_tiles"
   # Snakemake's own bookkeeping: per-stage .env files, logs, done-markers.
   work_dir: "data/snakemake_work"
+
+# TMPDIR and Dask spill directory for every step. Empty = base_dir/temp_netcdf
+# and base_dir/dask_work_space, as in the Argo pods.
+scratch:
+  temp_dir: ""
+  dask_dir: ""
 
 # Credential files, set for every step the way the Argo pods mount the
 # personal-gcp-creds / earth-engine-creds secrets. Empty = use your own

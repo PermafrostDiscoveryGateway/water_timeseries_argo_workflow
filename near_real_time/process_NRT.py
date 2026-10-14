@@ -179,6 +179,7 @@ def process_single_date_for_region(
         n_jobs: int = 12,
         id_chunk_size: int = 2000,  # Number of IDs per chunk (passed to calculate_break)
         save_interval: int = 10,   # Save every N chunks
+        overwrite: bool = False,
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using the FAST method.
@@ -190,6 +191,8 @@ def process_single_date_for_region(
         n_jobs: Number of parallel jobs (passed to NRTBreakpoint internally)
         id_chunk_size: Number of IDs to process per chunk (default: 100)
         save_interval: Save intermediate results every N chunks (default: 10)
+        overwrite: Reprocess a complete region from scratch (a partial one is
+            always resumed)
 
     Returns:
         dict: Processing results
@@ -237,7 +240,8 @@ def process_single_date_for_region(
             env_path=env_path,
             n_jobs=n_jobs,
             id_chunk_size=id_chunk_size,
-            save_interval=save_interval
+            save_interval=save_interval,
+            overwrite=overwrite,
         )
 
         if process_result.get('success', False):
@@ -310,6 +314,10 @@ def main():
     id_chunk_size = int(os.environ.get("id_chunk_size", 500))
     save_interval = int(os.environ.get("save_interval", 1))
     n_jobs = int(os.environ.get("n_jobs", 1))
+    # OVERWRITE=True: reprocess complete regions from scratch, resume partial ones.
+    overwrite = os.environ.get("OVERWRITE", "False").lower() in ("true", "1", "yes")
+    if overwrite:
+        logger.info("OVERWRITE=True - complete regions are reprocessed, partial ones resumed")
 
     # Define regions to process - you can customize this list
     if region_name == "ALL":
@@ -359,7 +367,8 @@ def main():
             env_path=env_path,
             n_jobs=n_jobs,
             id_chunk_size=id_chunk_size,
-            save_interval=save_interval
+            save_interval=save_interval,
+            overwrite=overwrite,
         )
 
         all_results[region] = result
@@ -404,6 +413,12 @@ def main():
     logger.info("=" * 80)
     logger.info("PROCESS_NRT.py COMPLETED")
     logger.info("=" * 80)
+
+    # Exit non-zero if any region failed, so the caller (Argo / snakemake) sees
+    # the failure here instead of at the next step that reads the results.
+    if failure_count:
+        logger.error(f"{failure_count} region(s) failed - exiting with code 1")
+        sys.exit(1)
 
 
 if __name__ == '__main__':

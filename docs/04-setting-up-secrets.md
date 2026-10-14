@@ -126,8 +126,8 @@ secret/earth-engine-creds created
 ## Using these credentials outside the cluster
 
 The snakemake version of the test pipeline can run with copies of `personal-gcp-creds` and
-`earth-engine-creds`. See
-[Copying the cluster's credentials](07-running-the-testing-pipeline.md#copying-the-clusters-credentials).
+`earth-engine-creds`, e.g. on Delta. See
+[Copying the cluster's credentials to Delta](07-running-the-testing-pipeline.md#copying-the-clusters-credentials-to-delta).
 If you recreate either secret, update those copies too.
 
 Continue to [5. Setting up filestore and testing (Autopilot only)](05-filestore-setup-and-testing.md).

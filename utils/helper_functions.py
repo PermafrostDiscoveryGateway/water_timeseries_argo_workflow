@@ -7,6 +7,7 @@ from pathlib import Path
 import os
 import re
 import glob
+import shutil
 from typing import List, Optional, Dict, Any
 import zarr
 # Add project root to Python path
@@ -1813,11 +1814,16 @@ def process_region_date_new_fast_NRT(
         id_chunk_size: int = 500,
         n_jobs: int = 8,
         save_interval: int = 1,
+        overwrite: bool = False,
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using batch processing for speed.
     Uses NRTBreakpoint.calculate_break with a LIST of IDs for internal parallelization.
     Memory-optimized version: saves incrementally and clears memory after each chunk.
+
+    A partial run (incremental results but no complete breakpoint zarr) is always
+    resumed. With overwrite=True, a complete one is deleted and reprocessed from
+    scratch; without it, the zarr is just rebuilt from the saved results.
     """
     import time
     import os
@@ -2032,6 +2038,19 @@ def process_region_date_new_fast_NRT(
 
         # NEW: File for accumulating results incrementally
         incremental_file = current_breakpoint_dir / f'incremental_results_{analysis_date}.parquet'
+
+        if overwrite:
+            if breakpoint_zarr_is_complete(zarr_path):
+                logger.info(f"🗑️ OVERWRITE=True and {zarr_path} is complete - deleting it and its "
+                            f"saved results to reprocess {region} {analysis_date} from scratch")
+                shutil.rmtree(zarr_path, ignore_errors=True)
+                for stale in (incremental_file, intermediate_file,
+                              current_breakpoint_dir / f'drain_{analysis_date}.parquet'):
+                    stale.unlink(missing_ok=True)
+            elif incremental_file.exists():
+                logger.info(f"OVERWRITE=True but {region} {analysis_date} is incomplete - resuming it")
+            else:
+                logger.info(f"OVERWRITE=True - no previous results for {region} {analysis_date}")
 
         # 10. Process in chunks - MEMORY OPTIMIZED
         bp = NRTBreakpoint()
@@ -3537,6 +3556,23 @@ def process_region_date_new_fast_historical_safe(
         }
 
 
+def breakpoint_zarr_is_complete(zarr_path: Path) -> bool:
+    """True if zarr_path is a breakpoint zarr create_final_zarr_from_incremental finished.
+
+    That means it opens, has attrs complete=True, and holds data (or is marked
+    empty: a region with no breakpoints at all). A store left by a failed save -
+    only zarr.json, no variables - counts as incomplete.
+    """
+    if not Path(zarr_path).exists():
+        return False
+    try:
+        with xr.open_zarr(zarr_path) as ds:
+            return bool(ds.attrs.get('complete')) and (len(ds.data_vars) > 0 or bool(ds.attrs.get('empty')))
+    except Exception as e:
+        logger.debug(f"Could not open {zarr_path} as a breakpoint zarr: {e}")
+        return False
+
+
 def create_final_zarr_from_incremental(
         incremental_file: Path,
         zarr_path: Path,
@@ -3685,15 +3721,18 @@ def create_final_zarr_from_incremental(
         # Save to Zarr
         logger.info(f"💾 Saving {len(breaks_merged):,} records to Zarr: {zarr_path}")
 
-        # xarray/zarr cannot encode pandas' nullable extension dtypes (e.g. the
-        # Int64 drainage_confidence uses to represent <NA> distinctly from a
-        # real -1/1/2/3 - see NRTBreakpoint._add_confidence_level). Downcast any
-        # such column to float64 (NaN standing in for <NA>) before to_xarray(),
-        # or to_zarr() fails with "Cannot interpret 'Int64Dtype()' as a data type".
-        for col in breaks_merged.columns:
-            dtype = breaks_merged[col].dtype
-            if pd.api.types.is_extension_array_dtype(dtype) and pd.api.types.is_numeric_dtype(dtype):
-                breaks_merged[col] = breaks_merged[col].astype('float64')
+        # Nullable pandas extension dtypes (e.g. Int64 from the parquet) can't be
+        # encoded by xarray's zarr backend ("Cannot interpret 'Int64Dtype()' as a
+        # data type"). Convert them to numpy dtypes: numeric -> float64 with NaN
+        # for missing values, anything else -> object.
+        for col, dtype in breaks_merged.dtypes.items():
+            if isinstance(dtype, pd.api.extensions.ExtensionDtype) and not isinstance(
+                    dtype, (pd.DatetimeTZDtype, pd.CategoricalDtype)):
+                if pd.api.types.is_numeric_dtype(dtype) or pd.api.types.is_bool_dtype(dtype):
+                    breaks_merged[col] = breaks_merged[col].to_numpy(dtype="float64", na_value=np.nan)
+                else:
+                    breaks_merged[col] = breaks_merged[col].astype(object).where(breaks_merged[col].notna(), None)
+                logger.debug(f"Converted column '{col}' from {dtype} to {breaks_merged[col].dtype} for Zarr")
 
         # Convert to xarray dataset
         ds_breaks = breaks_merged.to_xarray()

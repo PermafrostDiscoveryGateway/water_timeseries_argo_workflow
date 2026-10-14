@@ -90,15 +90,39 @@ Its last step, `create_nrt_pmtiles`, builds the month's PMTiles archive (see
 
 The first run builds the Python environment the scripts run in (`snakemake/.venv`), with uv, the
 same way the Docker image is built: first water-timeseries-v2 (by default the
-`ncsa-water-timeseries` branch the base image is built from), then this repo's extra
+`main` branch the base image is built from), then this repo's extra
 dependencies from `snakemake/envs/requirements-extra.txt` (keep that in sync with the
 `Dockerfile`), and finally tippecanoe, built from source into the environment's `bin/` (see
-[PMTiles](#pmtiles)). It's rebuilt only when `environment` settings in the config or that file change, and
-a rebuild doesn't re-run steps that already finished. Set `environment.build: false` to use an
-existing interpreter (`python:`) instead.
+[PMTiles](#pmtiles)). It's rebuilt only when `environment` settings in the config or that file change.
+A newer environment alone doesn't re-run finished steps, but a rebuild *in the same run* does re-run
+every step after it, downloads included. When a rebuild is due, do it on its own first
+(`--until build_environment`), then run the pipeline. Set `environment.build: false` to use an existing
+interpreter (`python:`) instead.
+
+To run it on NCSA Delta, with each step submitted as a Slurm job, see
+[10. Running on Delta](10-running-on-delta.md).
 
 Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
 that directory (or use `--forcerun`) to re-run a month.
+
+#### Replacing a month's results (`overwrite`)
+
+By default a month that's already been processed is left alone. To replace it, in every region of
+the run, run with `overwrite`:
+
+```bash
+snakemake/run_delta.sh 2025-08 --overwrite
+```
+
+(elsewhere: `--config overwrite=true --forcerun process`; the `--forcerun` is what makes snakemake
+re-run steps whose markers exist). Downloads and merges are not redone. Then:
+
+- `process`: a region whose breakpoint zarr is complete is deleted and reprocessed from scratch; a
+  partial one (saved results in `incremental_results_<month>.parquet`, no complete zarr) is
+  resumed where it left off; a region with nothing yet starts fresh. Without `overwrite`, a partial
+  region is resumed too, and a complete one only has its zarr rebuilt from the saved results.
+- `create_historical_zarr_archive` replaces the month in the combined archive instead of skipping it.
+- `create_nrt_pmtiles` rebuilds the month's PMTiles (as `pmtiles.overwrite: true` does).
 
 ### PMTiles
 
@@ -107,9 +131,12 @@ that directory (or use `--forcerun`) to re-run a month.
 (`pmtiles:` in `config.yaml`). From the combined zarr it:
 
 1. takes this run's month (`target_date`) and adds that month's drained lakes to the running
-   drain-breaks table in `paths.nrt_precomputed_dir` (`data/precomputed_nrt/`), and
+   drain-breaks table in `paths.nrt_precomputed_dir` (`data/test/precomputed_nrt/`), and
 2. builds `nrt_<month>_drainage.pmtiles` and copies it to `paths.nrt_pmtiles_output_dir`
-   (`data/nrt_tiles/`).
+   (`data/test/nrt_tiles/`).
+
+Both come from this pipeline's own combined zarr and live under `test/`, apart from the
+production data (`pmtiles.datasets.main`, under `main/`).
 
 A month whose archive already exists is skipped; set `pmtiles.overwrite: true` to rebuild it.
 Tippecanoe works in `<base_dir>/temp_netcdf/pmtiles/`, which is removed when the step ends.
@@ -121,7 +148,15 @@ Python package. The environment build compiles the release in `environment.tippe
 (default `2.79.0`) and installs `tippecanoe` and `tile-join` into the environment's `bin/`, which
 every step has on its `PATH`. That needs `git`, `make`, a C++ compiler and the sqlite3 and zlib
 development headers; on a Mac, the Xcode command line tools are enough. The build output is in
-`data/snakemake_work/build_env.log`.
+`data/snakemake_work/build_environment.log`.
+
+Where the sqlite3 development files are missing (Delta has only the runtime `libsqlite3.so.0` and no
+sqlite module), set `environment.sqlite_amalgamation_url` to a SQLite
+[amalgamation](https://www.sqlite.org/download.html) zip, as `config.delta.yaml` does: the build
+compiles it into `<environment.path>/sqlite/` and builds tippecanoe against that. Also set
+`environment.sqlite_amalgamation_sha256` to the zip's SHA-256 (`curl -sL <url> | shasum -a 256`;
+not the SHA3-256 sqlite.org lists): the build checks it before extracting the zip and refuses to run
+without it.
 
 To use a tippecanoe you already have instead (e.g. `brew install tippecanoe`), set
 `environment.tippecanoe_version: ""`.
@@ -156,7 +191,7 @@ snakemake -s snakemake/Snakefile.pmtiles --cores 2 --forcerun pmtiles_month --co
 - Every month is rebuilt, even if its archive exists. `--forcerun pmtiles_month` makes
   Snakemake run them again after an earlier run finished them.
 - To pick up new commits on the water-timeseries-v2 branch in `environment.base_package`, add
-  `build_env` to `--forcerun` (`--forcerun build_env pmtiles_month`). That rebuilds the whole
+  `build_environment` to `--forcerun` (`--forcerun build_environment pmtiles_month`). That rebuilds the whole
   environment, including tippecanoe.
 
 Its logs and markers go to `data/snakemake_work/pmtiles_<dataset>/`.
@@ -175,35 +210,41 @@ credentials:
 ```
 
 For each step, `gcloud_adc` becomes `GOOGLE_APPLICATION_CREDENTIALS`. `earthengine` is copied
-into a private per-step home directory (owner-only, under `base_dir/temp_netcdf`) and `HOME`,
+into a private per-step home directory (owner-only, under `scratch.temp_dir`) and `HOME`,
 `EARTHENGINE_TOKEN` and `EE_CONFIG_DIR` point at that copy, exactly as in the pod script. A step
-fails if a configured file doesn't exist. Paths may use `~` and `$VARS`.
+fails if a configured file doesn't exist. `snakemake/config.delta.yaml` uses the two paths
+above.
 
-#### Copying the cluster's credentials
+#### Copying the cluster's credentials to Delta
 
-To run with the same accounts as the Argo pipeline, copy the cluster secrets to the paths above.
-Run these on a machine where `kubectl` can reach the cluster (if it hangs, whitelist your IP
-first, see [3. Whitelist & port forward](03-whitelist-and-port-forward.md)). Each command decodes
-one secret into an owner-only file:
+The credentials on Delta are copies of the cluster secrets, so Delta runs use the same
+accounts as the Argo pipeline. Run these on a machine where `kubectl` can reach the cluster
+(if it hangs, whitelist your IP first, see
+[3. Whitelist & port forward](03-whitelist-and-port-forward.md)). Each command decodes one
+secret and streams it over ssh straight into an owner-only file on Delta, so nothing is written
+to the local machine. Each asks for your Delta login and Duo approval.
 
 ```bash
-(umask 077; mkdir -p ~/.config/water_timeseries && kubectl -n argo get secret personal-gcp-creds -o jsonpath='{.data.key\.json}' | base64 -d > ~/.config/water_timeseries/application_default_credentials.json)
+kubectl -n argo get secret personal-gcp-creds -o jsonpath='{.data.key\.json}' | base64 -d \
+  | ssh login.delta.ncsa.illinois.edu 'umask 077; mkdir -p ~/.config/water_timeseries && cat > ~/.config/water_timeseries/application_default_credentials.json'
 ```
 
 ```bash
-(umask 077; mkdir -p ~/.config/water_timeseries && kubectl -n argo get secret earth-engine-creds -o jsonpath='{.data.credentials}' | base64 -d > ~/.config/water_timeseries/earthengine_credentials)
+kubectl -n argo get secret earth-engine-creds -o jsonpath='{.data.credentials}' | base64 -d \
+  | ssh login.delta.ncsa.illinois.edu 'umask 077; mkdir -p ~/.config/water_timeseries && cat > ~/.config/water_timeseries/earthengine_credentials'
 ```
 
-Check that both files exist, are non-empty and are readable only by you (`-rw-------`):
+Check on Delta that both files exist, are non-empty and are readable only by you
+(`-rw-------`):
 
 ```bash
 ls -l ~/.config/water_timeseries/
 ```
 
-Both secrets hold a user's login (a refresh token), not a service account, so runs with these
-files act as whoever created the secrets. They stop working if that login is revoked or expires.
-When the secrets are recreated (see [4. Setting up secrets](04-setting-up-secrets.md)), copy them
-again.
+Both secrets hold a user's login (a refresh token), not a service account, so Delta runs act as
+whoever created the secrets. They stop working if that login is revoked or expires. When the
+secrets are recreated (see [4. Setting up secrets](04-setting-up-secrets.md)), re-run both
+commands to update the copies on Delta.
 
 ## Prerequisites
 

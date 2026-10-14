@@ -1,0 +1,88 @@
+# Delta (NCSA, ACCESS) overrides for config.yaml. Use together with the Slurm
+# profile:
+#   snakemake -s snakemake/Snakefile --configfile snakemake/config.delta.yaml \
+#       --profile snakemake/profiles/delta --config target_date=2025-08
+#
+# Keys not set here come from config.yaml. $VARS and ~ are expanded.
+
+# The Argo workflows' shared PVC (mounted at /data in the pods) lives on
+# Taiga at taiga_root (below), so /data/water_timeseries in the Argo templates is
+# <taiga_root>/water_timeseries. Delta uses the same directories as the Argo test pipeline
+# (nrt-pipeline-templates-test.yaml), so both implementations share one copy
+# of the inputs and the Dynamic World data. Only the results - output_dir,
+# combined_zarr_datasets and the PMTiles - go to the biyc allocation's
+# /work/hdd space.
+#
+# Layout on Delta:
+#   /projects/biyc/water_timeseries        this repo checkout and the venv
+#   <taiga_root>/water_timeseries          base_dir, inputs, region polygons
+#   <taiga_root>/water_timeseries/test     dynamic_world_data, snakemake_work
+#   /work/hdd/biyc/water_timeseries        output and combined_zarr_datasets
+#   /work/hdd/biyc/water_timeseries/test   this pipeline's PMTiles
+#                                          (precomputed_nrt, nrt_tiles)
+# Keep the /projects and /work directories group-writable (g+rwX, setgid on
+# directories) so anyone on the allocation can run the pipeline.
+
+# The Argo PVC's backing directory on Taiga. The UUID in its name changes if the
+# PVC is recreated: update it here (the only place), and every "{taiga_root}"
+# below follows. Can also be set per run: --config taiga_root=/taiga/...
+taiga_root: "/taiga/ncsa/radiant/bbfa/software-dev/argo-argo-workflows-share-pvc-082f0001-1fbe-4f7d-91d7-410c880ebd26"
+
+# dynamic_world_data and base_dir are read *and written*: download/merge
+# write downloads/, merge/ and the new historical file into
+# dynamic_world_data, next to the historical lakes_dw_*.nc /
+# dynamic_world_historical_*.nc file(s) they read. So the Delta user needs
+# write access there, and a Delta run and an Argo test run must not run at
+# the same time.
+paths:
+  base_dir: "{taiga_root}/water_timeseries"
+  dynamic_world_data: "{taiga_root}/water_timeseries/test/dynamic_world_data"
+  vector_lake_file: "{taiga_root}/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
+  region_lake_polygons_dir: "{taiga_root}/water_timeseries/region_lake_polygons"
+  output_dir: "/work/hdd/biyc/water_timeseries/output"
+  combined_zarr_datasets: "/work/hdd/biyc/water_timeseries/combined_zarr_datasets"
+  nrt_precomputed_dir: "/work/hdd/biyc/water_timeseries/test/precomputed_nrt"
+  nrt_pmtiles_output_dir: "/work/hdd/biyc/water_timeseries/test/nrt_tiles"
+  # Markers, logs and per-stage .env files (Delta only - Argo has no
+  # equivalent). Must be on a filesystem the login node and the compute nodes
+  # share.
+  work_dir: "{taiga_root}/water_timeseries/test/snakemake_work"
+
+# Snakefile.pmtiles datasets. "test" is this pipeline's own output (above);
+# "main" reads the production Argo pipeline's combined zarr on Taiga (read
+# only) and writes its own drain-breaks table and archives under /work.
+pmtiles:
+  datasets:
+    main:
+      combined_zarr_datasets: "{taiga_root}/water_timeseries/combined_zarr_datasets"
+      nrt_precomputed_dir: "/work/hdd/biyc/water_timeseries/main/precomputed_nrt"
+      nrt_pmtiles_output_dir: "/work/hdd/biyc/water_timeseries/main/nrt_tiles"
+
+# Node-local disk on the compute node, so temp NetCDF and Dask spill I/O
+# don't go over the shared filesystem. Nothing in it is needed after a step.
+scratch:
+  temp_dir: "/tmp/$USER/water_timeseries/temp_netcdf"
+  dask_dir: "/tmp/$USER/water_timeseries/dask_work_space"
+
+# The same credentials the Argo pods use, copied from the cluster secrets
+# (run on a machine with kubectl access; nothing is written locally):
+#   kubectl -n argo get secret personal-gcp-creds -o jsonpath='{.data.key\.json}' | base64 -d \
+#     | ssh login.delta.ncsa.illinois.edu 'umask 077; mkdir -p ~/.config/water_timeseries && cat > ~/.config/water_timeseries/application_default_credentials.json'
+#   kubectl -n argo get secret earth-engine-creds -o jsonpath='{.data.credentials}' | base64 -d \
+#     | ssh login.delta.ncsa.illinois.edu 'umask 077; mkdir -p ~/.config/water_timeseries && cat > ~/.config/water_timeseries/earthengine_credentials'
+credentials:
+  gcloud_adc: "~/.config/water_timeseries/application_default_credentials.json"
+  earthengine: "~/.config/water_timeseries/earthengine_credentials"
+
+# Home directories on Delta are small; keep the venv under /projects, next to
+# the repo checkout. It is built on the login node (build_environment is a local rule)
+# and used by every job.
+environment:
+  path: "/projects/biyc/water_timeseries/venv"
+  # Delta has no sqlite3.h / libsqlite3.so (only the runtime libsqlite3.so.0,
+  # and no sqlite module), which tippecanoe needs to compile. build_environment builds
+  # SQLite from this amalgamation into <path>/sqlite instead.
+  sqlite_amalgamation_url: "https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip"
+  # SHA-256 of the zip above, verified before it is extracted and compiled on the
+  # login node. Update it with the URL: curl -sL <url> | shasum -a 256
+  sqlite_amalgamation_sha256: "1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032"

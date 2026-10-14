@@ -8,6 +8,7 @@ nest_asyncio.apply()
 from dotenv import load_dotenv
 import os
 import glob
+import shutil
 import time
 import numpy as np
 import pandas as pd
@@ -188,6 +189,16 @@ def main():
         ds_existing['id_geohash'] = ds_existing['id_geohash'].astype(str)
         existing_dates = {pd.Timestamp(d).strftime("%Y-%m") for d in ds_existing.date.values}
 
+    # OVERWRITE=True: re-merge target_date from the regions' breakpoint zarr and
+    # replace it in the combined archive, instead of skipping a month it has.
+    overwrite = os.environ.get("OVERWRITE", "False").lower() in ("true", "1", "yes")
+    if overwrite and target_date in existing_dates:
+        logger.info(f"OVERWRITE=True - replacing {target_date} in {existing_combined_path}")
+        keep = [i for i, d in enumerate(ds_existing.date.values)
+                if pd.Timestamp(d).strftime("%Y-%m") != target_date]
+        ds_existing = ds_existing.isel(date=keep) if keep else None
+        existing_dates.discard(target_date)
+
     # Cheap up-front check: if every available regional month (including any
     # earlier ones a prior run may have skipped) is already in the combined
     # archive, there's nothing to do - skip before doing any of the
@@ -256,7 +267,7 @@ def main():
 
     if ds_existing is not None:
         logger.info(f"Appending {len(target_dates)} new month(s) to existing combined archive...")
-        ds_combined = xr.concat([ds_existing, ds_new_merged], dim="date", join="outer")
+        ds_combined = xr.concat([ds_existing, ds_new_merged], dim="date", join="outer").sortby("date")
         latest_date = pd.Timestamp(ds_combined.date.values[-1]).strftime("%Y-%m")
     else:
         ds_combined = ds_new_merged
@@ -270,8 +281,18 @@ def main():
     new_zarr_dataset_name = f"combined_historical_nrt_{latest_date}.zarr"
     new_zarr_dataset_path = os.path.join(combined_zarr_datasets, new_zarr_dataset_name)
 
+    # Write next to it and swap in: with OVERWRITE the new archive can have the
+    # same name as the existing one, which ds_combined is still reading from.
+    tmp_zarr_dataset_path = new_zarr_dataset_path + ".tmp"
+    shutil.rmtree(tmp_zarr_dataset_path, ignore_errors=True)
     logger.info(f"Saving combined result to {new_zarr_dataset_path}")
-    ds_combined.to_zarr(new_zarr_dataset_path, mode='w', align_chunks=True)
+    ds_combined.to_zarr(tmp_zarr_dataset_path, mode='w', align_chunks=True)
+    bak = new_zarr_dataset_path + ".bak"
+    shutil.rmtree(bak, ignore_errors=True)
+    if os.path.exists(new_zarr_dataset_path):
+        os.rename(new_zarr_dataset_path, bak)
+    os.rename(tmp_zarr_dataset_path, new_zarr_dataset_path)
+    shutil.rmtree(bak, ignore_errors=True)
 
     logger.success(f"Combined zarr dataset written to {new_zarr_dataset_path}")
 
