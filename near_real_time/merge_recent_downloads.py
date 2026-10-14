@@ -13,8 +13,6 @@ from utils.helper_functions import (
     verify_downloads_complete, merge_new_results, combine_region_files, _get_id_chunk_size,
 )
 from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
-import sys
-from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
 from loguru import logger
 from datetime import datetime
 from dotenv import load_dotenv
@@ -26,11 +24,6 @@ import xarray as xr
 import numpy as np
 import gc
 from typing import List, Dict, Any
-
-# Add project root to Python root
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
 
 
 def _configure_dask_for_low_memory():

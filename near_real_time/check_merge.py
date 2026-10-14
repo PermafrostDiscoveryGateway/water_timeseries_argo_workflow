@@ -19,13 +19,6 @@ import glob
 import time
 import utils.region_boundaries
 from utils.date_gate import MERGE_START_DAY, get_target_month
-from utils.date_gate import MERGE_START_DAY, get_target_month
-from pathlib import Path
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
 
 
 def get_creation_time(filepath):

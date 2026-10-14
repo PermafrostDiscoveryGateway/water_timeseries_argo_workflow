@@ -9,6 +9,7 @@
 # progress and won't have data yet - so this always targets the most recent
 # *complete* summer month, starting the search at last month.
 import os
+import re
 from datetime import datetime, timedelta
 
 SUMMER_MONTHS = [6, 7, 8, 9]
