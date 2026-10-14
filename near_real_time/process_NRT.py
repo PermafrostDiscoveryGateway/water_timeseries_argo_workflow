@@ -1,6 +1,16 @@
+import sys
+from pathlib import Path
+
+# Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
+# imports below: `utils` lives in the project root, which is only on the path by
+# default inside the Docker image (PYTHONPATH=/app), so moving this block lower
+# breaks `python near_real_time/<script>.py` outside the container.
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates, find_most_recent_historical_file
 from utils.date_gate import MERGE_START_DAY, get_target_month
-import sys
 from typing import List, Dict, Any, Optional
 import gc
 import traceback
@@ -11,12 +21,7 @@ import os
 import glob
 import time
 import pandas as pd
-from pathlib import Path
 import xarray as xr
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
 
 
 def is_file_ready(filepath, wait_seconds=0.5, checks=20):
@@ -304,7 +309,7 @@ def main():
 
     id_chunk_size = int(os.environ.get("id_chunk_size", 500))
     save_interval = int(os.environ.get("save_interval", 1))
-    n_jobs = int(os.environ.get("n_jobs", 2))
+    n_jobs = int(os.environ.get("n_jobs", 1))
 
     # Define regions to process - you can customize this list
     if region_name == "ALL":

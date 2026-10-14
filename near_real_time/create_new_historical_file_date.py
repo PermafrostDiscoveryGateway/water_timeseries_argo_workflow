@@ -12,6 +12,22 @@ most recently modified .nc file in dynamic_world_data: if the .env sets
 Usage:
     python create_new_historical_file_date.py 2026-06 [path/to/.env]
 """
+import sys
+import re
+import os
+import glob
+from pathlib import Path
+from loguru import logger
+from dotenv import load_dotenv
+
+# Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
+# imports below: `utils` lives in the project root, which is only on the path by
+# default inside the Docker image (PYTHONPATH=/app), so moving this block lower
+# breaks `python near_real_time/<script>.py` outside the container.
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from create_new_historical_file import (
     _configure_dask_for_low_memory,
     wait_for_regions_to_complete,
@@ -21,18 +37,6 @@ from utils.helper_functions import (
     verify_merged_netcdf, enable_memory_tracking, log_memory_usage,
     combine_region_files, _get_id_chunk_size,
 )
-import sys
-import re
-import os
-import glob
-from pathlib import Path
-from loguru import logger
-from dotenv import load_dotenv
-
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
 
 DATE_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
@@ -101,7 +105,7 @@ def main():
     logger.info("STEP 1: Waiting for region processing to complete")
     logger.info("=" * 80)
 
-    max_wait_minutes = int(os.environ.get('merge_wait_minutes', 30))
+    max_wait_minutes = int(os.environ.get('merge_wait_minutes', 2880))
 
     regions_completed = wait_for_regions_to_complete(
         dynamic_world_data_dir=dynamic_world_data_dir,
@@ -113,7 +117,7 @@ def main():
 
     if not regions_completed:
         logger.error(f"❌ Not all regions completed processing for {date_to_run}. Aborting merge.")
-        return
+        return 1
 
     # ========== STEP 2: Create combined file if it doesn't exist ==========
     logger.info("=" * 80)
@@ -129,7 +133,7 @@ def main():
 
         if not region_files:
             logger.error(f"No region files found for date {date_to_run}")
-            return
+            return 1
 
         logger.info(f"Found {len(region_files)} region files to combine")
 
@@ -141,7 +145,7 @@ def main():
 
         if not combine_result.get('success', False):
             logger.error(f"Failed to create combined file: {combine_result.get('error', 'Unknown error')}")
-            return
+            return 1
 
         logger.info("✅ Combined file created successfully!")
     else:
@@ -155,7 +159,7 @@ def main():
     original_most_recent_dynamic_world_file = resolve_historical_file(dynamic_world_data_dir)
     if original_most_recent_dynamic_world_file is None:
         logger.error("No .nc files found in the dynamic_world_data directory")
-        return
+        return 1
 
     historical_file_size_gb = Path(original_most_recent_dynamic_world_file).stat().st_size / (1024 ** 3)
     logger.info(f"Historical file: {os.path.basename(original_most_recent_dynamic_world_file)}")
@@ -179,7 +183,7 @@ def main():
         required_space_gb = (historical_file_size_gb + combined_file_size_gb) * 2.5
         if free_space_gb < required_space_gb:
             logger.error(f"Insufficient disk space! Need ~{required_space_gb:.2f} GB, have {free_space_gb:.2f} GB")
-            return
+            return 1
     except Exception as e:
         logger.warning(f"Could not check disk space: {e}")
 
@@ -197,7 +201,7 @@ def main():
 
     if not merge_result.get('success', False):
         logger.error(f"Failed to merge historical file: {merge_result.get('error', 'Unknown error')}")
-        return
+        return 1
 
     if not merge_result.get('dates_added'):
         logger.info(merge_result.get('message', 'No new dates to add.'))
@@ -230,4 +234,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

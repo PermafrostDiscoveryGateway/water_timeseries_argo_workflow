@@ -1,9 +1,19 @@
+import sys
+from pathlib import Path
+
+# Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
+# imports below: `utils` lives in the project root, which is only on the path by
+# default inside the Docker image (PYTHONPATH=/app), so moving this block lower
+# breaks `python near_real_time/<script>.py` outside the container.
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from utils.helper_functions import (
     verify_merged_netcdf, enable_memory_tracking, log_memory_usage,
     combine_region_files, _get_id_chunk_size,
 )
 from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
-import sys
 from loguru import logger
 from datetime import datetime
 from dotenv import load_dotenv
@@ -12,16 +22,10 @@ import glob
 import dask
 import time
 import pandas as pd
-from pathlib import Path
 import xarray as xr
 import numpy as np
 import gc
 from typing import List, Dict, Any
-
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
 
 
 def _configure_dask_for_low_memory():

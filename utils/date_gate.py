@@ -9,6 +9,7 @@
 # progress and won't have data yet - so this always targets the most recent
 # *complete* summer month, starting the search at last month.
 import os
+import re
 from datetime import datetime, timedelta
 
 SUMMER_MONTHS = [6, 7, 8, 9]
@@ -27,11 +28,21 @@ def is_test_run() -> bool:
     return os.environ.get("test_run", "False").lower() in ("true", "1", "yes")
 
 
+def target_date_override() -> "datetime | None":
+    """Explicit `target_date=YYYY-MM` from the env, or None if unset."""
+    value = os.environ.get("target_date", "").strip()
+    if not value:
+        return None
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value):
+        raise ValueError(f"target_date must be YYYY-MM, got {value!r}")
+    return datetime.strptime(value, "%Y-%m")
+
+
 def should_run_last_attempts(today: datetime = None, min_day: int = 15) -> bool:
     """Gate for download_region_last_attempts.py.
 
     Dynamic World ingestion for a just-finished month can lag by a couple of
-    weeks, so a lake confirmed "no data" early in the month (day 3-14, when
+    weeks, so a lake confirmed "no data" early in the month (day 2-14, when
     the regular download/backfill scripts run) may just not be ingested yet.
     This gate holds the last-attempts script back until `min_day`, giving
     ingestion time to catch up before treating a lake as permanently no-data.
@@ -44,6 +55,9 @@ def should_run_last_attempts(today: datetime = None, min_day: int = 15) -> bool:
 
 
 def most_recent_summer_month(today: datetime = None) -> datetime:
+    override = target_date_override()
+    if override is not None:
+        return override
     if today is None:
         today = datetime.now()
     year, month = today.year, today.month
