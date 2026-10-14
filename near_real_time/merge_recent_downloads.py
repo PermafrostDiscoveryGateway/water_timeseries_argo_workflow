@@ -1042,8 +1042,11 @@ def main():
     logger.info("SCRIPT COMPLETED")
     logger.info("=" * 80)
 
-    sys.exit(0 if failure_count == 0 else 1)
+    return failure_count
 
 
 if __name__ == "__main__":
-    main()
+    # sys.exit belongs here, not inside main(): main() is also called directly
+    # (not via subprocess) by test_near_real_time.py, and SystemExit there
+    # would kill that whole test run right after this step.
+    sys.exit(1 if main() else 0)

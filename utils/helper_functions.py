@@ -3685,6 +3685,16 @@ def create_final_zarr_from_incremental(
         # Save to Zarr
         logger.info(f"💾 Saving {len(breaks_merged):,} records to Zarr: {zarr_path}")
 
+        # xarray/zarr cannot encode pandas' nullable extension dtypes (e.g. the
+        # Int64 drainage_confidence uses to represent <NA> distinctly from a
+        # real -1/1/2/3 - see NRTBreakpoint._add_confidence_level). Downcast any
+        # such column to float64 (NaN standing in for <NA>) before to_xarray(),
+        # or to_zarr() fails with "Cannot interpret 'Int64Dtype()' as a data type".
+        for col in breaks_merged.columns:
+            dtype = breaks_merged[col].dtype
+            if pd.api.types.is_extension_array_dtype(dtype) and pd.api.types.is_numeric_dtype(dtype):
+                breaks_merged[col] = breaks_merged[col].astype('float64')
+
         # Convert to xarray dataset
         ds_breaks = breaks_merged.to_xarray()
 
