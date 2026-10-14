@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pvc-rsync-server
+  namespace: argo
+  labels:
+    app: pvc-rsync-server
+spec:
+  containers:
+  - name: rsync
+    image: python:3.12-slim
+    command: ["sh", "-c"]
+    args:
+    - |
+      set -e
+      apt-get update && apt-get install -y --no-install-recommends rsync
+      cat > /tmp/rsyncd.conf << 'EOF'
+      uid = root
+      gid = root
+      use chroot = no
+      max connections = 4
+      [data]
+          path = /data
+          read only = yes
+      EOF
+      exec rsync --daemon --no-detach --config=/tmp/rsyncd.conf --port=873
+    ports:
+    - containerPort: 873
+      name: rsync
+    volumeMounts:
+    - name: argo-workflow-volume
+      mountPath: /data
+      readOnly: true
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "50m"
+      limits:
+        memory: "256Mi"
+        cpu: "250m"
+  volumes:
+  - name: argo-workflow-volume
+    persistentVolumeClaim:
+      claimName: argo-workflows-share
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pvc-rsync-server
+  namespace: argo
+spec:
+  selector:
+    app: pvc-rsync-server
+  ports:
+  - port: 873
+    targetPort: 873
+    name: rsync

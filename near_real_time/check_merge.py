@@ -8,6 +8,7 @@ import os
 import glob
 import time
 import utils.region_boundaries
+from utils.date_gate import MERGE_START_DAY, get_target_month
 from pathlib import Path
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
@@ -98,7 +99,6 @@ def main():
 
     SHOULD_RUN = False
 
-    summer_months = [6, 7, 8, 9]
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     most_recent_dynamic_world_file = None
@@ -112,16 +112,11 @@ def main():
     dynamic_world_file_to_test = os.path.join(dynamic_world_data_dir, 'historical_data_20260710_052759.nc')
     logger.debug(f"We want to check the file {dynamic_world_file_to_test}")
 
-    TODAY =  datetime.now()
-    TODAY_MONTH = TODAY.month
-    if TODAY_MONTH - 1 in summer_months:
-        TODAY_DAY = TODAY.day
-        if TODAY_DAY > 3:
-            SHOULD_RUN = True
-            logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
+    target_month = get_target_month(min_day=MERGE_START_DAY)
+    SHOULD_RUN = target_month is not None
 
     if SHOULD_RUN:
-        date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
+        date_to_run = [target_month.strftime("%Y-%m")]
         dates_to_run_string = date_to_run[0].replace('-', '_')
         name_of_final_merge_file = f"{dynamic_world_data_dir}_lakes_dw_Vdc_{dates_to_run_string}.nc"
         REGIONS = utils.region_boundaries.get_region_boundaries()

@@ -1,0 +1,123 @@
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: nrt-pipeline-cron-test
+  namespace: argo
+  annotations:
+    workflows.argoproj.io/pod-keep: "OnCompletion"
+spec:
+  # Same schedule/DAG shape as nrt-pipeline-cron, but points at the
+  # nrt-pipeline-templates-test templates (test/ output + dynamic_world_data
+  # paths, test_run=True region restriction, dry_run=True upload). Suspended
+  # by default - this is meant to be run manually while testing, not on its
+  # own schedule.
+  schedule: "20 12 * * *"
+  concurrencyPolicy: "Forbid"
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  suspend: true
+  workflowSpec:
+    ttlStrategy:
+      secondsAfterCompletion: 86400
+    entrypoint: main
+
+    # Pod-level fields like volumes/imagePullSecrets/artifactRepository on the
+    # referenced WorkflowTemplate only apply when that template runs directly.
+    # Since tasks below call into nrt-pipeline-templates-test via templateRef,
+    # the pod is actually built from this workflowSpec, so these must be
+    # duplicated here to match.
+    imagePullSecrets:
+    - name: ghcr-secret
+
+    artifactRepository:
+      pvc:
+        claimName: argo-workflows-share
+        key: artifacts
+
+    volumes:
+    - name: lake-drainage-volume
+      persistentVolumeClaim:
+        claimName: argo-workflows-share
+    - name: gcp-creds
+      secret:
+        secretName: personal-gcp-creds
+        items:
+        - key: key.json
+          path: application_default_credentials.json
+    - name: earth-engine-creds
+      secret:
+        secretName: earth-engine-creds
+        items:
+        - key: credentials
+          path: credentials
+
+    arguments:
+      parameters:
+      # Restricted to utils.region_boundaries.get_small_regions() - the test
+      # pipeline is meant to exercise the DAG quickly, not process every region.
+      - name: regions
+        value: |
+          [
+            {"region_name": "TEST",     "id_chunk_size": "",     "save_interval": "", "n_jobs": ""},
+            {"region_name": "EURASIA3", "id_chunk_size": "",     "save_interval": "", "n_jobs": ""}
+          ]
+      # How many merge -> backfill rounds to try before giving up and moving
+      # on with whatever completeness was reached.
+      - name: max-backfill-attempts
+        value: "5"
+
+    templates:
+    - name: main
+      dag:
+        tasks:
+
+        # Fan out: one region-pipeline per region, fully independent of every
+        # other region's progress - mirrors nrt-pipeline-cron's shape so the
+        # test run actually exercises the same per-region retry/last-attempts/
+        # force-merge path prod uses, not just the DAG's happy path.
+        - name: regions
+          templateRef:
+            name: nrt-pipeline-templates-test
+            template: region-pipeline
+          arguments:
+            parameters:
+            - name: region_name
+              value: "{{item.region_name}}"
+            - name: id_chunk_size
+              value: "{{item.id_chunk_size}}"
+            - name: save_interval
+              value: "{{item.save_interval}}"
+            - name: n_jobs
+              value: "{{item.n_jobs}}"
+            - name: max-backfill-attempts
+              value: "{{workflow.parameters.max-backfill-attempts}}"
+          withParam: "{{workflow.parameters.regions}}"
+
+        # Only runs once every region's full pipeline (including process) has finished,
+        # since it combines each region's breakpoint output.
+        - name: create-historical-zarr-archive
+          depends: "regions"
+          templateRef:
+            name: nrt-pipeline-templates-test
+            template: create-historical-zarr-archive
+
+        # Decoupled from create-historical-zarr-archive/regions on purpose: this only
+        # needs every region's *merge* output (dw_{region}_{date}.nc), not process, so
+        # it doesn't need to wait behind the (much slower) process step. It has no
+        # `depends`, so it starts as soon as the workflow does and polls on its own,
+        # on a cheap pod, until every region's merge file for the target month shows
+        # up (or merge_wait_minutes is exceeded) - see wait-for-region-merges.
+        - name: wait-for-region-merges
+          templateRef:
+            name: nrt-pipeline-templates-test
+            template: wait-for-region-merges
+
+        # Only starts once wait-for-region-merges confirms merges are ready, so the
+        # much heavier create-new-historical-file pod isn't sitting reserved for
+        # however long the region pipelines take.
+        - name: create-historical-file
+          depends: "wait-for-region-merges"
+          templateRef:
+            name: nrt-pipeline-templates-test
+            template: create-new-historical-file

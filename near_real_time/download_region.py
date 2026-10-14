@@ -1,4 +1,5 @@
 from utils.helper_functions import verify_downloads_complete , download_near_real_time_region_dates, compare_netcdf_files
+from utils.date_gate import DOWNLOAD_START_DAY, get_target_month
 import sys
 import utils.download_utils as download_new_dynamic_world_data
 from loguru import logger
@@ -53,6 +54,7 @@ def verify_merge_result(original_file, merged_file):
 
 
 def main():
+    exit_code = 0
     logger.debug(f"Beginning historical run")
     env_path = None
     if len(sys.argv) > 1:
@@ -92,7 +94,6 @@ def main():
 
     SHOULD_RUN = False
 
-    summer_months = [6, 7, 8, 9]
     dynamic_world_data_dir = os.environ['dynamic_world_data']
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=lambda f: Path(f).stat().st_mtime)
@@ -109,19 +110,12 @@ def main():
 
 
 
-    TODAY =  datetime.now()
-    TODAY_MONTH = TODAY.month
-    if TODAY_MONTH - 1 in summer_months:
-        logger.debug(f"TODAY MONTH: {TODAY_MONTH}")
-        logger.debug(f"Last month: {TODAY.month - 1} checking to see if we should run")
-        TODAY_DAY = TODAY.day
-        if TODAY_DAY > 2:
-            SHOULD_RUN = True
-            logger.debug(f"TODAY_DAY: {TODAY_DAY} should we run and check: {SHOULD_RUN}")
+    target_month = get_target_month(min_day=DOWNLOAD_START_DAY)
+    SHOULD_RUN = target_month is not None
 
     if SHOULD_RUN:
-        timestamp_to_run = [pd.Timestamp(date(datetime.now().year, TODAY_MONTH -1, 1))]
-        date_to_run = [datetime(TODAY.year, TODAY_MONTH -1, 1).strftime("%Y-%m")]
+        timestamp_to_run = [pd.Timestamp(target_month)]
+        date_to_run = [target_month.strftime("%Y-%m")]
         logger.debug(f"timestamp_to_run: {timestamp_to_run}")
 
         downloads_complete = verify_downloads_complete(region=REGION, analysis_dates=date_to_run)
@@ -135,14 +129,23 @@ def main():
                 logger.debug(f"Missing env path")
                 download_result = download_near_real_time_region_dates(region=REGION, dates_to_download=timestamp_to_run)
                 logger.debug(f"Download result: {download_result}")
+
+            if not download_result.get('success', False):
+                if download_result.get('had_real_error', True):
+                    logger.error(f"Download for {REGION} reported failure: {download_result}")
+                    exit_code = 1
+                else:
+                    logger.warning(
+                        f"Download for {REGION} incomplete, but only because of confirmed no-data or "
+                        f"incomplete tiles (no real errors) - the missing-IDs backfill will handle these: {download_result}")
         else:
             logger.debug(f"Already done downloading {REGION} for {date_to_run}")
 
     else:
         logger.debug(f"Too early in the month to run downloads for {REGION}")
 
-
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

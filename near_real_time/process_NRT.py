@@ -1,4 +1,5 @@
-from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates
+from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates, find_most_recent_historical_file
+from utils.date_gate import MERGE_START_DAY, get_target_month
 import sys
 from typing import List, Dict, Any, Optional
 import gc
@@ -289,7 +290,8 @@ def main():
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         return {'success': False, 'error': 'No .nc files found'}
 
-    original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+    original_most_recent_dynamic_world_file = find_most_recent_historical_file(all_dynamic_world_files)
+    logger.debug(f"Most recent dynamic world file: {original_most_recent_dynamic_world_file}")
     logger.debug(f"Dates in the historical file")
     debug_historical_dates(historical_file_path=original_most_recent_dynamic_world_file)
 
@@ -302,7 +304,7 @@ def main():
 
     id_chunk_size = int(os.environ.get("id_chunk_size", 500))
     save_interval = int(os.environ.get("save_interval", 1))
-    n_jobs = int(os.environ.get("n_jobs", 1))
+    n_jobs = int(os.environ.get("n_jobs", 2))
 
     # Define regions to process - you can customize this list
     if region_name == "ALL":
@@ -319,19 +321,12 @@ def main():
 
     # Check if we should run based on date
     SHOULD_RUN = False
-    summer_months = [6, 7, 8, 9]
-    TODAY = datetime.now()
-    TODAY_MONTH = TODAY.month
-    TODAY_YEAR = TODAY.year
 
-    if (TODAY_MONTH -1) in summer_months:
-        TODAY_DAY = TODAY.day
-        if TODAY_DAY > 3:
-            SHOULD_RUN = True
-            target_month = TODAY_MONTH - 1
-            target_date = f"{TODAY_YEAR}-{target_month:02d}"
-            logger.debug(f"TODAY_DAY: {TODAY_DAY} - Should run: {SHOULD_RUN}")
-            logger.debug(f"Target date: {target_date}")
+    target_month = get_target_month(min_day=MERGE_START_DAY)
+    if target_month is not None:
+        SHOULD_RUN = True
+        target_date = target_month.strftime("%Y-%m")
+        logger.debug(f"Should run: {SHOULD_RUN}, target date: {target_date}")
 
     if not SHOULD_RUN:
         logger.info("Skipping processing - conditions not met")
