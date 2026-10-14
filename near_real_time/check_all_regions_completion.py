@@ -25,7 +25,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from utils.region_boundaries import get_region_boundaries, get_small_regions
-from utils.date_gate import MERGE_START_DAY, get_target_month
+from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
 from near_real_time.download_region_missing_ids import (
     get_region_lakes,
     get_historical_valid_ids,
@@ -105,8 +105,7 @@ def main():
 
     region_boundaries = get_region_boundaries()
     all_regions = list(region_boundaries.keys())
-    test_run = os.environ.get("test_run")
-    if test_run and test_run.lower() == 'true':
+    if is_test_run():
         all_regions = list(get_small_regions().keys())
 
     logger.info("Loading lake vector file...")
