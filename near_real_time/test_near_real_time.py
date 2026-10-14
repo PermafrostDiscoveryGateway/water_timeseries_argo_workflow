@@ -4,6 +4,7 @@ from google_cloud_utils import upload_to_cloud
 import process_NRT
 import combine_results_into_zarr_historical_archive
 import create_new_historical_file
+import create_nrt_pmtiles
 from loguru import logger
 
 def load_env_file(env_path):
@@ -72,6 +73,10 @@ def run_scripts_with_env():
     logger.debug(f"Combining region results into the historical zarr archive")
     combine_result = combine_results_into_zarr_historical_archive.main()
     logger.debug(combine_result)
+
+    logger.debug(f"Building NRT PMTiles archive from the combined breakpoint zarr")
+    nrt_pmtiles_result = create_nrt_pmtiles.main()
+    logger.debug(nrt_pmtiles_result)
 
     logger.debug(f"Creating new historical file with recent data")
     new_historical_file_result = create_new_historical_file.main()

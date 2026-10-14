@@ -20,10 +20,11 @@ This script:
    re-reads its whole tile store in random order; on the NFS-backed PVC that
    ran at ~50 KB/s and took hours, on local disk it takes minutes.
 
-The daily pipeline runs this as its last step, so it skips any month whose
-``nrt_<month>_drainage.pmtiles`` already exists or that already has rows in
-the drain-breaks table. Set ``OVERWRITE=True`` (see
-manual_jobs/create-nrt-pmtiles.yaml) to rebuild the latest month anyway.
+The daily pipeline runs this after the combined zarr is written. It skips a
+month only when ``nrt_<month>_drainage.pmtiles`` is newer than the combined
+zarr, so a regenerated zarr (new data, or more lakes drained) refreshes the
+month and an unchanged one is left alone. Set ``OVERWRITE=True`` (see
+manual_jobs/create-nrt-pmtiles.yaml) to rebuild the latest month regardless.
 
 Note: the ``water_timeseries.utils.pmtiles_build.build_pmtiles_nrt_monthly``
 on this branch (``ncsa-water-timeseries``) only builds the ``drained``/
@@ -63,11 +64,11 @@ if str(project_root) not in sys.path:
 
 
 def get_most_recent_combined_zarr(combined_zarr_datasets):
-    """Return the most recently modified combined_historical_nrt_*.zarr store, or None."""
+    """Return the most recently created combined_historical_nrt_*.zarr store, or None."""
     zarr_paths = glob.glob(os.path.join(combined_zarr_datasets, "combined_historical_nrt_*.zarr"))
     if not zarr_paths:
         return None
-    return max(zarr_paths, key=os.path.getmtime)
+    return max(zarr_paths, key=os.path.getctime)
 
 
 def build_month_dataframe(ds, target_month):
@@ -121,9 +122,16 @@ def month_already_built(target_month, nrt_pmtiles_output_dir, previous_file):
 
 def prune_old_breaks_files(nrt_precomputed_dir, keep):
     """Delete all but the `keep` most recently modified nrt_monthly_drain_breaks*.parquet tables."""
+def prune_old_breaks_files(nrt_precomputed_dir, keep, protect=None):
+    """Delete all but the `keep` most recently modified nrt_monthly_drain_breaks*.parquet tables.
+
+    `protect` (the table this run just committed) is never deleted, whatever `keep` is.
+    """
     candidates = sorted(nrt_precomputed_dir.glob("nrt_monthly_drain_breaks*.parquet"),
                         key=os.path.getmtime, reverse=True)
     for old_file in candidates[keep:]:
+        if old_file == protect:
+            continue
         logger.info(f"Pruning old drain-breaks table {old_file.name}")
         old_file.unlink()
 
@@ -280,6 +288,9 @@ def main():
         'breaks_file': str(breaks_file),
         'pmtiles': {month: str(path) for month, path in outputs.items()},
     }
+    if committed:
+        result['breaks_file'] = str(breaks_file)
+    return result
 
 
 if __name__ == "__main__":

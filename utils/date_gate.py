@@ -8,12 +8,7 @@
 # current month is never a candidate - even in-season it's still in
 # progress and won't have data yet - so this always targets the most recent
 # *complete* summer month, starting the search at last month.
-#
-# A test run can also be pinned to one specific month by setting
-# `target_date=YYYY-MM` in the .env (used by the local snakemake test
-# pipeline), instead of whatever month "today" happens to resolve to.
 import os
-import re
 from datetime import datetime, timedelta
 
 SUMMER_MONTHS = [6, 7, 8, 9]

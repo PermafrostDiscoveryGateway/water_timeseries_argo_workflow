@@ -1,4 +1,6 @@
 import sys
+from utils.helper_functions import verify_downloads_complete , download_near_real_time_region_dates, compare_netcdf_files
+from utils.date_gate import DOWNLOAD_START_DAY, get_target_month
 from pathlib import Path
 
 # Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
@@ -18,6 +20,12 @@ from dotenv import load_dotenv
 import os
 import glob
 import pandas as pd
+from pathlib import Path
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 
 # After merging, compare original vs new
 def verify_merge_result(original_file, merged_file):
@@ -137,6 +145,7 @@ def main():
             if not download_result.get('success', False):
                 if download_result.get('had_real_error', True):
                     logger.error(f"Download for {REGION} reported failure: {download_result}")
+                    exit_code = 1
                 else:
                     logger.warning(
                         f"Download for {REGION} incomplete, but only because of confirmed no-data or "

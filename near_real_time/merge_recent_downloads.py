@@ -13,6 +13,8 @@ from utils.helper_functions import (
     verify_downloads_complete, merge_new_results, combine_region_files, _get_id_chunk_size,
 )
 from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
+import sys
+from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
 from loguru import logger
 from datetime import datetime
 from dotenv import load_dotenv
@@ -24,6 +26,11 @@ import xarray as xr
 import numpy as np
 import gc
 from typing import List, Dict, Any
+
+# Add project root to Python root
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 
 def _configure_dask_for_low_memory():
@@ -1046,8 +1053,11 @@ def main():
     logger.info("SCRIPT COMPLETED")
     logger.info("=" * 80)
 
-    sys.exit(0 if failure_count == 0 else 1)
+    return failure_count
 
 
 if __name__ == "__main__":
-    main()
+    # sys.exit belongs here, not inside main(): main() is also called directly
+    # (not via subprocess) by test_near_real_time.py, and SystemExit there
+    # would kill that whole test run right after this step.
+    sys.exit(1 if main() else 0)

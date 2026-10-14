@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -16,31 +18,47 @@ def _local_matches_remote(file_path: Path, blob) -> bool:
     """
     Determine whether the local file is already fully and correctly uploaded.
 
-    Size alone can't detect a content change that happens to produce the same
-    (or a smaller) file size, so we also compare local mtime/size against
-    values recorded in the blob's custom metadata at upload time.
+    Compares content, not mtime (which changes on rewrite/copy/snapshot restore
+    even when the data is unchanged). Size is checked first since it is free and
+    rules out most changes; the local md5 is only computed when sizes match.
     """
-    stat = file_path.stat()
-    metadata = blob.metadata or {}
-    stored_mtime = metadata.get('local_mtime')
-    stored_size = metadata.get('local_size')
+    if file_path.stat().st_size != blob.size:
+        return False
 
-    if stored_mtime is None or stored_size is None:
-        # No metadata recorded (e.g. blob predates this check) - fall back to
-        # requiring an exact size match, which at least catches interrupted uploads.
-        return stat.st_size == blob.size
+    if not blob.md5_hash:
+        # e.g. composite objects carry no md5 - an exact size match is the best we can do
+        return True
 
-    return str(stat.st_size) == stored_size and str(stat.st_mtime) == stored_mtime
+    digest = hashlib.md5()
+    with open(file_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b''):
+            digest.update(chunk)
+    return base64.b64encode(digest.digest()).decode() == blob.md5_hash
 
 
-def _upload_with_metadata(blob, file_path: Path):
-    """Upload a file to GCS, stamping it with local mtime/size for future skip-checks."""
-    stat = file_path.stat()
-    blob.metadata = {
-        'local_mtime': str(stat.st_mtime),
-        'local_size': str(stat.st_size),
-    }
-    blob.upload_from_filename(str(file_path))
+def _sync_file(bucket, file_path: Path, blob_path: str, rel_path, dry_run: bool) -> str:
+    """
+    Upload one file unless an identical copy is already in the bucket.
+
+    Returns 'uploaded', 'skipped' or 'error'. In dry-run mode a file counts as
+    'uploaded' without touching GCS.
+    """
+    if dry_run:
+        logger.info(f"[DRY RUN] Would upload: {rel_path}")
+        return 'uploaded'
+
+    # get_blob does the existence check and metadata fetch in a single round trip
+    existing = bucket.get_blob(blob_path)
+    if existing is not None and _local_matches_remote(file_path, existing):
+        return 'skipped'
+
+    try:
+        logger.info(f"Uploading: {rel_path}")
+        bucket.blob(blob_path).upload_from_filename(str(file_path))
+        return 'uploaded'
+    except Exception as e:
+        logger.error(f"Failed to upload {rel_path}: {e}")
+        return 'error'
 
 
 def get_storage_client():
@@ -131,28 +149,12 @@ def sync_breakpoint_zarr_dirs_to_gcs(base_output_dir: str, bucket_name: str, pat
                 file_rel_path = file_path.relative_to(local_zarr_dir)
                 blob_path = f"{cloud_dir}/{file_rel_path}"
 
-                if dry_run:
-                    logger.info(f"[DRY RUN] Would upload: {file_rel_path}")
+                status = _sync_file(bucket, file_path, blob_path, file_rel_path, dry_run)
+                if status == 'uploaded':
                     uploaded_count += 1
-                    continue
-
-                blob = bucket.blob(blob_path)
-
-                # Check if file already exists and matches the local file's mtime/size
-                # (a size-only check can't tell a content change from an unchanged file
-                # when the new size happens to be <= the old size)
-                if blob.exists():
-                    blob.reload()
-                    if _local_matches_remote(file_path, blob):
-                        skipped_count += 1
-                        continue
-
-                try:
-                    logger.info(f"Uploading: {file_rel_path}")
-                    _upload_with_metadata(blob, file_path)
-                    uploaded_count += 1
-                except Exception as e:
-                    logger.error(f"Failed to upload {file_rel_path}: {e}")
+                elif status == 'skipped':
+                    skipped_count += 1
+                else:
                     error_count += 1
 
         logger.info(f"Sync summary: Uploaded {uploaded_count}, Skipped {skipped_count}, Errors {error_count}")
@@ -221,28 +223,12 @@ def sync_breakpoint_parquet_files_to_gcs(base_output_dir: str, bucket_name: str,
             rel_path = local_file.relative_to(base_dir)
             blob_path = f"{path_to_cloud_folder}/{rel_path}"
 
-            if dry_run:
-                logger.info(f"[DRY RUN] Would upload: {rel_path}")
+            status = _sync_file(bucket, local_file, blob_path, rel_path, dry_run)
+            if status == 'uploaded':
                 uploaded_count += 1
-                continue
-
-            blob = bucket.blob(blob_path)
-
-            # Check if file already exists and matches the local file's mtime/size
-            # (a size-only check can't tell a content change from an unchanged file
-            # when the new size happens to be <= the old size)
-            if blob.exists():
-                blob.reload()
-                if _local_matches_remote(local_file, blob):
-                    skipped_count += 1
-                    continue
-
-            try:
-                logger.info(f"Uploading: {rel_path}")
-                _upload_with_metadata(blob, local_file)
-                uploaded_count += 1
-            except Exception as e:
-                logger.error(f"Failed to upload {rel_path}: {e}")
+            elif status == 'skipped':
+                skipped_count += 1
+            else:
                 error_count += 1
 
         logger.info(f"Sync summary: Uploaded {uploaded_count}, Skipped {skipped_count}, Errors {error_count}")
@@ -312,28 +298,12 @@ def sync_top_level_matches_to_gcs(base_dir: str, bucket_name: str, path_to_cloud
             rel_path = file_path.relative_to(base_path)
             blob_path = f"{path_to_cloud_folder}/{rel_path}"
 
-            if dry_run:
-                logger.info(f"[DRY RUN] Would upload: {rel_path}")
+            status = _sync_file(bucket, file_path, blob_path, rel_path, dry_run)
+            if status == 'uploaded':
                 uploaded_count += 1
-                continue
-
-            blob = bucket.blob(blob_path)
-
-            # Check if file already exists and matches the local file's mtime/size
-            # (a size-only check can't tell a content change from an unchanged file
-            # when the new size happens to be <= the old size)
-            if blob.exists():
-                blob.reload()
-                if _local_matches_remote(file_path, blob):
-                    skipped_count += 1
-                    continue
-
-            try:
-                logger.info(f"Uploading: {rel_path}")
-                _upload_with_metadata(blob, file_path)
-                uploaded_count += 1
-            except Exception as e:
-                logger.error(f"Failed to upload {rel_path}: {e}")
+            elif status == 'skipped':
+                skipped_count += 1
+            else:
                 error_count += 1
 
         logger.info(f"Sync summary: Uploaded {uploaded_count}, Skipped {skipped_count}, Errors {error_count}")
