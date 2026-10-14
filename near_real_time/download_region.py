@@ -1,6 +1,16 @@
+import sys
+from pathlib import Path
+
+# Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
+# imports below: `utils` lives in the project root, which is only on the path by
+# default inside the Docker image (PYTHONPATH=/app), so moving this block lower
+# breaks `python near_real_time/<script>.py` outside the container.
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from utils.helper_functions import verify_downloads_complete , download_near_real_time_region_dates, compare_netcdf_files
 from utils.date_gate import DOWNLOAD_START_DAY, get_target_month
-import sys
 import utils.download_utils as download_new_dynamic_world_data
 from loguru import logger
 from datetime import date, datetime
@@ -8,11 +18,6 @@ from dotenv import load_dotenv
 import os
 import glob
 import pandas as pd
-from pathlib import Path
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
 
 
 # After merging, compare original vs new

@@ -8,23 +8,27 @@ a month that was missed or came out incomplete.
 Usage:
     python merge_recent_downloads_date.py 2026-06 [path/to/.env]
 """
+import sys
+from pathlib import Path
+
+# Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
+# imports below: `utils` lives in the project root, which is only on the path by
+# default inside the Docker image (PYTHONPATH=/app), so moving this block lower
+# breaks `python near_real_time/<script>.py` outside the container.
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from merge_recent_downloads import (
     _configure_dask_for_low_memory,
     process_region_fast,
     verify_combined_file_optimized,
 )
 from utils.helper_functions import combine_region_files
-import sys
 import re
 import os
-from pathlib import Path
 from loguru import logger
 from dotenv import load_dotenv
-
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
 
 DATE_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 

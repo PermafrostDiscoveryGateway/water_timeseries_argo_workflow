@@ -1,8 +1,4 @@
-# Tracks water-timeseries-v2's main branch on purpose (not pinned to a digest):
-# this is under active development and we want its latest changes. The :main tag
-# is rebuilt by water-timeseries-v2's "Build Branch Image" workflow, which has to
-# be run (Actions > Build Branch Image > branch: main) after merging there.
-FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:main
+FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:v0.16.8
 
 # Install the latest water-timeseries from GitHub
 # RUN uv pip install git+https://github.com/permafrostdiscoverygateway/water-timeseries-v2.git@main

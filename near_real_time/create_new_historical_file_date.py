@@ -12,6 +12,22 @@ most recently modified .nc file in dynamic_world_data: if the .env sets
 Usage:
     python create_new_historical_file_date.py 2026-06 [path/to/.env]
 """
+import sys
+import re
+import os
+import glob
+from pathlib import Path
+from loguru import logger
+from dotenv import load_dotenv
+
+# Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
+# imports below: `utils` lives in the project root, which is only on the path by
+# default inside the Docker image (PYTHONPATH=/app), so moving this block lower
+# breaks `python near_real_time/<script>.py` outside the container.
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from create_new_historical_file import (
     _configure_dask_for_low_memory,
     wait_for_regions_to_complete,
@@ -21,18 +37,6 @@ from utils.helper_functions import (
     verify_merged_netcdf, enable_memory_tracking, log_memory_usage,
     combine_region_files, _get_id_chunk_size,
 )
-import sys
-import re
-import os
-import glob
-from pathlib import Path
-from loguru import logger
-from dotenv import load_dotenv
-
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
 
 DATE_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 

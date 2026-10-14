@@ -1,8 +1,18 @@
+import sys
+from pathlib import Path
+
+# Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
+# imports below: `utils` lives in the project root, which is only on the path by
+# default inside the Docker image (PYTHONPATH=/app), so moving this block lower
+# breaks `python near_real_time/<script>.py` outside the container.
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from utils.helper_functions import (
     verify_downloads_complete, merge_new_results, combine_region_files, _get_id_chunk_size,
 )
 from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
-import sys
 from loguru import logger
 from datetime import datetime
 from dotenv import load_dotenv
@@ -10,16 +20,10 @@ import os
 import glob
 import dask
 import pandas as pd
-from pathlib import Path
 import xarray as xr
 import numpy as np
 import gc
 from typing import List, Dict, Any
-
-# Add project root to Python root
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
 
 
 def _configure_dask_for_low_memory():
@@ -861,8 +865,7 @@ def main():
     import utils.region_boundaries
     boundaries = utils.region_boundaries.get_region_boundaries()
     all_regions = list(boundaries.keys())
-    test_run = os.environ.get("test_run")
-    if test_run and test_run.lower() == 'true':
+    if is_test_run():
         all_regions = list(utils.region_boundaries.get_small_regions().keys())
     logger.info(f"Available regions: {all_regions}")
 
@@ -1043,8 +1046,11 @@ def main():
     logger.info("SCRIPT COMPLETED")
     logger.info("=" * 80)
 
-    sys.exit(0 if failure_count == 0 else 1)
+    return failure_count
 
 
 if __name__ == "__main__":
-    main()
+    # sys.exit belongs here, not inside main(): main() is also called directly
+    # (not via subprocess) by test_near_real_time.py, and SystemExit there
+    # would kill that whole test run right after this step.
+    sys.exit(1 if main() else 0)

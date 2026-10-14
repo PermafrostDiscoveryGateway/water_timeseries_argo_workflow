@@ -5,6 +5,7 @@ import numpy as np
 import sys
 from pathlib import Path
 import os
+import re
 import glob
 import shutil
 from typing import List, Optional, Dict, Any
@@ -868,6 +869,8 @@ def download_near_real_time_region_dates(
                 ds_dl = downloader.download_dw_monthly(
                     gdf=gdf_subset,
                     max_total_requests=max_total_requests,
+                    # Deliberately serial: parallel downloads kept hitting GEE
+                    # restricted mode, so slower is better here.
                     n_parallel=1,
                     date_list=[ANALYSIS_DATE],
                     save_to_file=outfile_download
@@ -912,6 +915,12 @@ def download_near_real_time_region_dates(
                             f'NOTE: Grid {bbox_west} {bbox_south} returned {len(downloaded_ids)}/{len(expected_ids)} '
                             f'requested lakes ({tile_completion_pct:.2%} complete, >= {TILE_COMPLETION_THRESHOLD:.0%} '
                             f'threshold) - accepting as complete')
+                        # The tile file now exists, so skip-if-exists will never
+                        # retry these; record them so the backfill step and run
+                        # report have an explicit list.
+                        missing_ids_file = outfile_download.with_name(f'{outfile_download.stem}_missing_ids.txt')
+                        with open(missing_ids_file, 'w') as f:
+                            f.write('\n'.join(sorted(str(i) for i in missing_in_tile)) + '\n')
 
                     download_successful = True
                     if should_overwrite:
@@ -1175,6 +1184,7 @@ def combine_region_files(
         logger.error(f"Missing files: {missing_files}")
         return {'success': False, 'error': f'Missing files: {missing_files}'}
 
+    datasets = []
     try:
         id_chunk = _get_id_chunk_size()
         # Respect the operator-configured chunk size -- see merge_new_results
@@ -1182,7 +1192,6 @@ def combine_region_files(
         combine_chunk = id_chunk
 
         logger.info(f"Loading region datasets (dask-chunked, id_geohash={combine_chunk})...")
-        datasets = []
         file_info = []
 
         for file_path in region_files:
@@ -1221,14 +1230,6 @@ def combine_region_files(
 
         logger.info("Combining datasets lazily...")
         combined = xr.concat(datasets, dim='id_geohash')
-
-        for ds in datasets:
-            try:
-                ds.close()
-            except Exception:
-                pass
-        datasets = None
-        gc.collect()
 
         # Remove duplicates in a single pass instead of after every file.
         # Plain numpy on the id_geohash coordinate values (no .unique()/
@@ -1288,6 +1289,17 @@ def combine_region_files(
         import traceback
         traceback.print_exc()
         return {'success': False, 'error': str(e)}
+
+    finally:
+        # combined is dask-backed on the source files, so they are only closed
+        # once the write has finished (or failed).
+        for ds in datasets:
+            try:
+                ds.close()
+            except Exception:
+                pass
+        datasets = None
+        gc.collect()
 
 
 def merge_new_results(
@@ -1712,6 +1724,32 @@ def has_region_been_merged_for_dates(
             'region_has_ids': False,
             'no_data_expected': False
         }
+
+_HISTORICAL_FILE_DATE_RE = re.compile(r"dynamic_world_historical_(\d{4})-(\d{2})(?:-(\d{2}))?\.nc$")
+
+
+def find_most_recent_historical_file(nc_files: List[str]) -> Optional[str]:
+    """
+    Pick the most recent historical file using the date in its filename
+    (dynamic_world_historical_YYYY-MM[-DD].nc) rather than file mtime, so a file
+    that is still being written can't be chosen just because it was touched last.
+
+    Files without a dated name (e.g. lakes_dw_V2d_compressed.nc) are only used,
+    newest by mtime, when no dated historical file exists.
+    """
+    dated = []
+    for f in nc_files:
+        match = _HISTORICAL_FILE_DATE_RE.search(os.path.basename(f))
+        if match:
+            year, month, day = match.groups()
+            dated.append(((int(year), int(month), int(day or 0)), f))
+    if dated:
+        return max(dated)[1]
+    if not nc_files:
+        return None
+    logger.warning("No dynamic_world_historical_<date>.nc files found; falling back to newest by mtime")
+    return max(nc_files, key=os.path.getmtime)
+
 
 def debug_historical_dates(historical_file_path: str) -> None:
     """

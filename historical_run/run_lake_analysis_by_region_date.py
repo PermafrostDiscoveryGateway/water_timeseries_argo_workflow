@@ -215,7 +215,7 @@ def run_water_timeseries_analysis(REGION: str, ANALYSIS_DATE: str):
     Y_MIN_START = bounding_box_coords['Y_MIN_START']
     Y_MIN_END = bounding_box_coords['Y_MIN_END']
 
-    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getctime)
+    most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getmtime)
 
     # Check if the analysis date exists in the NetCDF file
     if not check_analysis_date_in_netcdf(most_recent_dynamic_world_file, ANALYSIS_DATE):

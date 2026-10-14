@@ -17,12 +17,17 @@ import sys
 from loguru import logger
 from pathlib import Path
 import xarray as xr
-from utils.region_boundaries import get_region_boundaries
-from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run, most_recent_summer_month
-# Add project root to Python path
+
+# Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
+# imports below: `utils` lives in the project root, which is only on the path by
+# default inside the Docker image (PYTHONPATH=/app), so moving this block lower
+# breaks `python near_real_time/<script>.py` outside the container.
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+from utils.region_boundaries import get_region_boundaries
+from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run, most_recent_summer_month
 
 # A breakpoint zarr store that was written to within this window is assumed to
 # still be mid-write, so it's excluded from the merge rather than folded in as a partial.
@@ -30,11 +35,11 @@ STALE_THRESHOLD_SECONDS = 60 * 2
 
 
 def get_most_recent_combined_zarr(combined_zarr_datasets):
-    """Return the most recently created combined_historical_nrt_*.zarr store, or None if there isn't one."""
+    """Return the most recently modified combined_historical_nrt_*.zarr store, or None if there isn't one."""
     zarr_paths = glob.glob(os.path.join(combined_zarr_datasets, "combined_historical_nrt_*.zarr"))
     if not zarr_paths:
         return None
-    return max(zarr_paths, key=os.path.getctime)
+    return max(zarr_paths, key=os.path.getmtime)
 
 
 def zarr_store_age_seconds(zarr_path):
