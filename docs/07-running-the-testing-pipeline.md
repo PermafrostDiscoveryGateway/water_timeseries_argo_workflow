@@ -105,6 +105,30 @@ To run it on NCSA Delta, with each step submitted as a Slurm job, see
 Logs, per-stage `.env` files and done-markers go to `data/snakemake_work/<target_date>/`. Delete
 that directory (or use `--forcerun`) to re-run a month.
 
+#### Benchmarks
+
+Every rule has a snakemake `benchmark:` file, `<work>/benchmarks/<rule>[/<region>].tsv` (`<work>` is
+the `data/snakemake_work/<target_date>/` directory above; `benchmarks_dir` in the config moves
+them): wall time, CPU time, peak memory, I/O and mean CPU load of the whole job. That covers every
+step: `build_environment`, per region `download`, `merge_and_backfill`, `force_merge` and
+`process`, then `wait_for_region_merges`, `create_historical_zarr_archive`,
+`create_nrt_pmtiles` and `create_new_historical_file` (and `pmtiles_month` in
+`Snakefile.pmtiles`). A rule's file adds up everything the rule runs, so each stage process
+(`download_region.py`, its missing-ID fallback, `merge_region.py`, the backfill, ...) also
+records its own wall time, CPU time and peak memory in `<work>/nrt_pipeline_log.jsonl`.
+
+`snakemake/benchmark_table.py` puts them in tables, and adds Slurm's accounting (state, peak
+memory, I/O) when run on Delta:
+
+```bash
+python3 snakemake/benchmark_table.py --work data/snakemake_work/2025-08
+```
+
+Two caveats: snakemake can't read memory or I/O on macOS, so there only the wall time is filled in
+(the per-stage figures in the jsonl log are measured everywhere), and a benchmark file is
+overwritten when its job runs again; keep a copy of the work directory (or `summary.tsv`) to
+compare runs.
+
 #### Replacing a month's results (`overwrite`)
 
 By default a month that's already been processed is left alone. To replace it, in every region of

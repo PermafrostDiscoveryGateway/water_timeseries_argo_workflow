@@ -241,6 +241,22 @@ Per-step logs, `.env` files and done-markers are in
 picks up where it left off; if snakemake complains the directory is locked, add `--unlock` once,
 then run again without it.
 
+#### Benchmarks
+
+After (or during) a run, on the login node and from the repo folder:
+
+```bash
+python3 snakemake/benchmark_table.py --work <taiga_root>/water_timeseries/test/snakemake_work/2025-08 \
+    --since 2025-08-01 --completed
+```
+
+It lists each Slurm job's state, elapsed time, peak host memory (`sacct` `MaxRSS`) and I/O next to
+snakemake's benchmark of the same job, then every stage's wall time, CPU time and peak memory.
+Use the peak memory to set `mem_mb` and the elapsed time to set `runtime` of the rules (their
+numbers are the Argo pods' limits; `runtime` is in minutes, at most 2880 on the cpu partition).
+Leave out `--completed` to see failed attempts too (an out-of-memory kill is `OUT_OF_MEMORY`). See
+[7. Running the Testing Pipeline](07-running-the-testing-pipeline.md#benchmarks).
+
 ## PMTiles
 
 The pipeline's last step, `create_nrt_pmtiles`, builds the month's `nrt_<month>_drainage.pmtiles`
