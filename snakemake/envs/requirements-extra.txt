@@ -6,7 +6,10 @@ google-cloud-storage
 google-api-core
 toml
 dask[dataframe]
-pyarrow
+# pyarrow 22+ needs NumPy 2, but water-timeseries-v2 pins numpy<2 (pip doesn't
+# notice: pyarrow doesn't declare numpy). 26.0.0 failed at import on Delta;
+# 21.0.0 works. Keep in sync with ../../Dockerfile.
+pyarrow<22
 nest_asyncio
 # water-timeseries requires geemap>=0.37.3; like the Dockerfile, this
 # deliberately downgrades it after the base install.

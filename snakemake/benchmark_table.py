@@ -19,8 +19,8 @@ It prints up to two tables and writes them next to the benchmarks
    and from the "SLURM jobid <id> (log: <path>)" lines of Snakemake's run logs under
    .snakemake/log/ (the Slurm plugin deletes the log of a job that succeeded). Every attempt
    is listed, failed ones too (an out-of-memory kill shows as OUT_OF_MEMORY); --completed
-   lists only the jobs that finished. Without Slurm logs (a local run) or without sacct,
-   the rows are the benchmark files alone.
+   lists only the jobs that finished. Benchmark files with no Slurm job (a local run, or the
+   rules that run on the login node) are listed with their benchmark columns alone.
 
 2. Stages: one row per stage process, from <work>/nrt_pipeline_log.jsonl. A rule's benchmark
    file adds up everything the rule ran (download + its missing-ID fallback; merge +
@@ -214,12 +214,14 @@ def job_rows(args, bench_dir, benchmarks):
                         "partition": a["partition"], "elapsed_s": fmt(a["elapsed_s"], 0),
                         "host_mem_gib": fmt(a["host_mem_gib"], 2), "cpu_s": fmt(a["cpu_s"], 0),
                         "disk_gib": fmt(a["disk_gib"], 2), **bench_cells(bench)})
-    else:
-        for (rule, label), row in sorted(benchmarks.items()):
-            if wanted(rule):
-                out.append({"rule": rule, "label": label, "job_id": "-", "state": "-", "partition": "-",
-                            "elapsed_s": "-", "host_mem_gib": "-", "cpu_s": "-", "disk_gib": "-",
-                            **bench_cells(row)})
+    # Benchmark files with no Slurm job: everything of a local run, and the rules that run on
+    # the login node (build_environment, wait_for_region_merges) in a Slurm one.
+    submitted = {(rule, label) for rule, label, _ in jobs} if text is not None else set()
+    for (rule, label), row in sorted(benchmarks.items()):
+        if wanted(rule) and (rule, label) not in submitted:
+            out.append({"rule": rule, "label": label, "job_id": "-", "state": "-", "partition": "-",
+                        "elapsed_s": "-", "host_mem_gib": "-", "cpu_s": "-", "disk_gib": "-",
+                        **bench_cells(row)})
     return sorted(out, key=lambda r: (r["rule"], r["label"], r["job_id"].zfill(12)))
 
 
