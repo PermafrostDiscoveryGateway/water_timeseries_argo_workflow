@@ -8,7 +8,8 @@ puts its benchmarks, logs and stage log there):
     python3 snakemake/benchmark_table.py --work <work_dir>/2025-08 --rules process --completed
 
 It prints up to two tables and writes them next to the benchmarks
-(<work>/benchmarks/summary.tsv and stages.tsv; --out changes the first).
+(<work>/benchmarks/summary.tsv and stages.tsv; --out changes the first). --history
+adds a third, the benchmark of every run so far (see below).
 
 1. Jobs: one row per rule job (a region's download, merge_and_backfill, force_merge or
    process; create_nrt_pmtiles, ...). The benchmark columns are from Snakemake's benchmark
@@ -36,9 +37,13 @@ Notes on the numbers:
     stages' peak_rss_mb.
   * `sacct` reports MaxRSS in KiB; the table shows GiB. Delta charges CPU jobs by cores or
     memory share of the node, whichever is larger.
-  * A benchmark file is overwritten by the next run of the same job, so it describes the
-    newest completed job only: bench_* is filled in on that row. Copy the work directory (or
-    summary.tsv) to keep a run for comparison; each month has its own work directory.
+  * Snakemake overwrites a rule's benchmark file when the job runs again, so the files
+    describe the newest run only, and bench_* is filled in on the newest completed job's row.
+    To keep every run, each benchmark file is also appended to <benchmarks folder>/history.tsv
+    (one row per run of a rule and label, with its target_date, run_name and the time the
+    file was written). The Snakefile does it when snakemake starts (before anything is
+    overwritten) and when it ends; this script does it too, so a run is never lost, and
+    nothing is added twice. --history prints it. Stage rows are never overwritten.
 
 Uses only the standard library.
 """
@@ -49,12 +54,17 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 SACCT_FIELDS = "JobID,Partition,State,ElapsedRaw,MaxRSS,TRESUsageInMax,ExitCode,Start"
 JOB_COLUMNS = ["rule", "label", "job_id", "state", "partition", "elapsed_s", "host_mem_gib", "cpu_s",
                "disk_gib", "bench_wall_s", "bench_cpu_s", "bench_max_rss_mb", "bench_mean_load"]
 STAGE_COLUMNS = ["stage", "region", "target_date", "exit_code", "elapsed_s", "cpu_s", "peak_rss_mb", "timestamp"]
+HISTORY_NAME = "history.tsv"
+HISTORY_KEY = ["target_date", "run_name", "rule", "label", "finished_at"]
+HISTORY_SHOWN = HISTORY_KEY + ["s", "cpu_time", "max_rss", "io_in", "io_out", "mean_load"]
+SKIPPED_TSV = ("summary.tsv", "stages.tsv", HISTORY_NAME)
 UNITS = {"K": 1 / 1024**2, "M": 1 / 1024, "G": 1.0, "T": 1024.0}  # to GiB
 
 
@@ -139,18 +149,70 @@ def parse_sacct(text):
     return jobs
 
 
+def rule_label(path, bench_dir):
+    """(rule, label) of <bench_dir>/<rule>[/<label>].tsv; '-' when the rule has no label."""
+    parts = Path(path).relative_to(bench_dir).with_suffix("").parts
+    return (parts[0], "_".join(parts[1:])) if len(parts) > 1 else (parts[0], "-")
+
+
+def benchmark_files(bench_dir):
+    return [p for p in sorted(Path(bench_dir).glob("**/*.tsv")) if p.name not in SKIPPED_TSV]
+
+
 def read_benchmarks(bench_dir):
     """{(rule, label): row of the benchmark file} for every <rule>[/<label>].tsv under bench_dir."""
     found = {}
-    for path in sorted(Path(bench_dir).glob("**/*.tsv")):
-        if path.name in ("summary.tsv", "stages.tsv"):
-            continue
-        parts = path.relative_to(bench_dir).with_suffix("").parts
-        rule, label = (parts[0], "_".join(parts[1:])) if len(parts) > 1 else (parts[0], "-")
+    for path in benchmark_files(bench_dir):
         rows = list(csv.DictReader(path.open(), delimiter="\t"))
         if rows:
-            found[(rule, label)] = rows[0]
+            found[rule_label(path, bench_dir)] = rows[0]
     return found
+
+
+def archive_benchmarks(bench_dir, target_date="", run_name=""):
+    """Append every benchmark file under bench_dir that history.tsv doesn't have yet; returns how many.
+
+    Snakemake overwrites a benchmark file when its job runs again, so this keeps each run.
+    A run is identified by its rule, label and the time its file was written, which makes
+    this safe to call as often as you like, from the Snakefile and from the command line.
+    """
+    bench_dir = Path(bench_dir)
+    if not bench_dir.is_dir():
+        return 0
+    history = bench_dir / HISTORY_NAME
+    old = list(csv.DictReader(history.open(), delimiter="\t")) if history.is_file() else []
+    columns = list(old[0].keys()) if old else []
+    have = {tuple(r.get(k) for k in HISTORY_KEY[2:]) for r in old}
+    new = []
+    for path in benchmark_files(bench_dir):
+        rule, label = rule_label(path, bench_dir)
+        finished = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        rows = list(csv.DictReader(path.open(), delimiter="\t"))
+        if rows and (rule, label, finished) not in have:
+            new.append({"target_date": target_date, "run_name": run_name or target_date, "rule": rule,
+                        "label": label, "finished_at": finished, **rows[0]})
+    if not new:
+        return 0
+    for c in HISTORY_KEY + [c for r in new for c in r]:  # Snakemake's columns can differ between versions
+        if c not in columns:
+            columns.append(c)
+    tmp = history.with_suffix(".tmp")
+    with open(tmp, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=columns, delimiter="\t", restval="NA")
+        w.writeheader()
+        w.writerows(old + new)
+    tmp.replace(history)
+    return len(new)
+
+
+def history_rows(bench_dir, rules=None):
+    history = Path(bench_dir) / HISTORY_NAME
+    if not history.is_file():
+        return []
+    rows = [r for r in csv.DictReader(history.open(), delimiter="\t") if not rules or r["rule"] in rules]
+    out = [{c: ("-" if r.get(c) in (None, "", "NA") else (fmt(r[c], 1) if c in ("s", "cpu_time") else r[c]))
+            for c in HISTORY_SHOWN} for r in rows]
+    return sorted(out, key=lambda r: (r["rule"], r["label"], r["finished_at"]))
 
 
 def fmt(value, digits=1):
@@ -252,6 +314,10 @@ def main():
                    "attempts are listed too")
     p.add_argument("--since", help="only Slurm jobs that started on or after this date, YYYY-MM-DD[THH:MM:SS]: the "
                    "checkout's Slurm logs hold the jobs of every month")
+    p.add_argument("--history", action="store_true",
+                   help="also print the history: the benchmark of every run so far, not just the newest")
+    p.add_argument("--target-date", help="target_date to record for benchmark files this run adds to the "
+                   "history (default: the work directory's name)")
     p.add_argument("--slurm-logs", default=".snakemake/slurm_logs", help="where the Slurm plugin keeps job logs")
     p.add_argument("--snakemake-logs", default=".snakemake/log", help="Snakemake's own run logs")
     p.add_argument("--out", help="where to write the jobs table (TSV); default <benchmarks folder>/summary.tsv")
@@ -262,6 +328,10 @@ def main():
         p.error("give --work (the run's work directory) or --benchmarks")
 
     bench_dir = args.benchmarks or str(Path(args.work) / "benchmarks")
+    try:
+        archive_benchmarks(bench_dir, args.target_date or (Path(args.work).name if args.work else ""))
+    except OSError as e:  # e.g. a benchmarks folder we may only read
+        print(f"could not update {HISTORY_NAME}: {e}", file=sys.stderr)
     benchmarks = read_benchmarks(bench_dir) if Path(bench_dir).is_dir() else {}
 
     jobs = job_rows(args, bench_dir, benchmarks)
@@ -276,6 +346,14 @@ def main():
         print()
         print_table(stages, STAGE_COLUMNS)
         write_tsv(Path(bench_dir) / "stages.tsv", stages, STAGE_COLUMNS)
+
+    if args.history:
+        history = history_rows(bench_dir, args.rules)
+        if history:
+            print()
+            print_table(history, HISTORY_SHOWN)
+        else:
+            print(f"No {HISTORY_NAME} in {bench_dir} yet.", file=sys.stderr)
 
 
 if __name__ == "__main__":

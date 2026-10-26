@@ -109,7 +109,7 @@ that directory (or use `--forcerun`) to re-run a month.
 
 Every rule has a snakemake `benchmark:` file, `<work>/benchmarks/<rule>[/<region>].tsv` (`<work>` is
 the `data/snakemake_work/<target_date>/` directory above; `benchmarks_dir` in the config moves
-them): wall time, CPU time, peak memory, I/O and mean CPU load of the whole job. That covers every
+them, into a `<target_date>/` folder inside it): wall time, CPU time, peak memory, I/O and mean CPU load of the whole job. That covers every
 step: `build_environment`, per region `download`, `merge_and_backfill`, `force_merge` and
 `process`, then `wait_for_region_merges`, `create_historical_zarr_archive`,
 `create_nrt_pmtiles` and `create_new_historical_file` (and `pmtiles_month` in
@@ -124,10 +124,22 @@ memory, I/O) when run on Delta:
 python3 snakemake/benchmark_table.py --work data/snakemake_work/2025-08
 ```
 
+Snakemake overwrites a rule's benchmark file when its job runs again, so the Snakefile also
+appends each one to `<work>/benchmarks/history.tsv` when snakemake starts (before anything is
+overwritten) and when it ends. Every run of a rule and region stays there as a row with its
+`target_date`, `run_name` (the work directory's name) and `finished_at` (when the benchmark was
+written), then the benchmark's own columns. Rows are never added twice, and
+`benchmark_table.py` adds any a killed run left, so you can re-run a month as often as you like
+and compare the runs:
+
+```bash
+python3 snakemake/benchmark_table.py --work data/snakemake_work/2025-08 --history --rules process
+```
+
 Two caveats: snakemake can't read memory or I/O on macOS, so there only the wall time is filled in
-(the per-stage figures in the jsonl log are measured everywhere), and a benchmark file is
-overwritten when its job runs again; keep a copy of the work directory (or `summary.tsv`) to
-compare runs.
+(the per-stage figures in the jsonl log are measured everywhere), and the per-stage log lines are
+all kept, each with its `target_date` and `timestamp`. Deleting the work directory deletes the
+history too.
 
 #### Replacing a month's results (`overwrite`)
 

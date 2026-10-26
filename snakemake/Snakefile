@@ -136,10 +136,42 @@ MARK = os.path.join(WORK, "markers")
 LOGS = os.path.join(WORK, "logs")
 PIPELINE_LOG = os.path.join(WORK, "nrt_pipeline_log.jsonl")
 # Snakemake's benchmark file of every rule (wall time, CPU time, memory, I/O),
-# one per job: <benchmarks_dir>/<rule>[/<region>].tsv. Under the run's work
-# directory unless the config says otherwise, so each month (and each config)
-# keeps its own and runs can be compared. scripts: snakemake/benchmark_table.py.
-BENCH = _abs(config["benchmarks_dir"]) if config.get("benchmarks_dir") else os.path.join(WORK, "benchmarks")
+# one per job: <benchmarks>/<rule>[/<region>].tsv. Under the run's work directory
+# unless the config says otherwise (then in a folder of the run's name inside it),
+# so each month (and each config) keeps its own. Snakemake overwrites a file when
+# its job runs again; archive_benchmarks() (below) appends every run to history.tsv
+# in the same folder first. Tables: snakemake/benchmark_table.py.
+BENCH = (os.path.join(_abs(config["benchmarks_dir"]), os.path.basename(WORK))
+         if config.get("benchmarks_dir") else os.path.join(WORK, "benchmarks"))
+
+sys.path.insert(0, str(REPO_ROOT / "snakemake"))
+from benchmark_table import archive_benchmarks  # noqa: E402
+
+
+def keep_benchmarks():
+    """Add the benchmark files to BENCH/history.tsv (never twice, never fatal), so repeat runs are all kept."""
+    try:
+        n = archive_benchmarks(BENCH, TARGET_DATE, os.path.basename(WORK))
+        if n:
+            print(f"benchmarks: {n} run(s) added to {os.path.join(BENCH, 'history.tsv')}")
+    except OSError as e:
+        print(f"benchmarks: could not update history.tsv: {e}")
+
+
+# Before the first job (so nothing is overwritten unrecorded, even if an earlier
+# run was killed), and again when snakemake ends. Not in a dry run.
+onstart:
+    if not workflow.dryrun:
+        keep_benchmarks()
+
+
+onsuccess:
+    keep_benchmarks()
+
+
+onerror:
+    keep_benchmarks()
+
 
 wildcard_constraints:
     region="|".join(REGIONS),

@@ -254,7 +254,9 @@ It lists each Slurm job's state, elapsed time, peak host memory (`sacct` `MaxRSS
 snakemake's benchmark of the same job, then every stage's wall time, CPU time and peak memory.
 Use the peak memory to set `mem_mb` and the elapsed time to set `runtime` of the rules (their
 numbers are the Argo pods' limits; `runtime` is in minutes, at most 2880 on the cpu partition).
-Leave out `--completed` to see failed attempts too (an out-of-memory kill is `OUT_OF_MEMORY`). See
+Leave out `--completed` to see failed attempts too (an out-of-memory kill is `OUT_OF_MEMORY`). Add
+`--history` to also list the benchmark of every earlier run of each job (`benchmarks/history.tsv`,
+kept by the Snakefile, with the `target_date`), since a re-run overwrites snakemake's own file. See
 [7. Running the Testing Pipeline](07-running-the-testing-pipeline.md#benchmarks).
 
 ## PMTiles

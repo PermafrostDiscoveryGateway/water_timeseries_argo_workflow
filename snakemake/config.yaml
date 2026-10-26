@@ -143,7 +143,8 @@ backfill_after_failed_merge: true
 merge_wait_minutes: 5
 
 # Snakemake's benchmark file of every rule (wall time, CPU time, memory, I/O),
-# one per job, as <benchmarks_dir>/<rule>[/<region>].tsv. Empty = benchmarks/ in
-# the run's work directory (<paths.work_dir>/<target_date>/benchmarks), so each
-# month keeps its own. See snakemake/benchmark_table.py.
+# one per job, as <benchmarks_dir>/<run>/<rule>[/<region>].tsv (<run> is the work
+# directory's name, e.g. the target_date). Empty = benchmarks/ in the run's work
+# directory (<paths.work_dir>/<target_date>/benchmarks). Every run is also kept in
+# history.tsv next to them. See snakemake/benchmark_table.py.
 benchmarks_dir: ""
