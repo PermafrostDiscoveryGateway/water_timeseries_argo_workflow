@@ -246,6 +246,11 @@ def write_tsv(path, rows, columns):
     print(f"written to {path}", file=sys.stderr)
 
 
+def started_since(job, since):
+    """True if the sacct job started on or after `since`; a job cancelled before it started has Start 'Unknown'."""
+    return not since or (job["start"][:1].isdigit() and job["start"] >= since)
+
+
 def job_rows(args, bench_dir, benchmarks):
     """Rows for the jobs table: Slurm jobs joined with benchmark files, else the benchmark files alone."""
     wanted = lambda rule: not args.rules or rule in args.rules  # noqa: E731
@@ -263,11 +268,11 @@ def job_rows(args, bench_dir, benchmarks):
         newest_done = {}
         for rule, label, jid in jobs:
             a = acct.get(jid)
-            if a and a["state"] == "COMPLETED" and (not args.since or a["start"] >= args.since):
+            if a and a["state"] == "COMPLETED" and started_since(a, args.since):
                 newest_done[(rule, label)] = max(newest_done.get((rule, label), 0), int(jid))
         for rule, label, jid in jobs:
             a = acct.get(jid)
-            if a is None or (args.since and a["start"] < args.since):
+            if a is None or not started_since(a, args.since):
                 continue  # not in sacct (too old, or not this account's), or before --since
             if args.completed and a["state"] != "COMPLETED":
                 continue
