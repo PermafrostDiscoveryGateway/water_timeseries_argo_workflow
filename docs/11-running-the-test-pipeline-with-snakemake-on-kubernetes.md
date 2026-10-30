@@ -370,11 +370,19 @@ ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:snakemake-<bra
 ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:snakemake-<short sha>
 ```
 
-The image tag is set in **three places**; keep them the same:
+Choose which build to run in one place: `image:` in `snakemake/kubernetes/controller-job.yaml`.
+The job pods don't take their image from the profile (which is baked into the image and can't name
+the image it's in). Each build has its own `snakemake-<short sha>` tag baked in as
+`SNAKEMAKE_CONTAINER_IMAGE`, and the controller passes it to `snakemake --container-image`. So the
+job pods always run exactly the build the controller is running, even if `image:` is the
+`snakemake-<branch>` tag, which is overwritten on every build and which a node may have cached an
+older build of. To pin a run to one commit, put its `snakemake-<short sha>` tag in `image:`.
 
-- `snakemake/profiles/kubernetes/config.yaml` (`container-image`, used by the job pods)
-- `snakemake/kubernetes/controller-job.yaml` (`image`)
-- `snakemake/kubernetes/generate-region-lake-polygons.yaml` (`image`)
+`snakemake/kubernetes/generate-region-lake-polygons.yaml` doesn't run snakemake, so set its `image`
+to the same commit tag by hand.
+
+An image built without `IMAGE_REF` (see below) has no `SNAKEMAKE_CONTAINER_IMAGE`, and the
+controller stops at startup with an error saying so.
 
 Because the workflow files are baked into the image, **any change to the Snakefile, the configs
 or the scripts needs a new image** before it shows up on the cluster, the same as for Argo.
@@ -383,8 +391,13 @@ To build locally instead (from the repo root; `snakemake/Dockerfile.dockerignore
 and the local venvs out of the build):
 
 ```bash
-docker build -f snakemake/Dockerfile -t ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:snakemake-59-adopt-the-test-pipeline-using-snakemake-kubernetes .
+docker build -f snakemake/Dockerfile \
+  --build-arg IMAGE_REF=ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:snakemake-local \
+  -t ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:snakemake-local .
 ```
+
+Use a new tag for each local build (e.g. `snakemake-local-2`), push it, and set `image:` in
+`controller-job.yaml` to it; a tag you reuse can have the same stale-cache problem.
 
 The cluster nodes are most likely `linux/amd64`. On an Apple Silicon Mac, add
 `--platform linux/amd64` to the build, then `docker push` the tag.

@@ -3,8 +3,9 @@
 # Kubernetes executor, and the workflow files. The controller Job and every
 # job pod it starts run this one image.
 #
-# Build from the repo root:
-#   docker build -f snakemake/Dockerfile -t <image> .
+# Build from the repo root; IMAGE_REF must be the tag you push, because the
+# controller starts the job pods from it:
+#   docker build -f snakemake/Dockerfile --build-arg IMAGE_REF=<image> -t <image> .
 FROM ghcr.io/permafrostdiscoverygateway/water-timeseries-v2:ncsa-water-timeseries
 
 # Same extra dependencies as ../Dockerfile (keep that file and
@@ -35,6 +36,14 @@ COPY snakemake/profiles /app/snakemake/profiles
 
 # Same as the Argo pods set.
 ENV PYTHONPATH="/app/.venv/lib/python3.12/site-packages:/app"
+
+# The image's own immutable tag (snakemake-<short sha>), passed in by the build
+# (.github/workflows/build_snakemake_image.yml). The controller hands it to
+# `snakemake --container-image`, so the job pods run exactly the image the
+# controller is running instead of whatever a node cached under a mutable tag.
+# Last, so a changing value doesn't invalidate the layers above.
+ARG IMAGE_REF=""
+ENV SNAKEMAKE_CONTAINER_IMAGE=${IMAGE_REF}
 
 WORKDIR /app
 

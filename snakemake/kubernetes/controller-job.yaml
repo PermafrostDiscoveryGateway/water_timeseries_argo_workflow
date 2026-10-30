@@ -23,7 +23,10 @@ spec:
       restartPolicy: Never
       containers:
         - name: snakemake
-          # Keep in sync with profiles/kubernetes/config.yaml (container-image).
+          # The one place to choose which build to run. The job pods always run
+          # this build's own commit tag (SNAKEMAKE_CONTAINER_IMAGE, baked into the
+          # image), so a branch tag is safe here; a snakemake-<short sha> tag pins
+          # the run to one commit.
           image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:snakemake-59-adopt-the-test-pipeline-using-snakemake-kubernetes
           imagePullPolicy: Always
           command: ["bash", "-c"]
@@ -32,7 +35,11 @@ spec:
               set -euo pipefail
               # The profile's paths are relative to /app (see there).
               cd /app
+              # Job pods run the same build as this controller, not a tag a node
+              # may have cached an older build under (the profile sets no image).
+              : "${SNAKEMAKE_CONTAINER_IMAGE:?not set - the image was built without --build-arg IMAGE_REF}"
               snakemake --profile /app/snakemake/profiles/kubernetes \
+                  --container-image "${SNAKEMAKE_CONTAINER_IMAGE}" \
                   --config target_date="${TARGET_DATE}" \
                   ${SNAKEMAKE_EXTRA_ARGS}
           env:

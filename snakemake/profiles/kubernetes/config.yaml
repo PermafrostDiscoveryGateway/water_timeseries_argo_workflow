@@ -16,8 +16,11 @@ configfile: snakemake/config-kubernetes.yaml
 
 executor: kubernetes
 jobs: 20
-# Keep in sync with the image in kubernetes/controller-job.yaml.
-container-image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:snakemake-59-adopt-the-test-pipeline-using-snakemake-kubernetes
+# The job pods' image is not set here: this profile is baked into the image, so
+# it can't name the image it's in. The controller passes it on the command line
+# (--container-image, from SNAKEMAKE_CONTAINER_IMAGE; see
+# kubernetes/controller-job.yaml). Running this profile some other way needs
+# --container-image too.
 kubernetes-namespace: snakemake
 # Has the ghcr-secret image pull secret and no API access.
 kubernetes-service-account-name: snakemake-job

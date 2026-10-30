@@ -19,7 +19,8 @@ spec:
       restartPolicy: Never
       containers:
         - name: main
-          # Keep in sync with profiles/kubernetes/config.yaml (container-image).
+          # This Job doesn't run snakemake, so nothing pins its image for it: use
+          # the same snakemake-<short sha> tag as controller-job.yaml.
           image: ghcr.io/permafrostdiscoverygateway/water_timeseries_argo_workflow:snakemake-59-adopt-the-test-pipeline-using-snakemake-kubernetes
           imagePullPolicy: Always
           command: ["bash", "-c"]
