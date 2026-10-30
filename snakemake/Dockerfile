@@ -20,7 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends rsync \
 # Separate layer, after the extras, so it can't change what they resolve to.
 # pip: every job pod runs `pip install` for the storage plugin before it
 # starts, and the uv venv has none of its own.
-RUN uv pip install "snakemake>=9.6,<10" snakemake-executor-plugin-kubernetes \
+# The Kubernetes plugin is pinned below 0.5.1: from 0.5.1 on, a failed job pod's
+# log is read with previous=True, which Kubernetes rejects (400) for these
+# restartPolicy=Never pods, and the exception kills the controller. Lift the pin
+# once that's fixed upstream (snakemake/snakemake-executor-plugin-kubernetes,
+# check_active_jobs).
+RUN uv pip install "snakemake>=9.6,<10" "snakemake-executor-plugin-kubernetes<0.5.1" \
     snakemake-storage-plugin-fs pip
 
 RUN python -c "import geemap; assert hasattr(geemap, 'ee_initialize'), 'ee_initialize missing!'; print(f'geemap {geemap.__version__}')" \

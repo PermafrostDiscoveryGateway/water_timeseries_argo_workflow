@@ -507,6 +507,7 @@ kubectl -n snakemake get jobs -o name | grep snakejob- | xargs kubectl -n snakem
 | `If no shared filesystem is assumed ... a default storage provider ... has to be set` | The image predates the storage settings in the profile; rebuild it |
 | Job pod fails in `pip install ... snakemake-storage-plugin-fs` or `--deploy-sources` before the step starts | Job pods need internet access (PyPI) to install the storage plugin, and read access to `/data/water_timeseries/snakemake_storage` |
 | `rsync: not found` | The image predates `rsync` being added to `snakemake/Dockerfile`; rebuild it |
+| Controller dies with `WorkflowError: Kubernetes request failed ... ApiException: (400) ... previous terminated container "snakemake" in pod ... not found` when a step fails | `snakemake-executor-plugin-kubernetes` 0.5.1 reads a failed pod's log with `previous=True`, which Kubernetes rejects for pods that never restarted, and the exception ends the run (`keep-going` doesn't cover it). The Dockerfile pins the plugin below 0.5.1, so this means an image built without that pin; rebuild it. The step's real error is in its log under `/data/water_timeseries/snakemake_work/<target_date>/logs/` on the volume. The crash can leave step Jobs running: see [Stopping a run](#stopping-a-run) to clean them up before starting a new controller |
 
 ## Cleaning up
 
