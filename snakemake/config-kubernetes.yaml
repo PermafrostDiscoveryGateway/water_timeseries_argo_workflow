@@ -1,0 +1,31 @@
+# Kubernetes overrides for config.yaml, loaded on top of it by
+# profiles/kubernetes (`configfile:`). Only the keys that differ from a local
+# run are here; target_date, regions, earth_engine etc. come from config.yaml
+# and can still be overridden with --config.
+
+# The container image (snakemake/Dockerfile) already has the environment the
+# scripts need - no uv build, just the image's python.
+environment:
+  build: false
+python: "python"
+
+# The scripts are in the image at /app; the job pods run the Snakefile from
+# the copy snakemake unpacks into their own working directory.
+repo_root: "/app"
+
+# Done-markers, relative to the default storage prefix in
+# profiles/kubernetes (i.e. /data/water_timeseries/snakemake_storage/markers).
+marker_dir: "markers"
+
+# The same /data/water_timeseries layout the Argo test templates use
+# (nrt-pipeline-templates-test.yaml), on the snakemake-share PVC mounted at
+# /data in every job pod.
+paths:
+  base_dir: "/data/water_timeseries"
+  dynamic_world_data: "/data/water_timeseries/test/dynamic_world_data"
+  vector_lake_file: "/data/water_timeseries/input/Nitze_etal_Lakes_filtered_full_set_V2d.parquet"
+  region_lake_polygons_dir: "/data/water_timeseries/region_lake_polygons"
+  output_dir: "/data/water_timeseries/test/output"
+  combined_zarr_datasets: "/data/water_timeseries/combined_zarr_datasets"
+  # Per-stage .env files and logs (the markers are in marker_dir above).
+  work_dir: "/data/water_timeseries/snakemake_work"

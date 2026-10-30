@@ -1,0 +1,60 @@
+# Service accounts for the snakemake test pipeline.
+#
+# snakemake-controller: runs the main snakemake process (controller-job.yaml),
+#   which submits one Kubernetes Job per rule, watches them, reads their pod
+#   logs and passes env vars to them through a per-run Secret.
+# snakemake-job: the job pods (profiles/kubernetes:
+#   kubernetes-service-account-name). No API access; only here so the pods
+#   get the ghcr-secret image pull secret, which the executor can't set itself.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: snakemake-controller
+  namespace: snakemake
+imagePullSecrets:
+  - name: ghcr-secret
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: snakemake-job
+  namespace: snakemake
+imagePullSecrets:
+  - name: ghcr-secret
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: snakemake-controller
+  namespace: snakemake
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs/status"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: snakemake-controller
+  namespace: snakemake
+subjects:
+  - kind: ServiceAccount
+    name: snakemake-controller
+    namespace: snakemake
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: snakemake-controller

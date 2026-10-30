@@ -34,6 +34,10 @@
 #   snakemake -s snakemake/Snakefile --cores 2
 #   snakemake -s snakemake/Snakefile --cores 2 --config target_date=2025-07
 #
+# On Kubernetes the same Snakefile runs with the profile in
+# profiles/kubernetes (config-kubernetes.yaml on top of config.yaml) - see
+# docs/11-running-the-test-pipeline-with-snakemake-on-kubernetes.md.
+#
 # On Delta (each step is a Slurm job - see snakemake/profiles/delta/):
 #   snakemake -s snakemake/Snakefile --configfile snakemake/config.delta.yaml \
 #       --profile snakemake/profiles/delta --config target_date=2025-08
@@ -48,12 +52,16 @@ import math
 import os
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 configfile: os.path.join(workflow.basedir, "config.yaml")
 
-REPO_ROOT = Path(workflow.basedir).parent.resolve()
+# Where near_real_time/ etc. live. On Kubernetes the job pods run a copy of
+# the Snakefile snakemake unpacks into their working directory, while the
+# scripts are in the image at /app (config-kubernetes.yaml: repo_root).
+REPO_ROOT = Path(config.get("repo_root") or Path(workflow.basedir).parent).resolve()
 TARGET_DATE = str(config["target_date"])
 # Replace target_date's results instead of skipping what's already there: see
 # `overwrite` in config.yaml. Needs `--forcerun process` (run_delta.sh --overwrite).
@@ -125,8 +133,16 @@ DASK_DIR = _abs(SCRATCH.get("dask_dir") or os.path.join(PATHS["base_dir"], "dask
 CREDS = {k: _abs(v) if v else "" for k, v in (config.get("credentials") or {}).items()}
 # run_name: Snakefile.pmtiles keeps its markers and logs apart from the
 # pipeline's per-month ones.
-WORK = os.path.join(PATHS["work_dir"], str(config.get("run_name") or TARGET_DATE))
-MARK = os.path.join(WORK, "markers")
+RUN_NAME = str(config.get("run_name") or TARGET_DATE)
+WORK = os.path.join(PATHS["work_dir"], RUN_NAME)
+# The done-markers are the rules' only input/output files. With a
+# `marker_dir` (Kubernetes) they're relative paths, which snakemake keeps in
+# its default storage (profiles/kubernetes: default-storage-prefix) and copies
+# in and out of each job pod.
+if config.get("marker_dir"):
+    MARK = os.path.join(config["marker_dir"], RUN_NAME)
+else:
+    MARK = os.path.join(WORK, "markers")
 LOGS = os.path.join(WORK, "logs")
 PIPELINE_LOG = os.path.join(WORK, "nrt_pipeline_log.jsonl")
 
@@ -168,6 +184,39 @@ def write_env(stage, region=None, extra=None):
     env_path = env_dir / ".env"
     env_path.write_text("".join(f"{k}={v}\n" for k, v in env.items()))
     return str(env_path)
+
+
+def env_var_credential_env():
+    """Earth Engine / gcloud credentials passed in as env vars.
+
+    On Kubernetes the controller hands the earth-engine-creds and
+    personal-gcp-creds secrets to every job as EE_CREDENTIALS_JSON /
+    GCP_CREDENTIALS_JSON (the profile's `envvars`); write them to files and
+    point the scripts at them, the same way the Argo pods do. Locally neither
+    is set and the usual ~/.config credentials are used as-is.
+    """
+    ee = os.environ.get("EE_CREDENTIALS_JSON")
+    gcp = os.environ.get("GCP_CREDENTIALS_JSON")
+    if not (ee or gcp):
+        return {}
+
+    home = Path(tempfile.gettempdir()) / "snakemake-home"
+    env = {"HOME": str(home)}
+    if ee:
+        ee_dir = home / ".config" / "earthengine"
+        ee_dir.mkdir(parents=True, exist_ok=True)
+        ee_file = ee_dir / "credentials"
+        ee_file.write_text(ee)
+        ee_file.chmod(0o600)
+        env.update({"EARTHENGINE_TOKEN": str(ee_file), "EE_CONFIG_DIR": str(ee_dir)})
+    if gcp:
+        gcp_dir = home / ".config" / "gcloud"
+        gcp_dir.mkdir(parents=True, exist_ok=True)
+        gcp_file = gcp_dir / "application_default_credentials.json"
+        gcp_file.write_text(gcp)
+        gcp_file.chmod(0o600)
+        env["GOOGLE_APPLICATION_CREDENTIALS"] = str(gcp_file)
+    return env
 
 
 def _ee_home(stage, region=None):
@@ -235,6 +284,11 @@ def run_stage(stage, script, region=None, extra=None, cwd=None):
         "DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE": "0.95",
         "DASK_SCHEDULER": "threads",
     })
+    proc_env.update(env_var_credential_env())
+    # The scripts get the credential files above; don't hand them the raw
+    # secrets too - some of them log their whole environment.
+    for key in ("EE_CREDENTIALS_JSON", "GCP_CREDENTIALS_JSON"):
+        proc_env.pop(key, None)
     # Tools installed next to the interpreter (tippecanoe, tile-join) are
     # found on PATH, like the Docker image's /app/.venv/bin.
     if os.sep in PYTHON:
@@ -533,9 +587,21 @@ rule process:
             "id_chunk_size": params.get("id_chunk_size"),
             "save_interval": params.get("save_interval"),
             "n_jobs": params.get("n_jobs"),
+            "recompute": "True" if config.get("recompute_process") else None,
         })
         if code != 0:
             raise RuntimeError(f"process failed for {wildcards.region} (exit {code})")
+        # Don't trust the exit code alone: a zarr that's missing or has no
+        # id_geohash would only fail later, in create_historical_zarr_archive.
+        zarr_path = os.path.join(PATHS["output_dir"], wildcards.region, "breakpoint_zarr",
+                                 f"breakpoints_{TARGET_DATE}.zarr")
+        check = subprocess.run(
+            [PYTHON, "-c", "import sys, xarray as xr; ds = xr.open_zarr(sys.argv[1]); "
+                           "sys.exit(0 if 'id_geohash' in ds.variables else 'no id_geohash')",
+             zarr_path], capture_output=True, text=True)
+        if check.returncode != 0:
+            raise RuntimeError(f"process for {wildcards.region} exited 0 but {zarr_path} "
+                               f"is not usable: {(check.stderr or check.stdout).strip()[-500:]}")
         mark_done(output[0], process=code)
 
 
@@ -550,6 +616,18 @@ rule create_historical_zarr_archive:
         mem_mb=20000,
         runtime=120,
     run:
+        # The script skips any region zarr modified in the last 2 minutes as
+        # "still writing" (STALE_THRESHOLD_SECONDS). Snakemake starts this
+        # right after the last process step, so wait until they've settled.
+        import glob
+        import time
+        zarr_files = glob.glob(os.path.join(PATHS["output_dir"], "*", "breakpoint_zarr",
+                                            f"breakpoints_{TARGET_DATE}.zarr", "**"), recursive=True)
+        if zarr_files:
+            age = time.time() - max(os.path.getmtime(f) for f in zarr_files)
+            if age < 150:
+                print(f"Waiting {150 - age:.0f}s for the region zarrs to settle")
+                time.sleep(150 - age)
         code = run_stage("create_historical_zarr_archive",
                          "combine_results_into_zarr_historical_archive.py",
                          extra={"combine_all": "True"})

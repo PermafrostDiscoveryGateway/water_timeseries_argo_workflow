@@ -9,8 +9,8 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates, find_most_recent_historical_file
-from utils.date_gate import MERGE_START_DAY, get_target_month
+from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates, find_most_recent_historical_file, clear_process_outputs
+from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
 from typing import List, Dict, Any, Optional
 import gc
 import traceback
@@ -297,7 +297,7 @@ def main():
     all_dynamic_world_files = glob.glob(os.path.join(dynamic_world_data_dir, "*.nc"))
     if not all_dynamic_world_files:
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
-        return {'success': False, 'error': 'No .nc files found'}
+        return 1
 
     original_most_recent_dynamic_world_file = find_most_recent_historical_file(all_dynamic_world_files)
     logger.debug(f"Most recent dynamic world file: {original_most_recent_dynamic_world_file}")
@@ -314,6 +314,13 @@ def main():
     id_chunk_size = int(os.environ.get("id_chunk_size", 500))
     save_interval = int(os.environ.get("save_interval", 1))
     n_jobs = int(os.environ.get("n_jobs", 1))
+    # recompute=True: delete this month's existing outputs first, so every lake
+    # is recomputed instead of resuming from incremental_results_<month>.parquet.
+    # Test runs only - it deletes files under output_dir.
+    recompute = os.environ.get("recompute", "False").lower() in ("true", "1", "yes")
+    if recompute and not is_test_run():
+        logger.warning("recompute=True ignored: only allowed when test_run=True")
+        recompute = False
     # OVERWRITE=True: reprocess complete regions from scratch, resume partial ones.
     overwrite = os.environ.get("OVERWRITE", "False").lower() in ("true", "1", "yes")
     if overwrite:
@@ -343,7 +350,7 @@ def main():
 
     if not SHOULD_RUN:
         logger.info("Skipping processing - conditions not met")
-        return
+        return 0
 
     # Always run if we're processing all regions or if it's summer
 
@@ -359,6 +366,10 @@ def main():
         logger.info(f"{'=' * 80}")
         logger.debug(f"Using id chunk: {id_chunk_size}")
         logger.debug(f"With save interval {save_interval}")
+
+        if recompute:
+            logger.info(f"♻️ recompute=True - clearing existing {region} {target_date} outputs")
+            clear_process_outputs(region, target_date)
 
         # Process the single date
         result = process_single_date_for_region(
@@ -414,12 +425,15 @@ def main():
     logger.info("PROCESS_NRT.py COMPLETED")
     logger.info("=" * 80)
 
-    # Exit non-zero if any region failed, so the caller (Argo / snakemake) sees
-    # the failure here instead of at the next step that reads the results.
+    # A failed region (e.g. create_final_zarr_from_incremental couldn't write
+    # the zarr) has to fail the step, or the orchestrator marks it done and
+    # the failure only shows up downstream in the archive step.
     if failure_count:
-        logger.error(f"{failure_count} region(s) failed - exiting with code 1")
-        sys.exit(1)
+        logger.error(f"{failure_count} region(s) failed: "
+                     f"{[r for r, res in all_results.items() if not res.get('success', False)]}")
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
