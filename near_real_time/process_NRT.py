@@ -1,6 +1,16 @@
-from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates, clear_process_outputs
-from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
 import sys
+from pathlib import Path
+
+# Add project root to Python path. Keep this ABOVE the `utils` / sibling-script
+# imports below: `utils` lives in the project root, which is only on the path by
+# default inside the Docker image (PYTHONPATH=/app), so moving this block lower
+# breaks `python near_real_time/<script>.py` outside the container.
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from utils.helper_functions import process_region_date_new_fast_NRT, debug_historical_dates, find_most_recent_historical_file, clear_process_outputs
+from utils.date_gate import MERGE_START_DAY, get_target_month, is_test_run
 from typing import List, Dict, Any, Optional
 import gc
 import traceback
@@ -11,12 +21,7 @@ import os
 import glob
 import time
 import pandas as pd
-from pathlib import Path
 import xarray as xr
-# Add project root to Python path
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
 
 
 def is_file_ready(filepath, wait_seconds=0.5, checks=20):
@@ -174,6 +179,7 @@ def process_single_date_for_region(
         n_jobs: int = 12,
         id_chunk_size: int = 2000,  # Number of IDs per chunk (passed to calculate_break)
         save_interval: int = 10,   # Save every N chunks
+        overwrite: bool = False,
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using the FAST method.
@@ -185,6 +191,8 @@ def process_single_date_for_region(
         n_jobs: Number of parallel jobs (passed to NRTBreakpoint internally)
         id_chunk_size: Number of IDs to process per chunk (default: 100)
         save_interval: Save intermediate results every N chunks (default: 10)
+        overwrite: Reprocess a complete region from scratch (a partial one is
+            always resumed)
 
     Returns:
         dict: Processing results
@@ -232,7 +240,8 @@ def process_single_date_for_region(
             env_path=env_path,
             n_jobs=n_jobs,
             id_chunk_size=id_chunk_size,
-            save_interval=save_interval
+            save_interval=save_interval,
+            overwrite=overwrite,
         )
 
         if process_result.get('success', False):
@@ -290,9 +299,8 @@ def main():
         logger.error(f"No .nc files found in {dynamic_world_data_dir}")
         return 1
 
-    original_most_recent_dynamic_world_file = max(all_dynamic_world_files, key=os.path.getmtime)
+    original_most_recent_dynamic_world_file = find_most_recent_historical_file(all_dynamic_world_files)
     logger.debug(f"Most recent dynamic world file: {original_most_recent_dynamic_world_file}")
-    time.sleep(10)
     logger.debug(f"Dates in the historical file")
     debug_historical_dates(historical_file_path=original_most_recent_dynamic_world_file)
 
@@ -305,7 +313,7 @@ def main():
 
     id_chunk_size = int(os.environ.get("id_chunk_size", 500))
     save_interval = int(os.environ.get("save_interval", 1))
-    n_jobs = int(os.environ.get("n_jobs", 2))
+    n_jobs = int(os.environ.get("n_jobs", 1))
     # recompute=True: delete this month's existing outputs first, so every lake
     # is recomputed instead of resuming from incremental_results_<month>.parquet.
     # Test runs only - it deletes files under output_dir.
@@ -313,6 +321,10 @@ def main():
     if recompute and not is_test_run():
         logger.warning("recompute=True ignored: only allowed when test_run=True")
         recompute = False
+    # OVERWRITE=True: reprocess complete regions from scratch, resume partial ones.
+    overwrite = os.environ.get("OVERWRITE", "False").lower() in ("true", "1", "yes")
+    if overwrite:
+        logger.info("OVERWRITE=True - complete regions are reprocessed, partial ones resumed")
 
     # Define regions to process - you can customize this list
     if region_name == "ALL":
@@ -366,7 +378,8 @@ def main():
             env_path=env_path,
             n_jobs=n_jobs,
             id_chunk_size=id_chunk_size,
-            save_interval=save_interval
+            save_interval=save_interval,
+            overwrite=overwrite,
         )
 
         all_results[region] = result

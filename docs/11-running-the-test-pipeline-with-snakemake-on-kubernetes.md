@@ -1,4 +1,4 @@
-# 10. Running the Test Pipeline with Snakemake on Kubernetes
+# 11. Running the Test Pipeline with Snakemake on Kubernetes
 
 The snakemake version of the test pipeline
 ([7. Running the testing pipeline](07-running-the-testing-pipeline.md#running-the-test-pipeline-locally-with-snakemake))

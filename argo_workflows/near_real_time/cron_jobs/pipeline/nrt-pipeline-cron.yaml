@@ -7,7 +7,7 @@ metadata:
     workflows.argoproj.io/pod-keep: "OnCompletion"
 spec:
   # Kicks off the whole nightly pipeline. Downstream stages are gated by
-  # `depends` in the DAG below, not by clock offsets - this is just "start
+  # `dependencies` in the DAG below, not by clock offsets - this is just "start
   # the day's run".
   schedule: "20 12 * * *"
   concurrencyPolicy: "Forbid"
@@ -106,7 +106,7 @@ spec:
         # Only runs once every region's full pipeline (including process) has finished,
         # since it combines each region's breakpoint output.
         - name: create-historical-zarr-archive
-          depends: "regions"
+          dependencies: [regions]
           templateRef:
             name: nrt-pipeline-templates
             template: create-historical-zarr-archive
@@ -114,7 +114,7 @@ spec:
         # Decoupled from create-historical-zarr-archive/regions on purpose: this only
         # needs every region's *merge* output (dw_{region}_{date}.nc), not process, so
         # it doesn't need to wait behind the (much slower) process step. It has no
-        # `depends`, so it starts as soon as the workflow does and polls on its own,
+        # `dependencies`, so it starts as soon as the workflow does and polls on its own,
         # on a cheap pod, until every region's merge file for the target month shows
         # up (or merge_wait_minutes is exceeded) - see wait-for-region-merges.
         - name: wait-for-region-merges
@@ -126,7 +126,23 @@ spec:
         # much heavier create-new-historical-file pod isn't sitting reserved for
         # however long the region pipelines take.
         - name: create-historical-file
-          depends: "wait-for-region-merges"
+          dependencies: [wait-for-region-merges]
           templateRef:
             name: nrt-pipeline-templates
             template: create-new-historical-file
+
+        # Builds the NRT dashboard's PMTiles archive for the latest month in the
+        # combined breakpoint zarr. It only reads the zarr archive, so it depends
+        # on create-historical-zarr-archive alone and runs in parallel with
+        # create-historical-file rather than waiting behind it. Runs with
+        # OVERWRITE=False, so a month that's already built is skipped - use
+        # manual_jobs/create-nrt-pmtiles.yaml to force a rebuild.
+        - name: create-nrt-pmtiles
+          dependencies: [create-historical-zarr-archive]
+          # A failure here (e.g. the latest month has no drainage_confidence) shows
+          # on this node but doesn't mark the whole workflow Failed.
+          continueOn:
+            failed: true
+          templateRef:
+            name: nrt-pipeline-templates
+            template: create-nrt-pmtiles

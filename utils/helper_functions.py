@@ -5,7 +5,9 @@ import numpy as np
 import sys
 from pathlib import Path
 import os
+import re
 import glob
+import shutil
 from typing import List, Optional, Dict, Any
 import zarr
 # Add project root to Python path
@@ -867,6 +869,8 @@ def download_near_real_time_region_dates(
                 ds_dl = downloader.download_dw_monthly(
                     gdf=gdf_subset,
                     max_total_requests=max_total_requests,
+                    # Deliberately serial: parallel downloads kept hitting GEE
+                    # restricted mode, so slower is better here.
                     n_parallel=1,
                     date_list=[ANALYSIS_DATE],
                     save_to_file=outfile_download
@@ -911,6 +915,12 @@ def download_near_real_time_region_dates(
                             f'NOTE: Grid {bbox_west} {bbox_south} returned {len(downloaded_ids)}/{len(expected_ids)} '
                             f'requested lakes ({tile_completion_pct:.2%} complete, >= {TILE_COMPLETION_THRESHOLD:.0%} '
                             f'threshold) - accepting as complete')
+                        # The tile file now exists, so skip-if-exists will never
+                        # retry these; record them so the backfill step and run
+                        # report have an explicit list.
+                        missing_ids_file = outfile_download.with_name(f'{outfile_download.stem}_missing_ids.txt')
+                        with open(missing_ids_file, 'w') as f:
+                            f.write('\n'.join(sorted(str(i) for i in missing_in_tile)) + '\n')
 
                     download_successful = True
                     if should_overwrite:
@@ -1174,6 +1184,7 @@ def combine_region_files(
         logger.error(f"Missing files: {missing_files}")
         return {'success': False, 'error': f'Missing files: {missing_files}'}
 
+    datasets = []
     try:
         id_chunk = _get_id_chunk_size()
         # Respect the operator-configured chunk size -- see merge_new_results
@@ -1181,7 +1192,6 @@ def combine_region_files(
         combine_chunk = id_chunk
 
         logger.info(f"Loading region datasets (dask-chunked, id_geohash={combine_chunk})...")
-        datasets = []
         file_info = []
 
         for file_path in region_files:
@@ -1220,14 +1230,6 @@ def combine_region_files(
 
         logger.info("Combining datasets lazily...")
         combined = xr.concat(datasets, dim='id_geohash')
-
-        for ds in datasets:
-            try:
-                ds.close()
-            except Exception:
-                pass
-        datasets = None
-        gc.collect()
 
         # Remove duplicates in a single pass instead of after every file.
         # Plain numpy on the id_geohash coordinate values (no .unique()/
@@ -1287,6 +1289,17 @@ def combine_region_files(
         import traceback
         traceback.print_exc()
         return {'success': False, 'error': str(e)}
+
+    finally:
+        # combined is dask-backed on the source files, so they are only closed
+        # once the write has finished (or failed).
+        for ds in datasets:
+            try:
+                ds.close()
+            except Exception:
+                pass
+        datasets = None
+        gc.collect()
 
 
 def merge_new_results(
@@ -1712,6 +1725,32 @@ def has_region_been_merged_for_dates(
             'no_data_expected': False
         }
 
+_HISTORICAL_FILE_DATE_RE = re.compile(r"dynamic_world_historical_(\d{4})-(\d{2})(?:-(\d{2}))?\.nc$")
+
+
+def find_most_recent_historical_file(nc_files: List[str]) -> Optional[str]:
+    """
+    Pick the most recent historical file using the date in its filename
+    (dynamic_world_historical_YYYY-MM[-DD].nc) rather than file mtime, so a file
+    that is still being written can't be chosen just because it was touched last.
+
+    Files without a dated name (e.g. lakes_dw_V2d_compressed.nc) are only used,
+    newest by mtime, when no dated historical file exists.
+    """
+    dated = []
+    for f in nc_files:
+        match = _HISTORICAL_FILE_DATE_RE.search(os.path.basename(f))
+        if match:
+            year, month, day = match.groups()
+            dated.append(((int(year), int(month), int(day or 0)), f))
+    if dated:
+        return max(dated)[1]
+    if not nc_files:
+        return None
+    logger.warning("No dynamic_world_historical_<date>.nc files found; falling back to newest by mtime")
+    return max(nc_files, key=os.path.getmtime)
+
+
 def debug_historical_dates(historical_file_path: str) -> None:
     """
     Debug function to print dates from a historical NetCDF file.
@@ -1824,11 +1863,16 @@ def process_region_date_new_fast_NRT(
         id_chunk_size: int = 500,
         n_jobs: int = 8,
         save_interval: int = 1,
+        overwrite: bool = False,
 ) -> Dict[str, Any]:
     """
     Process a single date for a region using batch processing for speed.
     Uses NRTBreakpoint.calculate_break with a LIST of IDs for internal parallelization.
     Memory-optimized version: saves incrementally and clears memory after each chunk.
+
+    A partial run (incremental results but no complete breakpoint zarr) is always
+    resumed. With overwrite=True, a complete one is deleted and reprocessed from
+    scratch; without it, the zarr is just rebuilt from the saved results.
     """
     import time
     import os
@@ -2043,6 +2087,19 @@ def process_region_date_new_fast_NRT(
 
         # NEW: File for accumulating results incrementally
         incremental_file = current_breakpoint_dir / f'incremental_results_{analysis_date}.parquet'
+
+        if overwrite:
+            if breakpoint_zarr_is_complete(zarr_path):
+                logger.info(f"🗑️ OVERWRITE=True and {zarr_path} is complete - deleting it and its "
+                            f"saved results to reprocess {region} {analysis_date} from scratch")
+                shutil.rmtree(zarr_path, ignore_errors=True)
+                for stale in (incremental_file, intermediate_file,
+                              current_breakpoint_dir / f'drain_{analysis_date}.parquet'):
+                    stale.unlink(missing_ok=True)
+            elif incremental_file.exists():
+                logger.info(f"OVERWRITE=True but {region} {analysis_date} is incomplete - resuming it")
+            else:
+                logger.info(f"OVERWRITE=True - no previous results for {region} {analysis_date}")
 
         # 10. Process in chunks - MEMORY OPTIMIZED
         bp = NRTBreakpoint()
@@ -3548,6 +3605,23 @@ def process_region_date_new_fast_historical_safe(
         }
 
 
+def breakpoint_zarr_is_complete(zarr_path: Path) -> bool:
+    """True if zarr_path is a breakpoint zarr create_final_zarr_from_incremental finished.
+
+    That means it opens, has attrs complete=True, and holds data (or is marked
+    empty: a region with no breakpoints at all). A store left by a failed save -
+    only zarr.json, no variables - counts as incomplete.
+    """
+    if not Path(zarr_path).exists():
+        return False
+    try:
+        with xr.open_zarr(zarr_path) as ds:
+            return bool(ds.attrs.get('complete')) and (len(ds.data_vars) > 0 or bool(ds.attrs.get('empty')))
+    except Exception as e:
+        logger.debug(f"Could not open {zarr_path} as a breakpoint zarr: {e}")
+        return False
+
+
 def create_final_zarr_from_incremental(
         incremental_file: Path,
         zarr_path: Path,
@@ -3696,14 +3770,18 @@ def create_final_zarr_from_incremental(
         # Save to Zarr
         logger.info(f"💾 Saving {len(breaks_merged):,} records to Zarr: {zarr_path}")
 
-        # Zarr can't store pandas' nullable integer dtypes: water-timeseries
-        # returns drainage_confidence as Int64, and to_zarr fails with
-        # "Cannot interpret 'Int64Dtype()' as a data type". Store them as plain
-        # int64, with missing values as -1 (water-timeseries' "not evaluated").
-        for col in breaks_merged.columns:
-            dtype = breaks_merged[col].dtype
-            if isinstance(dtype, pd.api.extensions.ExtensionDtype) and pd.api.types.is_integer_dtype(dtype):
-                breaks_merged[col] = breaks_merged[col].fillna(-1).astype('int64')
+        # Nullable pandas extension dtypes (e.g. Int64 from the parquet) can't be
+        # encoded by xarray's zarr backend ("Cannot interpret 'Int64Dtype()' as a
+        # data type"). Convert them to numpy dtypes: numeric -> float64 with NaN
+        # for missing values, anything else -> object.
+        for col, dtype in breaks_merged.dtypes.items():
+            if isinstance(dtype, pd.api.extensions.ExtensionDtype) and not isinstance(
+                    dtype, (pd.DatetimeTZDtype, pd.CategoricalDtype)):
+                if pd.api.types.is_numeric_dtype(dtype) or pd.api.types.is_bool_dtype(dtype):
+                    breaks_merged[col] = breaks_merged[col].to_numpy(dtype="float64", na_value=np.nan)
+                else:
+                    breaks_merged[col] = breaks_merged[col].astype(object).where(breaks_merged[col].notna(), None)
+                logger.debug(f"Converted column '{col}' from {dtype} to {breaks_merged[col].dtype} for Zarr")
 
         # Convert to xarray dataset
         ds_breaks = breaks_merged.to_xarray()

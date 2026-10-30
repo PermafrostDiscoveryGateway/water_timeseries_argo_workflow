@@ -8,10 +8,6 @@
 # current month is never a candidate - even in-season it's still in
 # progress and won't have data yet - so this always targets the most recent
 # *complete* summer month, starting the search at last month.
-#
-# A test run can also be pinned to one specific month by setting
-# `target_date=YYYY-MM` in the .env (used by the local snakemake test
-# pipeline), instead of whatever month "today" happens to resolve to.
 import os
 import re
 from datetime import datetime, timedelta
@@ -46,7 +42,7 @@ def should_run_last_attempts(today: datetime = None, min_day: int = 15) -> bool:
     """Gate for download_region_last_attempts.py.
 
     Dynamic World ingestion for a just-finished month can lag by a couple of
-    weeks, so a lake confirmed "no data" early in the month (day 3-14, when
+    weeks, so a lake confirmed "no data" early in the month (day 2-14, when
     the regular download/backfill scripts run) may just not be ingested yet.
     This gate holds the last-attempts script back until `min_day`, giving
     ingestion time to catch up before treating a lake as permanently no-data.
