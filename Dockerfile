@@ -10,7 +10,7 @@ RUN uv pip install \
     google-api-core \
     toml \
     dask[dataframe] \
-    pyarrow \
+    "pyarrow<22" \
     nest_asyncio \
     geemap==0.37.2
 

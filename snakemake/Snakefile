@@ -38,6 +38,10 @@
 #   snakemake -s snakemake/Snakefile --configfile snakemake/config.delta.yaml \
 #       --profile snakemake/profiles/delta --config target_date=2025-08
 #
+# Every rule writes a benchmark file (see BENCH below), and every stage logs its
+# own time and peak memory to nrt_pipeline_log.jsonl; summarize both with
+# snakemake/benchmark_table.py.
+#
 # Each rule's threads / mem_mb / runtime match the Argo pod limits in
 # nrt-pipeline-templates-test.yaml; ee_download and process_slots stand in for
 # the nrt-pipeline-semaphores ConfigMap and are only enforced when given to
@@ -48,6 +52,8 @@ import math
 import os
 import shutil
 import subprocess
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -129,6 +135,43 @@ WORK = os.path.join(PATHS["work_dir"], str(config.get("run_name") or TARGET_DATE
 MARK = os.path.join(WORK, "markers")
 LOGS = os.path.join(WORK, "logs")
 PIPELINE_LOG = os.path.join(WORK, "nrt_pipeline_log.jsonl")
+# Snakemake's benchmark file of every rule (wall time, CPU time, memory, I/O),
+# one per job: <benchmarks>/<rule>[/<region>].tsv. Under the run's work directory
+# unless the config says otherwise (then in a folder of the run's name inside it),
+# so each month (and each config) keeps its own. Snakemake overwrites a file when
+# its job runs again; archive_benchmarks() (below) appends every run to history.tsv
+# in the same folder first. Tables: snakemake/benchmark_table.py.
+BENCH = (os.path.join(_abs(config["benchmarks_dir"]), os.path.basename(WORK))
+         if config.get("benchmarks_dir") else os.path.join(WORK, "benchmarks"))
+
+sys.path.insert(0, str(REPO_ROOT / "snakemake"))
+from benchmark_table import archive_benchmarks  # noqa: E402
+
+
+def keep_benchmarks():
+    """Add the benchmark files to BENCH/history.tsv (never twice, never fatal), so repeat runs are all kept."""
+    try:
+        n = archive_benchmarks(BENCH, TARGET_DATE, os.path.basename(WORK))
+        if n:
+            print(f"benchmarks: {n} run(s) added to {os.path.join(BENCH, 'history.tsv')}")
+    except OSError as e:
+        print(f"benchmarks: could not update history.tsv: {e}")
+
+
+# Before the first job (so nothing is overwritten unrecorded, even if an earlier
+# run was killed), and again when snakemake ends. Not in a dry run.
+onstart:
+    if not workflow.dryrun:
+        keep_benchmarks()
+
+
+onsuccess:
+    keep_benchmarks()
+
+
+onerror:
+    keep_benchmarks()
+
 
 wildcard_constraints:
     region="|".join(REGIONS),
@@ -241,6 +284,8 @@ def run_stage(stage, script, region=None, extra=None, cwd=None):
         proc_env["PATH"] = os.pathsep.join([os.path.dirname(PYTHON), os.environ.get("PATH", "")])
 
     cmd = [PYTHON, "-u", str(REPO_ROOT / "near_real_time" / script), env_path]
+    started = time.monotonic()
+    usage = None
     with open(log_path, "a") as log:
         log.write(f"=== {stage} / {region or '-'} / {TARGET_DATE} - {datetime.now()} ===\n")
         log.flush()
@@ -248,19 +293,35 @@ def run_stage(stage, script, region=None, extra=None, cwd=None):
             # Inside the try, so a failure partway through copying the token
             # is cleaned up too.
             proc_env.update(credential_env(stage, region))
-            exit_code = subprocess.run(cmd, cwd=cwd or REPO_ROOT, env=proc_env,
-                                       stdout=log, stderr=subprocess.STDOUT).returncode
+            with subprocess.Popen(cmd, cwd=cwd or REPO_ROOT, env=proc_env,
+                                  stdout=log, stderr=subprocess.STDOUT) as proc:
+                # wait4 rather than proc.wait(): it also returns this one
+                # process's resource usage (see the benchmark note below).
+                _, status, usage = os.wait4(proc.pid, 0)
+                proc.returncode = os.waitstatus_to_exitcode(status)
+            exit_code = proc.returncode
         finally:
             # Don't leave the Earth Engine token behind in node-local /tmp.
             shutil.rmtree(_ee_home(stage, region), ignore_errors=True)
-        log.write(f"=== {stage} / {region or '-'} completed with exit code: {exit_code} ===\n")
+        log.write(f"=== {stage} / {region or '-'} completed with exit code: {exit_code} "
+                  f"in {time.monotonic() - started:.0f} s ===\n")
 
+    # Benchmark note: a rule's benchmark file (BENCH) covers all the stages the
+    # rule runs (download + its fallback, merge + backfill + re-merge), and
+    # Snakemake can't sample memory or I/O on macOS. So each stage also records
+    # its own wall time, CPU time and peak memory here, from the stage process
+    # and the descendants it waited for. ru_maxrss is bytes on macOS, KiB on Linux.
+    elapsed_s = round(time.monotonic() - started, 1)
+    cpu_s = round(usage.ru_utime + usage.ru_stime, 1) if usage else None
+    peak_rss_mb = (round(usage.ru_maxrss / (1024 ** 2 if sys.platform == "darwin" else 1024))
+                   if usage else None)
     record = {"stage": stage, "region": region, "target_date": TARGET_DATE,
-              "exit_code": exit_code,
+              "exit_code": exit_code, "elapsed_s": elapsed_s, "cpu_s": cpu_s,
+              "peak_rss_mb": peak_rss_mb,
               "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     with open(PIPELINE_LOG, "a") as f:
         f.write(json.dumps(record) + "\n")
-    print(f"[{stage}{' / ' + region if region else ''}] exit code {exit_code} (log: {log_path})")
+    print(f"[{stage}{' / ' + region if region else ''}] exit code {exit_code} in {elapsed_s:.0f} s (log: {log_path})")
     return exit_code
 
 
@@ -344,6 +405,8 @@ if ENV_CFG["build"]:
             sqlite_sha256=str(ENV_CFG.get("sqlite_amalgamation_sha256") or "").strip().lower(),
         log:
             os.path.join(PATHS["work_dir"], "build_environment.log"),
+        benchmark:
+            os.path.join(BENCH, "build_environment.tsv"),
         run:
             import hashlib
             import shlex
@@ -457,6 +520,8 @@ rule download:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "download.done"),
+    benchmark:
+        os.path.join(BENCH, "download", "{region}.tsv"),
     threads: 1
     resources:
         mem_mb=8000,
@@ -480,6 +545,8 @@ rule merge_and_backfill:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "merge_and_backfill.done"),
+    benchmark:
+        os.path.join(BENCH, "merge_and_backfill", "{region}.tsv"),
     threads: 2
     resources:
         mem_mb=20000,
@@ -504,6 +571,8 @@ rule force_merge:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "merge.done"),
+    benchmark:
+        os.path.join(BENCH, "force_merge", "{region}.tsv"),
     threads: 2
     resources:
         mem_mb=20000,
@@ -522,6 +591,8 @@ rule process:
         ENV_INPUT,
     output:
         os.path.join(MARK, "{region}", "process.done"),
+    benchmark:
+        os.path.join(BENCH, "process", "{region}.tsv"),
     threads: 4
     resources:
         mem_mb=20000,
@@ -545,6 +616,8 @@ rule create_historical_zarr_archive:
         ENV_INPUT,
     output:
         os.path.join(MARK, "create_historical_zarr_archive.done"),
+    benchmark:
+        os.path.join(BENCH, "create_historical_zarr_archive.tsv"),
     threads: 2
     resources:
         mem_mb=20000,
@@ -567,6 +640,8 @@ rule create_nrt_pmtiles:
         ENV_INPUT,
     output:
         os.path.join(MARK, "create_nrt_pmtiles.done"),
+    benchmark:
+        os.path.join(BENCH, "create_nrt_pmtiles.tsv"),
     threads: 2
     resources:
         # The Argo step's limits.
@@ -588,6 +663,8 @@ rule wait_for_region_merges:
         ENV_INPUT,
     output:
         os.path.join(MARK, "wait_for_region_merges.done"),
+    benchmark:
+        os.path.join(BENCH, "wait_for_region_merges.tsv"),
     run:
         code = run_stage("wait_for_region_merges", "wait_for_region_merges.py",
                          extra={"merge_wait_minutes": config["merge_wait_minutes"]})
@@ -602,6 +679,8 @@ rule create_new_historical_file:
         ENV_INPUT,
     output:
         os.path.join(MARK, "create_new_historical_file.done"),
+    benchmark:
+        os.path.join(BENCH, "create_new_historical_file.tsv"),
     threads: 1
     resources:
         mem_mb=20000,

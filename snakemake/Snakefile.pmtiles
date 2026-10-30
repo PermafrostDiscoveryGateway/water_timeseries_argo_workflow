@@ -59,6 +59,8 @@ rule pmtiles_month:
         ENV_INPUT,
     output:
         os.path.join(MARK, "pmtiles_{month}.done"),
+    benchmark:
+        os.path.join(BENCH, "pmtiles_month", "{month}.tsv"),
     wildcard_constraints:
         month="|".join(MONTHS),
     threads: 2
